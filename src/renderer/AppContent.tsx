@@ -68,19 +68,14 @@ function AppContent() {
         expandedFolderState={workspaceState.expandedFolderState}
         googleDrivePanelProps={{
           googleDriveAutoSyncIntervalLabel: googleDriveSync.googleDriveAutoSyncIntervalLabel,
-          googleDriveAutoSyncIntervalMs: googleDriveSync.googleDriveAutoSyncIntervalMs,
           googleDriveErrorLink: googleDriveSync.googleDriveErrorLink,
           googleDriveErrorMessage: googleDriveSync.googleDriveErrorMessage,
           googleDriveSyncStatus: googleDriveSync.googleDriveSyncStatus,
           isGoogleDriveAutoSyncing: googleDriveSync.isGoogleDriveAutoSyncing,
           isGoogleDriveBusy: googleDriveSync.isGoogleDriveBusy,
           isLocalRestorePending: googleDriveSync.isLocalRestorePending,
-          onAutoSyncIntervalChange: googleDriveSync.handleGoogleDriveAutoSyncIntervalChange,
-          onClearLocalWorkspace: () => setClearLocalWorkspaceState(countTreeItems(workspaceState.workspaceTree)),
           onOpenGoogleDriveConfig: googleDriveSync.openGoogleDriveConfigModal,
           onSignIn: googleDriveSync.handleGoogleDriveSignIn,
-          onSignOut: googleDriveSync.handleGoogleDriveSignOut,
-          onDisconnect: googleDriveSync.handleGoogleDriveDisconnect,
           onSyncNow: googleDriveSync.handleGoogleDriveSyncNow,
         }}
         isCollapsed={drawer.isDrawerCollapsed}
@@ -192,18 +187,30 @@ function AppContent() {
       />
 
       <GoogleDriveModals
+        googleDriveAutoSyncIntervalLabel={googleDriveSync.googleDriveAutoSyncIntervalLabel}
+        googleDriveAutoSyncIntervalMs={googleDriveSync.googleDriveAutoSyncIntervalMs}
         googleDriveConfigError={googleDriveSync.googleDriveConfigError}
         googleDriveConfigForm={googleDriveSync.googleDriveConfigForm}
+        googleDriveErrorLink={googleDriveSync.googleDriveErrorLink}
+        googleDriveErrorMessage={googleDriveSync.googleDriveErrorMessage}
+        googleDriveSyncStatus={googleDriveSync.googleDriveSyncStatus}
         isGoogleDriveAutoSyncing={googleDriveSync.isGoogleDriveAutoSyncing}
         isGoogleDriveBusy={googleDriveSync.isGoogleDriveBusy}
         isGoogleDriveConfigModalOpen={googleDriveSync.isGoogleDriveConfigModalOpen}
+        isLocalRestorePending={googleDriveSync.isLocalRestorePending}
         isSavingGoogleDriveConfig={googleDriveSync.isSavingGoogleDriveConfig}
+        onAutoSyncIntervalChange={googleDriveSync.handleGoogleDriveAutoSyncIntervalChange}
+        onClearLocalWorkspace={() => setClearLocalWorkspaceState(countTreeItems(workspaceState.workspaceTree))}
         onCloseGoogleDriveConfig={googleDriveSync.closeGoogleDriveConfigModal}
+        onDisconnect={googleDriveSync.handleGoogleDriveDisconnect}
         onDismissSyncConflict={googleDriveSync.handleDismissSyncConflict}
         onGoogleDriveConfigFormChange={googleDriveSync.setGoogleDriveConfigForm}
         onGoogleDriveConfigSave={googleDriveSync.handleGoogleDriveConfigSave}
         onGoogleDriveRestore={googleDriveSync.handleGoogleDriveRestore}
         onKeepLocalSnapshot={googleDriveSync.handleKeepLocalSnapshot}
+        onSignIn={googleDriveSync.handleGoogleDriveSignIn}
+        onSignOut={googleDriveSync.handleGoogleDriveSignOut}
+        onSyncNow={googleDriveSync.handleGoogleDriveSyncNow}
         syncConflictState={googleDriveSync.syncConflictState}
       />
     </main>

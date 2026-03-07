@@ -20,7 +20,7 @@ import {
 
 export const CHATGPT_REFRESH_PARTITION = 'persist:gptviewer-chatgpt-refresh';
 
-const DEFAULT_WINDOW_BOUNDS = { height: 900, width: 1280 };
+const DEFAULT_WINDOW_BOUNDS = { height: 920, width: 1280 };
 
 export class ChatGptAutomationView {
   private static sharedInstance: ChatGptAutomationView | null = null;
@@ -41,14 +41,19 @@ export class ChatGptAutomationView {
 
   constructor() {
     this.window = new BrowserWindow({
+      acceptFirstMouse: true,
+      alwaysOnTop: true,
       autoHideMenuBar: true,
       height: DEFAULT_WINDOW_BOUNDS.height,
+      minHeight: 820,
+      minWidth: 1100,
       show: true,
       title: 'ChatGPT 새로고침',
       width: DEFAULT_WINDOW_BOUNDS.width,
     });
     this.view = new WebContentsView({
       webPreferences: {
+        backgroundThrottling: false,
         contextIsolation: true,
         nodeIntegration: false,
         partition: CHATGPT_REFRESH_PARTITION,
@@ -76,15 +81,10 @@ export class ChatGptAutomationView {
     this.view.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   }
 
-  get webContents(): WebContents {
-    return this.view.webContents;
-  }
+  get webContents(): WebContents { return this.view.webContents; }
 
   private readonly syncViewBounds = () => {
-    if (this.window.isDestroyed()) {
-      return;
-    }
-
+    if (this.window.isDestroyed()) return;
     const bounds = this.window.getContentBounds();
     this.view.setBounds(this.toViewBounds(bounds));
   };

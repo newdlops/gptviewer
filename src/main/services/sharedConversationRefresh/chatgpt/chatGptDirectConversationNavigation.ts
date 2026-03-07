@@ -5,8 +5,12 @@ import {
   CHATGPT_LOGIN_URL_PATTERNS,
   CHATGPT_SHARE_BUTTON_LABELS,
   CHATGPT_SHARE_BUTTON_TEST_IDS,
+  CHATGPT_UPDATE_AND_COPY_BUTTON_LABELS,
+  CHATGPT_UPDATE_AND_COPY_BUTTON_TEST_IDS,
 } from './ChatGptDomSelectors';
 import { ChatGptAutomationView } from './ChatGptAutomationView';
+import { waitForDirectConversationReady } from './chatGptConversationLoadHelpers';
+import { focusAutomationWindow } from './chatGptAutomationWindowFocus';
 import {
   buildActivateHeaderShareButtonScript,
   buildGetHeaderShareButtonPointScript,
@@ -40,6 +44,27 @@ const isSameConversationPage = (currentUrl: string, targetUrl: string) => {
   }
 };
 
+const waitForShareModalSignalAfterClick = async (
+  automationView: ChatGptAutomationView,
+  timeoutMs = 2_000,
+  intervalMs = 80,
+) => {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline && !automationView.isClosed()) {
+    focusAutomationWindow(automationView);
+    const hasDialog = await automationView.hasVisibleDialog();
+    const hasCopyAction = await automationView.hasButtonByLabels(
+      CHATGPT_UPDATE_AND_COPY_BUTTON_LABELS,
+      CHATGPT_UPDATE_AND_COPY_BUTTON_TEST_IDS,
+    );
+    if (hasDialog || hasCopyAction) {
+      return true;
+    }
+    await sleep(intervalMs);
+  }
+  return false;
+};
+
 export const openShareEntryPointFromDirectConversation = async (
   automationView: ChatGptAutomationView,
   chatUrl: string,
@@ -49,6 +74,8 @@ export const openShareEntryPointFromDirectConversation = async (
   const deadline = Date.now() + timeoutMs;
   let lastSnapshot = await automationView.getPageSnapshot();
   let attemptedSidebarClose = false;
+  let lastSharePointKey = '';
+  let stableSharePointCount = 0;
 
   while (Date.now() < deadline && !automationView.isClosed()) {
     lastSnapshot = await automationView.getPageSnapshot();
@@ -65,14 +92,14 @@ export const openShareEntryPointFromDirectConversation = async (
       continue;
     }
 
-    const activatedShare = await automationView.execute<boolean>(
-      buildActivateHeaderShareButtonScript(
-        CHATGPT_SHARE_BUTTON_LABELS,
-        CHATGPT_SHARE_BUTTON_TEST_IDS,
-      ),
+    const conversationReady = await waitForDirectConversationReady(
+      automationView,
+      6_000,
+      180,
     );
-    if (activatedShare) {
-      return { status: 'opened' };
+    if (!conversationReady) {
+      await sleep(intervalMs);
+      continue;
     }
 
     const sharePoint = await automationView.execute<{ x: number; y: number } | null>(
@@ -82,23 +109,53 @@ export const openShareEntryPointFromDirectConversation = async (
       ),
     );
     if (sharePoint) {
-      await automationView.moveMouse(sharePoint.x, sharePoint.y);
-      automationView.webContents.sendInputEvent({
-        button: 'left',
-        clickCount: 1,
-        type: 'mouseDown',
-        x: sharePoint.x,
-        y: sharePoint.y,
-      });
-      automationView.webContents.sendInputEvent({
-        button: 'left',
-        clickCount: 1,
-        type: 'mouseUp',
-        x: sharePoint.x,
-        y: sharePoint.y,
-      });
-      return { status: 'opened' };
+      const pointKey = `${sharePoint.x}:${sharePoint.y}`;
+      stableSharePointCount =
+        pointKey === lastSharePointKey ? stableSharePointCount + 1 : 1;
+      lastSharePointKey = pointKey;
+      if (stableSharePointCount < 2) {
+        await sleep(intervalMs);
+        continue;
+      }
+
+      focusAutomationWindow(automationView);
+      const activatedShare = await automationView.execute<boolean>(
+        buildActivateHeaderShareButtonScript(
+          CHATGPT_SHARE_BUTTON_LABELS,
+          CHATGPT_SHARE_BUTTON_TEST_IDS,
+        ),
+      );
+      if (!activatedShare) {
+        await automationView.moveMouse(sharePoint.x, sharePoint.y);
+        automationView.webContents.sendInputEvent({
+          button: 'left',
+          clickCount: 1,
+          type: 'mouseDown',
+          x: sharePoint.x,
+          y: sharePoint.y,
+        });
+        automationView.webContents.sendInputEvent({
+          button: 'left',
+          clickCount: 1,
+          type: 'mouseUp',
+          x: sharePoint.x,
+          y: sharePoint.y,
+        });
+      }
+      const modalOpened = await waitForShareModalSignalAfterClick(
+        automationView,
+        Math.max(Math.min(deadline - Date.now(), 8_000), 1_000),
+        80,
+      );
+      if (modalOpened) {
+        return { status: 'opened' };
+      }
+      await sleep(intervalMs);
+      continue;
     }
+
+    lastSharePointKey = '';
+    stableSharePointCount = 0;
 
     if (!attemptedSidebarClose) {
       attemptedSidebarClose = await automationView.waitAndClickButtonByLabels(

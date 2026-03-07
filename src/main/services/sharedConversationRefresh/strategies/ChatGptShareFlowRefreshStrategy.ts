@@ -5,8 +5,10 @@ import type {
   SharedConversationRefreshResult,
 } from '../../../../shared/refresh/sharedConversationRefresh';
 import { ChatGptAutomationView } from '../chatgpt/ChatGptAutomationView';
+import { focusAutomationWindow } from '../chatgpt/chatGptAutomationWindowFocus';
 import { openShareEntryPointFromDirectConversation } from '../chatgpt/chatGptDirectConversationNavigation';
 import {
+  closeShareModal,
   resolveRefreshedShareUrl,
   waitForShareCopyResolution,
   waitForShareModalOpen,
@@ -17,6 +19,7 @@ import {
 import { SharedConversationRefreshError } from '../SharedConversationRefreshError';
 
 type SharedConversationLoader = (url: string) => Promise<SharedConversationImport>;
+const MAX_SHARE_MODAL_ATTEMPTS = 2;
 
 export class ChatGptShareFlowRefreshStrategy {
   readonly mode = 'chatgpt-share-flow' as const;
@@ -38,66 +41,101 @@ export class ChatGptShareFlowRefreshStrategy {
     try {
       clipboard.clear();
       await automationView.load(request.projectUrl ?? request.chatUrl ?? 'https://chatgpt.com/');
-      const shareEntryPointResult = request.projectUrl
-        ? await openShareEntryPointFromProject(
-            automationView,
-            request.projectUrl,
-            request.chatUrl,
-          )
-        : await openShareEntryPointFromDirectConversation(
-            automationView,
-            request.chatUrl,
+      let shareCopyResolution:
+        | Awaited<ReturnType<typeof waitForShareCopyResolution>>
+        | null = null;
+      for (let attempt = 0; attempt < MAX_SHARE_MODAL_ATTEMPTS; attempt += 1) {
+        const shareEntryPointResult = request.projectUrl
+          ? await openShareEntryPointFromProject(
+              automationView,
+              request.projectUrl,
+              request.chatUrl,
+            )
+          : await openShareEntryPointFromDirectConversation(
+              automationView,
+              request.chatUrl,
+            );
+        if (shareEntryPointResult.status === 'login_required') {
+          throw new SharedConversationRefreshError(
+            'login_required',
+            'ChatGPT 로그인 또는 보안 확인이 끝나지 않았습니다. 보조 창에서 마친 뒤 다시 시도해 주세요.',
+            shareEntryPointResult.detail,
           );
-      if (shareEntryPointResult.status === 'login_required') {
-        throw new SharedConversationRefreshError(
-          'login_required',
-          'ChatGPT 로그인 또는 보안 확인이 끝나지 않았습니다. 보조 창에서 마친 뒤 다시 시도해 주세요.',
-          shareEntryPointResult.detail,
-        );
-      }
-      if (shareEntryPointResult.status === 'window_closed') {
-        throw new SharedConversationRefreshError(
-          'window_closed',
-          '보조 ChatGPT 창이 닫혀 새로고침을 중단했습니다.',
-          shareEntryPointResult.detail,
-        );
-      }
-      if (shareEntryPointResult.status === 'share_button_not_found') {
-        throw new SharedConversationRefreshError(
-          'share_button_not_found',
-          'ChatGPT 공유 버튼을 찾지 못했습니다. GPT 웹앱 구조가 바뀌었거나 현재 대화 화면이 완전히 열리지 않았을 수 있습니다.',
-          shareEntryPointResult.detail,
-        );
-      }
+        }
+        if (shareEntryPointResult.status === 'window_closed') {
+          throw new SharedConversationRefreshError(
+            'window_closed',
+            '보조 ChatGPT 창이 닫혀 새로고침을 중단했습니다.',
+            shareEntryPointResult.detail,
+          );
+        }
+        if (shareEntryPointResult.status === 'share_button_not_found') {
+          throw new SharedConversationRefreshError(
+            'share_button_not_found',
+            'ChatGPT 공유 버튼을 찾지 못했습니다. GPT 웹앱 구조가 바뀌었거나 현재 대화 화면이 완전히 열리지 않았을 수 있습니다.',
+            shareEntryPointResult.detail,
+          );
+        }
 
-      const shareModalState = await waitForShareModalOpen(automationView, 100);
-      if (shareModalState === 'window_closed') {
-        throw new SharedConversationRefreshError(
-          'window_closed',
-          '보조 ChatGPT 창이 닫혀 새로고침을 중단했습니다.',
-        );
-      }
-      if (shareModalState !== 'opened') {
-        const snapshot = await automationView.getPageSnapshot();
-        throw new SharedConversationRefreshError(
-          'share_button_not_found',
-          '공유하기를 눌렀지만 공유 모달이 열리지 않았습니다. 보조 창에서 모달 표시 상태를 확인해 주세요.',
-          `${snapshot.currentUrl}\nvisible actions: ${snapshot.actionLabels.join(' | ')}`,
-        );
-      }
+        focusAutomationWindow(automationView);
+        const shareModalState = await waitForShareModalOpen(automationView, 100);
+        if (shareModalState === 'window_closed') {
+          throw new SharedConversationRefreshError(
+            'window_closed',
+            '보조 ChatGPT 창이 닫혀 새로고침을 중단했습니다.',
+          );
+        }
+        if (shareModalState !== 'opened') {
+          const snapshot = await automationView.getPageSnapshot();
+          throw new SharedConversationRefreshError(
+            'share_button_not_found',
+            '공유하기를 눌렀지만 공유 모달이 열리지 않았습니다. 보조 창에서 모달 표시 상태를 확인해 주세요.',
+            `${snapshot.currentUrl}\nvisible actions: ${snapshot.actionLabels.join(' | ')}`,
+          );
+        }
 
-      const shareCopyResolution = await waitForShareCopyResolution(automationView);
-      if (shareCopyResolution.status === 'window_closed') {
-        throw new SharedConversationRefreshError(
-          'window_closed',
-          '보조 ChatGPT 창이 닫혀 새로고침을 중단했습니다.',
+        focusAutomationWindow(automationView);
+        shareCopyResolution = await waitForShareCopyResolution(
+          automationView,
+          250,
+          2_000,
         );
+        if (shareCopyResolution.status === 'window_closed') {
+          throw new SharedConversationRefreshError(
+            'window_closed',
+            '보조 ChatGPT 창이 닫혀 새로고침을 중단했습니다.',
+          );
+        }
+        if (shareCopyResolution.status === 'copied') {
+          break;
+        }
+        if (shareCopyResolution.status !== 'stalled') {
+          continue;
+        }
+        if (attempt >= MAX_SHARE_MODAL_ATTEMPTS - 1) {
+          break;
+        }
+        const closeShareModalResult = await closeShareModal(automationView);
+        if (closeShareModalResult === 'window_closed') {
+          throw new SharedConversationRefreshError(
+            'window_closed',
+            '보조 ChatGPT 창이 닫혀 새로고침을 중단했습니다.',
+          );
+        }
+        if (closeShareModalResult !== 'closed') {
+          const snapshot = await automationView.getPageSnapshot();
+          throw new SharedConversationRefreshError(
+            'share_update_button_not_found',
+            '공유 모달이 멈춰 다시 열기를 시도했지만 모달을 닫지 못했습니다.',
+            `${snapshot.currentUrl}\nvisible actions: ${snapshot.actionLabels.join(' | ')}`,
+          );
+        }
       }
-      if (shareCopyResolution.status !== 'copied') {
+      if (!shareCopyResolution || shareCopyResolution.status !== 'copied') {
         const snapshot = await automationView.getPageSnapshot();
         throw new SharedConversationRefreshError(
           'share_update_button_not_found',
-          '공유 링크 갱신 버튼이 활성화되지 않았습니다. 보조 창에서 공유 모달 상태를 확인해 주세요.',
+          '공유 모달이 2초 이상 반응하지 않아 다시 열기를 시도했지만 링크 복사를 준비하지 못했습니다.',
           `${snapshot.currentUrl}\nvisible actions: ${snapshot.actionLabels.join(' | ')}`,
         );
       }
