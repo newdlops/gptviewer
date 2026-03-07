@@ -1,0 +1,300 @@
+import {
+  WORKSPACE_SNAPSHOT_SCHEMA_VERSION,
+  type WorkspaceSnapshot,
+} from '../../../../shared/sync/workspaceSnapshot';
+import type { SharedConversationRefreshRequest } from '../../../../shared/refresh/sharedConversationRefresh';
+import type {
+  Conversation,
+  Message,
+  MessageSource,
+  WorkspaceNode,
+} from '../../../types/chat';
+
+export type WorkspacePersistenceState = {
+  activeConversationId: string;
+  conversations: Conversation[];
+  expandedFolderState: Record<string, boolean>;
+  workspaceTree: WorkspaceNode[];
+};
+
+const normalizeMessageSource = (value: unknown): MessageSource | null => {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  const title = typeof record.title === 'string' ? record.title.trim() : '';
+  const url = typeof record.url === 'string' ? record.url.trim() : '';
+
+  if (!title || !url) {
+    return null;
+  }
+
+  return {
+    attribution:
+      typeof record.attribution === 'string' && record.attribution.trim()
+        ? record.attribution.trim()
+        : undefined,
+    description:
+      typeof record.description === 'string' && record.description.trim()
+        ? record.description.trim()
+        : undefined,
+    iconUrl:
+      typeof record.iconUrl === 'string' && record.iconUrl.trim()
+        ? record.iconUrl.trim()
+        : undefined,
+    publisher:
+      typeof record.publisher === 'string' && record.publisher.trim()
+        ? record.publisher.trim()
+        : undefined,
+    title,
+    url,
+  };
+};
+
+const normalizeMessage = (value: unknown): Message | null => {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  const id = typeof record.id === 'string' ? record.id.trim() : '';
+  const role =
+    record.role === 'assistant' || record.role === 'user' ? record.role : null;
+  const text = typeof record.text === 'string' ? record.text : '';
+  const timestamp =
+    typeof record.timestamp === 'string' ? record.timestamp.trim() : '';
+  const sources = Array.isArray(record.sources)
+    ? record.sources
+        .map((source) => normalizeMessageSource(source))
+        .filter((source): source is MessageSource => !!source)
+    : [];
+
+  if (!id || !role || !text.trim()) {
+    return null;
+  }
+
+  return {
+    id,
+    role,
+    sources,
+    text,
+    timestamp,
+  };
+};
+
+const normalizeConversation = (value: unknown): Conversation | null => {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  const id = typeof record.id === 'string' ? record.id.trim() : '';
+  const title = typeof record.title === 'string' ? record.title.trim() : '';
+  const summary =
+    typeof record.summary === 'string' ? record.summary.trim() : '';
+  const updatedAt =
+    typeof record.updatedAt === 'string' ? record.updatedAt.trim() : '';
+  const messages = Array.isArray(record.messages)
+    ? record.messages
+        .map((message) => normalizeMessage(message))
+        .filter((message): message is Message => !!message)
+    : [];
+
+  if (!id || !title || !updatedAt) {
+    return null;
+  }
+
+  const normalizeRefreshRequest = (
+    requestValue: unknown,
+  ): SharedConversationRefreshRequest | undefined => {
+    if (!requestValue || typeof requestValue !== 'object') {
+      return undefined;
+    }
+
+    const requestRecord = requestValue as Record<string, unknown>;
+    const shareUrl =
+      typeof requestRecord.shareUrl === 'string' ? requestRecord.shareUrl.trim() : '';
+
+    if (!shareUrl) {
+      return undefined;
+    }
+
+    return {
+      chatUrl:
+        typeof requestRecord.chatUrl === 'string' && requestRecord.chatUrl.trim()
+          ? requestRecord.chatUrl.trim()
+          : undefined,
+      conversationTitle:
+        typeof requestRecord.conversationTitle === 'string' &&
+        requestRecord.conversationTitle.trim()
+          ? requestRecord.conversationTitle.trim()
+          : undefined,
+      mode:
+        requestRecord.mode === 'chatgpt-share-flow' ||
+        requestRecord.mode === 'direct-share-page'
+          ? requestRecord.mode
+          : undefined,
+      projectUrl:
+        typeof requestRecord.projectUrl === 'string' &&
+        requestRecord.projectUrl.trim()
+          ? requestRecord.projectUrl.trim()
+          : undefined,
+      shareUrl,
+    };
+  };
+
+  return {
+    fetchedAt:
+      typeof record.fetchedAt === 'string' && record.fetchedAt.trim()
+        ? record.fetchedAt.trim()
+        : undefined,
+    id,
+    isSharedImport: record.isSharedImport === true,
+    messages,
+    refreshRequest: normalizeRefreshRequest(record.refreshRequest),
+    sourceUrl:
+      typeof record.sourceUrl === 'string' && record.sourceUrl.trim()
+        ? record.sourceUrl.trim()
+        : undefined,
+    summary,
+    title,
+    updatedAt,
+  };
+};
+
+const normalizeWorkspaceNode = (value: unknown): WorkspaceNode | null => {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  const id = typeof record.id === 'string' ? record.id.trim() : '';
+  const type = record.type;
+
+  if (!id || (type !== 'conversation' && type !== 'folder')) {
+    return null;
+  }
+
+  if (type === 'conversation') {
+    const conversationId =
+      typeof record.conversationId === 'string' ? record.conversationId.trim() : '';
+
+    if (!conversationId) {
+      return null;
+    }
+
+    return {
+      conversationId,
+      id,
+      type,
+    };
+  }
+
+  const name = typeof record.name === 'string' ? record.name.trim() : '';
+  const children = Array.isArray(record.children)
+    ? record.children
+        .map((childNode) => normalizeWorkspaceNode(childNode))
+        .filter((childNode): childNode is WorkspaceNode => !!childNode)
+    : [];
+
+  if (!name) {
+    return null;
+  }
+
+  return {
+    children,
+    id,
+    name,
+    type,
+  };
+};
+
+const normalizeExpandedFolderState = (
+  value: unknown,
+): Record<string, boolean> => {
+  if (!value || typeof value !== 'object') {
+    return {};
+  }
+
+  return Object.entries(value as Record<string, unknown>).reduce<
+    Record<string, boolean>
+  >((state, [folderId, isExpanded]) => {
+    if (typeof folderId === 'string' && typeof isExpanded === 'boolean') {
+      state[folderId] = isExpanded;
+    }
+
+    return state;
+  }, {});
+};
+
+export const buildWorkspaceSnapshot = (
+  state: WorkspacePersistenceState,
+  savedAt = new Date().toISOString(),
+): WorkspaceSnapshot => ({
+  activeConversationId: state.activeConversationId,
+  conversations: state.conversations,
+  expandedFolderState: state.expandedFolderState,
+  savedAt,
+  schemaVersion: WORKSPACE_SNAPSHOT_SCHEMA_VERSION,
+  workspaceTree: state.workspaceTree,
+});
+
+export const workspaceStateFromSnapshot = (
+  snapshot: WorkspaceSnapshot,
+): WorkspacePersistenceState => ({
+  activeConversationId: snapshot.activeConversationId,
+  conversations: snapshot.conversations,
+  expandedFolderState: snapshot.expandedFolderState,
+  workspaceTree: snapshot.workspaceTree,
+});
+
+export const normalizeWorkspaceSnapshot = (
+  value: unknown,
+): WorkspaceSnapshot | null => {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  const schemaVersion = record.schemaVersion;
+
+  if (schemaVersion !== WORKSPACE_SNAPSHOT_SCHEMA_VERSION) {
+    return null;
+  }
+
+  const conversations = Array.isArray(record.conversations)
+    ? record.conversations
+        .map((conversation) => normalizeConversation(conversation))
+        .filter((conversation): conversation is Conversation => !!conversation)
+    : [];
+  const workspaceTree = Array.isArray(record.workspaceTree)
+    ? record.workspaceTree
+        .map((node) => normalizeWorkspaceNode(node))
+        .filter((node): node is WorkspaceNode => !!node)
+    : [];
+  const expandedFolderState = normalizeExpandedFolderState(
+    record.expandedFolderState,
+  );
+  const requestedActiveConversationId =
+    typeof record.activeConversationId === 'string'
+      ? record.activeConversationId
+      : '';
+  const hasRequestedConversation = conversations.some(
+    (conversation) => conversation.id === requestedActiveConversationId,
+  );
+
+  return {
+    activeConversationId: hasRequestedConversation
+      ? requestedActiveConversationId
+      : conversations[0]?.id || '',
+    conversations,
+    expandedFolderState,
+    savedAt:
+      typeof record.savedAt === 'string' && record.savedAt.trim()
+        ? record.savedAt.trim()
+        : new Date().toISOString(),
+    schemaVersion: WORKSPACE_SNAPSHOT_SCHEMA_VERSION,
+    workspaceTree,
+  };
+};

@@ -1,0 +1,2 @@
+resources/bin/jdk/Contents/Home/lib/src.zip filter=lfs diff=lfs merge=lfs -text
+resources/bin/jdk/Contents/Home/lib/modules filter=lfs diff=lfs merge=lfs -text
