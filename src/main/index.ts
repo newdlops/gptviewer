@@ -1,5 +1,9 @@
 import { app, BrowserWindow, ipcMain, shell } from 'electron';
 import type {
+  ProjectConversationImportRequest,
+  ProjectConversationImportResult,
+} from '../shared/import/projectConversationImport';
+import type {
   SharedConversationImport,
   SharedConversationMessage,
   SharedConversationRefreshRequest,
@@ -14,6 +18,7 @@ import {
   getHostnameFallback,
   type SourcePreviewSnapshot,
 } from './parsers/sourcePreviewParser';
+import { ProjectConversationImportService } from './services/projectConversationImport/ProjectConversationImportService';
 import { SharedConversationRefreshService } from './services/sharedConversationRefresh/SharedConversationRefreshService';
 import { SharedConversationRefreshError } from './services/sharedConversationRefresh/SharedConversationRefreshError';
 
@@ -751,6 +756,9 @@ const loadSharedConversation = async (
 const sharedConversationRefreshService = new SharedConversationRefreshService({
   loadSharedConversation,
 });
+const projectConversationImportService = new ProjectConversationImportService(
+  (request) => sharedConversationRefreshService.refreshConversation(request),
+);
 
 const loadRenderedSourcePreview = async (
   sourceUrl: string,
@@ -839,6 +847,36 @@ ipcMain.handle('shared-conversation:fetch', async (_event, rawUrl: string) => {
     );
   }
 });
+
+ipcMain.handle(
+  'project-conversation:import',
+  async (_event, request: ProjectConversationImportRequest) => {
+    if (!request || typeof request !== 'object') {
+      throw new Error('프로젝트 불러오기 요청이 올바르지 않습니다.');
+    }
+
+    try {
+      return (await projectConversationImportService.importProject(
+        request.projectUrl,
+      )) as ProjectConversationImportResult;
+    } catch (error) {
+      if (error instanceof SharedConversationRefreshError) {
+        throw new Error(
+          encodeSharedConversationRefreshError({
+            code: error.code,
+            detail: error.detail,
+            message: error.message,
+          }),
+        );
+      }
+      throw new Error(
+        error instanceof Error
+          ? error.message
+          : '프로젝트 대화를 불러오지 못했습니다.',
+      );
+    }
+  },
+);
 
 ipcMain.handle(
   'shared-conversation:refresh',

@@ -14,12 +14,15 @@ const CHATGPT_SHARE_MODAL_DISMISS_LABELS = [
 ];
 
 export type ShareModalProgressSnapshot = {
+  copyActionLabel: string;
+  hasDocumentFocus: boolean;
   hasCopyAction: boolean;
   hasCopySuccess: boolean;
   hasDialog: boolean;
   hasEnabledCopyAction: boolean;
   hasSharedUrlCandidate: boolean;
   signature: string;
+  visibilityState: string;
 };
 
 export const getShareModalProgressSnapshot = async (
@@ -69,6 +72,14 @@ export const getShareModalProgressSnapshot = async (
         .map((scope) => normalize(scope instanceof HTMLElement ? scope.innerText : ''))
         .join(' ')
         .slice(0, 400);
+      const copyActionLabel =
+        copyAction instanceof HTMLElement
+          ? normalize(
+              copyAction.textContent ||
+              copyAction.getAttribute('aria-label') ||
+              copyAction.getAttribute('title'),
+            )
+          : '';
       const hasSharedUrlCandidate = scopes.some((scope) =>
         Array.from(scope.querySelectorAll('input, textarea, a[href]')).some((element) => {
           if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
@@ -82,6 +93,8 @@ export const getShareModalProgressSnapshot = async (
       );
       const hasCopySuccess = successMarkers.some((marker) => dialogText.includes(marker));
       return {
+        copyActionLabel,
+        hasDocumentFocus: document.hasFocus(),
         hasCopyAction: Boolean(copyAction),
         hasCopySuccess,
         hasDialog: dialogRoots.length > 0,
@@ -93,8 +106,11 @@ export const getShareModalProgressSnapshot = async (
           Boolean(copyAction) && isEnabled(copyAction) ? 'enabled' : 'disabled',
           hasSharedUrlCandidate ? 'url' : 'no-url',
           hasCopySuccess ? 'success' : 'pending',
+          document.hasFocus() ? 'focused' : 'blurred',
+          document.visibilityState || 'unknown',
           dialogText,
         ].join('|'),
+        visibilityState: document.visibilityState || 'unknown',
       };
     })()
   `);

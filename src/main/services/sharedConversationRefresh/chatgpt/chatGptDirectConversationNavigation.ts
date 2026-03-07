@@ -10,7 +10,6 @@ import {
 } from './ChatGptDomSelectors';
 import { ChatGptAutomationView } from './ChatGptAutomationView';
 import { waitForDirectConversationReady } from './chatGptConversationLoadHelpers';
-import { focusAutomationWindow } from './chatGptAutomationWindowFocus';
 import {
   buildActivateHeaderShareButtonScript,
   buildGetHeaderShareButtonPointScript,
@@ -51,7 +50,6 @@ const waitForShareModalSignalAfterClick = async (
 ) => {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline && !automationView.isClosed()) {
-    focusAutomationWindow(automationView);
     const hasDialog = await automationView.hasVisibleDialog();
     const hasCopyAction = await automationView.hasButtonByLabels(
       CHATGPT_UPDATE_AND_COPY_BUTTON_LABELS,
@@ -118,7 +116,6 @@ export const openShareEntryPointFromDirectConversation = async (
         continue;
       }
 
-      focusAutomationWindow(automationView);
       const activatedShare = await automationView.execute<boolean>(
         buildActivateHeaderShareButtonScript(
           CHATGPT_SHARE_BUTTON_LABELS,

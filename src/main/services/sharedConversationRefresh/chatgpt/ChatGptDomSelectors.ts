@@ -102,4 +102,5 @@ export const CHATGPT_CHALLENGE_TEXT_MARKERS = [
   'human verification',
 ];
 
-export const CHATGPT_SHARE_URL_PATTERN = /^https:\/\/chatgpt\.com\/share\/[\w-]+/i;
+export const CHATGPT_SHARE_URL_PATTERN =
+  /^https:\/\/chatgpt\.com\/share\/(?!(?:create|new)(?:[/?#]|$))[a-z0-9-]{16,}(?:[/?#].*)?$/i;

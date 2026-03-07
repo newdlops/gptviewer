@@ -10,6 +10,7 @@ import { useWorkspaceSnapshotState } from './features/app/hooks/useWorkspaceSnap
 import { ConversationViewer } from './features/app/components/ConversationViewer';
 import { WorkspaceSidebar } from './features/app/components/WorkspaceSidebar';
 import { GoogleDriveModals } from './features/app/components/modals/GoogleDriveModals';
+import { ProjectConversationImportModal } from './features/app/components/modals/ProjectConversationImportModal';
 import { SharedConversationImportModal } from './features/app/components/modals/SharedConversationImportModal';
 import { SharedConversationRefreshConfigModal } from './features/app/components/modals/SharedConversationRefreshConfigModal';
 import { WorkspaceModals } from './features/app/components/modals/WorkspaceModals';
@@ -84,6 +85,7 @@ function AppContent() {
         onDeleteFolder={workspaceActions.handleFolderDeleteRequest}
         onFolderToggle={workspaceActions.handleFolderToggle}
         onImportOpen={() => workspaceActions.setIsImportModalOpen(true)}
+        onProjectImportOpen={() => workspaceActions.setIsProjectImportModalOpen(true)}
         onMoveFolder={workspaceActions.openMoveFolderModal}
         onNodeDrop={workspaceActions.handleTreeNodeDrop}
         onNodeReorder={workspaceActions.handleTreeNodeReorder}
@@ -146,6 +148,16 @@ function AppContent() {
         onShareUrlChange={workspaceActions.setShareUrl}
         onSubmit={workspaceActions.handleImportSharedConversation}
         shareUrl={workspaceActions.shareUrl}
+      />
+
+      <ProjectConversationImportModal
+        importError={workspaceActions.projectImportError}
+        isImporting={workspaceActions.isImportingProjectConversations}
+        isOpen={workspaceActions.isProjectImportModalOpen}
+        onClose={() => workspaceActions.setIsProjectImportModalOpen(false)}
+        onProjectUrlChange={workspaceActions.setProjectImportUrl}
+        onSubmit={workspaceActions.handleImportProjectConversations}
+        projectUrl={workspaceActions.projectImportUrl}
       />
 
       <SharedConversationRefreshConfigModal

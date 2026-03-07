@@ -15,6 +15,7 @@ type WorkspaceSidebarProps = {
   onDeleteFolder: (folderId: string) => void;
   onFolderToggle: (folderId: string) => void;
   onImportOpen: () => void;
+  onProjectImportOpen: () => void;
   onMoveFolder: (folderId: string) => void;
   onNodeDrop: (nodeId: string, destinationFolderId: string | null) => void;
   onNodeReorder: (nodeId: string, targetNodeId: string, position: 'after' | 'before') => void;
@@ -40,6 +41,7 @@ export function WorkspaceSidebar({
   onDeleteFolder,
   onFolderToggle,
   onImportOpen,
+  onProjectImportOpen,
   onMoveFolder,
   onNodeDrop,
   onNodeReorder,
@@ -58,11 +60,15 @@ export function WorkspaceSidebar({
           <div className="drawer__actions">
             <Button variant="ghost" onClick={onImportOpen} aria-label="공유 대화 불러오기" title="공유 대화 불러오기">
               <span className="drawer-button__icon" aria-hidden="true">↗</span>
-              <span className="drawer-button__label">공유 대화 불러오기</span>
+              <span className="drawer-button__label">공유 대화</span>
+            </Button>
+            <Button variant="ghost" onClick={onProjectImportOpen} aria-label="프로젝트 불러오기" title="프로젝트 불러오기">
+              <span className="drawer-button__icon" aria-hidden="true">▦</span>
+              <span className="drawer-button__label">프로젝트</span>
             </Button>
             <Button variant="secondary" onClick={() => onCreateFolder(null)} aria-label="새 폴더 만들기" title="새 폴더 만들기">
               <span className="drawer-button__icon" aria-hidden="true">+</span>
-              <span className="drawer-button__label">새 폴더 만들기</span>
+              <span className="drawer-button__label">새 폴더</span>
             </Button>
           </div>
         </div>

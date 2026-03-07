@@ -1,5 +1,6 @@
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react';
 import type { Conversation, SourceDrawerState, WorkspaceNode } from '../../../types/chat';
+import { useProjectConversationImportActions } from './useProjectConversationImportActions';
 import { useSharedConversationActions } from './useSharedConversationActions';
 import { useWorkspaceTreeActions } from './useWorkspaceTreeActions';
 
@@ -41,8 +42,19 @@ export function useWorkspaceActions(args: UseWorkspaceActionsArgs) {
     setWorkspaceTree: args.setWorkspaceTree,
     workspaceTree: args.workspaceTree,
   });
+  const projectConversationImportActions = useProjectConversationImportActions({
+    conversations: args.conversations,
+    messageHeightCacheRef: args.messageHeightCacheRef,
+    setActiveConversationId: args.setActiveConversationId,
+    setConversations: args.setConversations,
+    setExpandedFolderState: args.setExpandedFolderState,
+    setSourceDrawer: args.setSourceDrawer,
+    setWorkspaceTree: args.setWorkspaceTree,
+    workspaceTree: args.workspaceTree,
+  });
 
   return {
+    ...projectConversationImportActions,
     ...treeActions,
     ...sharedConversationActions,
   };

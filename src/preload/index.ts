@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
+import type { ProjectConversationImportRequest } from '../shared/import/projectConversationImport';
 import type { GoogleDriveConfigInput } from '../shared/sync/googleDriveSync';
 import type { SharedConversationRefreshRequest } from '../shared/refresh/sharedConversationRefresh';
 import type { WorkspaceSnapshot } from '../shared/sync/workspaceSnapshot';
@@ -8,6 +9,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('source-icon:fetch', iconUrl, refererUrl),
   fetchSharedConversation: (url: string) =>
     ipcRenderer.invoke('shared-conversation:fetch', url),
+  importProjectConversations: (request: ProjectConversationImportRequest) =>
+    ipcRenderer.invoke('project-conversation:import', request),
   refreshSharedConversation: (request: SharedConversationRefreshRequest) =>
     ipcRenderer.invoke('shared-conversation:refresh', request),
   fetchSourcePreview: (url: string) =>

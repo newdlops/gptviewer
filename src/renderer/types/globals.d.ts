@@ -1,4 +1,8 @@
 import type {
+  ProjectConversationImportRequest,
+  ProjectConversationImportResult,
+} from '../../shared/import/projectConversationImport';
+import type {
   GoogleDriveConfigInput,
   GoogleDriveConfigSummary,
   GoogleDriveSyncStatus,
@@ -31,6 +35,9 @@ interface ElectronAPI {
     refererUrl?: string,
   ): Promise<SourceIconImport | null>;
   fetchSharedConversation(url: string): Promise<SharedConversationImport>;
+  importProjectConversations(
+    request: ProjectConversationImportRequest,
+  ): Promise<ProjectConversationImportResult>;
   refreshSharedConversation(
     request: SharedConversationRefreshRequest,
   ): Promise<SharedConversationRefreshResult>;
