@@ -1,4 +1,12 @@
-import type { ReactNode } from 'react';
+import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+
+const MODAL_STACK_BASE_Z_INDEX = 200;
+let nextModalStackOrder = 0;
+
+function allocateModalStackOrder() {
+  nextModalStackOrder += 1;
+  return nextModalStackOrder;
+}
 
 type ModalProps = {
   ariaLabelledBy: string;
@@ -17,12 +25,28 @@ export function Modal({
   onClose,
   title,
 }: ModalProps) {
+  const [stackOrder, setStackOrder] = useState(() => (isOpen ? allocateModalStackOrder() : 0));
+  const wasOpenRef = useRef(isOpen);
+
+  useLayoutEffect(() => {
+    if (isOpen && !wasOpenRef.current) {
+      setStackOrder(allocateModalStackOrder());
+    }
+
+    wasOpenRef.current = isOpen;
+  }, [isOpen]);
+
   if (!isOpen) {
     return null;
   }
 
   return (
-    <div className="modal-backdrop" role="presentation" onClick={onClose}>
+    <div
+      className="modal-backdrop"
+      role="presentation"
+      onClick={onClose}
+      style={{ zIndex: MODAL_STACK_BASE_Z_INDEX + stackOrder }}
+    >
       <section
         className="modal"
         role="dialog"

@@ -1,14 +1,15 @@
-import { useEffect, useState, type Dispatch, type SetStateAction, type MutableRefObject, type FormEvent } from 'react';
-import { normalizeImportedConversation } from '../../conversations/lib/normalizers';
-import {
-  addFolderToTree,
-  canDropNodeInFolder,
-  findConversationNodeId,
-  insertConversationIntoFolder,
-  moveNodeInTree,
-} from '../../conversations/lib/workspaceTree';
+import { useEffect, useRef, useState, type Dispatch, type SetStateAction, type MutableRefObject, type FormEvent } from 'react';
+import type { ProjectConversationImportFailure, ProjectConversationImportMode, ProjectConversationImportProgress, ProjectConversationLink, ProjectConversationSyncSummary } from '../../../../shared/import/projectConversationImport';
 import type { Conversation, SourceDrawerState, WorkspaceNode } from '../../../types/chat';
-import { buildConversationFromImport, normalizeProjectUrl } from '../lib/sharedConversationUtils';
+import { normalizeProjectUrl } from '../lib/sharedConversationUtils';
+import { getRetryableProjectConversationFailures } from '../lib/projectConversationImportHelpers';
+import { runProjectConversationImportWorkflow } from '../lib/projectConversationImportWorkflow';
+import { retryProjectConversationImportWorkflow } from '../lib/projectConversationRetryWorkflow';
+import {
+  loadProjectConversationImportPreferences,
+  saveProjectConversationImportPreferences,
+  type ProjectConversationImportStrategyPreference,
+} from '../lib/projectConversationImportPreferences';
 
 type UseProjectConversationImportActionsArgs = {
   conversations: Conversation[];
@@ -31,11 +32,32 @@ export function useProjectConversationImportActions({
   setWorkspaceTree,
   workspaceTree,
 }: UseProjectConversationImportActionsArgs) {
+  const normalizeWorkerCount = (workerCount: number) => {
+    if (!Number.isFinite(workerCount)) {
+      return 10;
+    }
+    return Math.min(20, Math.max(1, Math.round(workerCount)));
+  };
+
+  const [projectImportPreferences, setProjectImportPreferences] = useState(() =>
+    loadProjectConversationImportPreferences(),
+  );
   const [isProjectImportModalOpen, setIsProjectImportModalOpen] = useState(false);
   const [isImportingProjectConversations, setIsImportingProjectConversations] =
     useState(false);
   const [projectImportError, setProjectImportError] = useState('');
+  const [projectImportMode, setProjectImportMode] = useState<ProjectConversationImportMode>('import');
+  const [projectImportProgress, setProjectImportProgress] = useState<ProjectConversationImportProgress | null>(null);
+  const [projectImportFailures, setProjectImportFailures] = useState<ProjectConversationImportFailure[]>([]);
+  const [projectSyncSummary, setProjectSyncSummary] = useState<ProjectConversationSyncSummary | null>(null);
   const [projectImportUrl, setProjectImportUrl] = useState('');
+  const [projectImportParentFolderId, setProjectImportParentFolderId] = useState<string | null>(null);
+  const [retryingFailureChatUrl, setRetryingFailureChatUrl] = useState('');
+  const projectImportContextRef = useRef<{ folderId: string; importStartedAt: number; projectUrl: string } | null>(null);
+  const projectImportTargetFolderIdRef = useRef<string | null>(null);
+  const projectCollectedConversationsRef = useRef<ProjectConversationLink[]>([]);
+  const projectConversationIdByUrlRef = useRef<Map<string, string>>(new Map());
+  const importedProjectConversationUrlsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     if (isProjectImportModalOpen) {
@@ -43,12 +65,34 @@ export function useProjectConversationImportActions({
     }
     setIsImportingProjectConversations(false);
     setProjectImportError('');
+    setProjectImportMode('import');
+    setProjectImportFailures([]);
+    setProjectImportProgress(null);
+    setProjectSyncSummary(null);
     setProjectImportUrl('');
+    setProjectImportParentFolderId(null);
+    setRetryingFailureChatUrl('');
+    projectImportContextRef.current = null;
+    projectImportTargetFolderIdRef.current = null;
+    projectCollectedConversationsRef.current = [];
+    projectConversationIdByUrlRef.current = new Map();
+    importedProjectConversationUrlsRef.current = new Set();
   }, [isProjectImportModalOpen]);
 
-  const handleImportProjectConversations = async (
-    event: FormEvent<HTMLFormElement>,
-  ) => {
+  useEffect(() => {
+    if (!window.electronAPI?.onProjectConversationImportProgress) return undefined;
+    return window.electronAPI.onProjectConversationImportProgress(setProjectImportProgress);
+  }, []);
+
+  useEffect(() => {
+    saveProjectConversationImportPreferences(projectImportPreferences);
+  }, [projectImportPreferences]);
+
+  const cleanupBackgroundAutomationPool = async () => {
+    await window.electronAPI?.cleanupChatGptAutomationBackgroundPool();
+  };
+
+  const handleImportProjectConversations = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (isImportingProjectConversations) {
       return;
@@ -61,115 +105,35 @@ export function useProjectConversationImportActions({
     }
 
     setProjectImportError('');
+    setProjectImportFailures([]);
+    setProjectImportProgress(null);
+    setProjectSyncSummary(null);
     setIsImportingProjectConversations(true);
     try {
-      const importedProject = await window.electronAPI?.importProjectConversations({
-        projectUrl: normalizedProjectUrl,
-      });
-      if (!importedProject) {
-        throw new Error('프로젝트 대화를 불러오는 기능을 사용할 수 없습니다.');
-      }
-
-      const importedEntries = importedProject.conversations
-        .map((conversation, index) => {
-          const normalizedConversation = normalizeImportedConversation(conversation);
-          if (!normalizedConversation || normalizedConversation.messages.length === 0) {
-            return null;
-          }
-
-          const existingConversation = conversations.find(
-            (item) =>
-              (normalizedConversation.refreshRequest?.chatUrl &&
-                item.refreshRequest?.chatUrl ===
-                  normalizedConversation.refreshRequest.chatUrl) ||
-              item.sourceUrl === normalizedConversation.sourceUrl,
-          );
-          const conversationId =
-            existingConversation?.id ?? `shared-${Date.now()}-${index}`;
-
-          return {
-            conversationId,
-            normalizedConversation,
-          };
-        })
-        .filter(
-          (
-            entry,
-          ): entry is {
-            conversationId: string;
-            normalizedConversation: NonNullable<
-              ReturnType<typeof normalizeImportedConversation>
-            >;
-          } => !!entry,
-        );
-
-      if (importedEntries.length === 0) {
-        throw new Error(
-          importedProject.failures[0]?.message ??
-            '프로젝트에서 불러올 수 있는 대화를 찾지 못했습니다.',
-        );
-      }
-
-      importedEntries.forEach((entry) => {
-        messageHeightCacheRef.current[entry.conversationId] = {};
-      });
-
-      setConversations((currentConversations) => {
-        const remainingConversations = [...currentConversations];
-        const createdConversations = importedEntries.map((entry) => {
-          const nextConversation = buildConversationFromImport(
-            entry.conversationId,
-            entry.normalizedConversation,
-          );
-          const existingIndex = remainingConversations.findIndex(
-            (conversation) => conversation.id === entry.conversationId,
-          );
-          if (existingIndex >= 0) {
-            remainingConversations[existingIndex] = nextConversation;
-            return null;
-          }
-          return nextConversation;
-        });
-
-        return [
-          ...createdConversations.filter(
-            (conversation): conversation is Conversation => !!conversation,
-          ),
-          ...remainingConversations,
-        ];
-      });
-
-      const folderName = importedProject.projectTitle.trim() || '프로젝트';
-      const { folderId, tree: nextWorkspaceTree } = addFolderToTree(
+      await runProjectConversationImportWorkflow({
+        conversations,
+        importedProjectConversationUrlsRef,
+        messageHeightCacheRef,
+        normalizedProjectUrl,
+        projectCollectedConversationsRef,
+        projectConversationIdByUrlRef,
+        projectImportContextRef,
+        projectImportMode,
+        projectImportParentFolderId,
+        projectImportPreferences,
+        projectImportTargetFolderId: projectImportTargetFolderIdRef.current,
+        setActiveConversationId,
+        setConversations,
+        setExpandedFolderState,
+        setIsProjectImportModalOpen,
+        setProjectImportError,
+        setProjectImportFailures,
+        setProjectImportProgress,
+        setProjectSyncSummary,
+        setSourceDrawer,
+        setWorkspaceTree,
         workspaceTree,
-        folderName,
-        null,
-      );
-      const orderedConversationIds = importedEntries.map(
-        (entry) => entry.conversationId,
-      );
-      const finalWorkspaceTree = orderedConversationIds
-        .slice()
-        .reverse()
-        .reduce<WorkspaceNode[]>((currentTree, conversationId) => {
-          const existingNodeId = findConversationNodeId(currentTree, conversationId);
-          if (!existingNodeId) {
-            return insertConversationIntoFolder(currentTree, folderId, conversationId);
-          }
-          if (!canDropNodeInFolder(currentTree, existingNodeId, folderId)) {
-            return currentTree;
-          }
-          return moveNodeInTree(currentTree, existingNodeId, folderId);
-        }, nextWorkspaceTree);
-
-      setWorkspaceTree(finalWorkspaceTree);
-      setExpandedFolderState((current) => ({
-        ...current,
-        [folderId]: true,
-      }));
-      setSourceDrawer(null);
-      setActiveConversationId(importedEntries[0].conversationId);
-      setIsProjectImportModalOpen(false);
+      });
     } catch (error) {
       setProjectImportError(
         error instanceof Error
@@ -178,16 +142,125 @@ export function useProjectConversationImportActions({
       );
     } finally {
       setIsImportingProjectConversations(false);
+      await cleanupBackgroundAutomationPool();
     }
   };
 
+  const handleRetryProjectConversationFailure = async (
+    chatUrl: string,
+    cleanupAfterRetry = true,
+  ) => {
+    if (isImportingProjectConversations || retryingFailureChatUrl) {
+      return;
+    }
+    const failure = projectImportFailures.find((item) => item.chatUrl === chatUrl);
+    if (!projectImportContextRef.current || !failure || failure.status === 'failed') {
+      return;
+    }
+
+    setRetryingFailureChatUrl(chatUrl);
+    try {
+      await retryProjectConversationImportWorkflow({
+        conversations,
+        failure,
+        importedProjectConversationUrlsRef,
+        messageHeightCacheRef,
+        projectCollectedConversationsRef,
+        projectConversationIdByUrlRef,
+        projectImportContextRef,
+        projectImportFailures,
+        projectImportMode,
+        projectImportPreferences,
+        setActiveConversationId,
+        setConversations,
+        setExpandedFolderState,
+        setIsProjectImportModalOpen,
+        setProjectImportError,
+        setProjectImportFailures,
+        setProjectImportProgress,
+        setProjectSyncSummary,
+        setSourceDrawer,
+        setWorkspaceTree,
+        workspaceTree,
+      });
+    } finally {
+      setRetryingFailureChatUrl('');
+      if (cleanupAfterRetry) {
+        await cleanupBackgroundAutomationPool();
+      }
+    }
+  };
+
+  const handleRetryAllProjectConversationFailures = async () => {
+    const retryableFailures = getRetryableProjectConversationFailures(projectImportFailures);
+    try {
+      for (const failure of retryableFailures) {
+        await handleRetryProjectConversationFailure(failure.chatUrl, false);
+      }
+    } finally {
+      await cleanupBackgroundAutomationPool();
+    }
+  };
+
+  const openProjectImportModal = () => {
+    projectImportTargetFolderIdRef.current = null;
+    setProjectImportMode('import');
+    setProjectImportError('');
+    setProjectImportUrl('');
+    setProjectImportParentFolderId(null);
+    setProjectSyncSummary(null);
+    setIsProjectImportModalOpen(true);
+  };
+
+  const setProjectImportWorkerCount = (workerCount: number) => {
+    setProjectImportPreferences((current) => ({
+      ...current,
+      workerCount: normalizeWorkerCount(workerCount),
+    }));
+  };
+
+  const setProjectImportPreferredStrategy = (
+    preferredStrategy: ProjectConversationImportStrategyPreference,
+  ) => {
+    setProjectImportPreferences((current) => ({
+      ...current,
+      preferredStrategy,
+    }));
+  };
+
+  const openProjectFolderSync = (folderId: string, projectUrl: string) => {
+    projectImportTargetFolderIdRef.current = folderId;
+    setProjectImportMode('sync');
+    setProjectImportError('');
+    setProjectImportUrl(projectUrl);
+    setProjectImportParentFolderId(null);
+    setProjectSyncSummary(null);
+    setIsProjectImportModalOpen(true);
+  };
+
   return {
+    canRetryAllProjectConversationFailures: getRetryableProjectConversationFailures(projectImportFailures).length > 0,
     handleImportProjectConversations,
+    handleRetryAllProjectConversationFailures,
+    handleRetryProjectConversationFailure,
+    openProjectImportModal,
+    openProjectFolderSync,
     isImportingProjectConversations,
     isProjectImportModalOpen,
     projectImportError,
+    projectImportMode,
+    projectImportFailures,
+    projectImportProgress,
+    projectImportParentFolderId,
+    projectImportPreferredStrategy: projectImportPreferences.preferredStrategy,
     projectImportUrl,
+    projectImportWorkerCount: projectImportPreferences.workerCount,
+    projectSyncSummary,
+    retryingProjectConversationUrl: retryingFailureChatUrl,
     setIsProjectImportModalOpen,
+    setProjectImportParentFolderId,
+    setProjectImportPreferredStrategy,
     setProjectImportUrl,
+    setProjectImportWorkerCount,
   };
 }

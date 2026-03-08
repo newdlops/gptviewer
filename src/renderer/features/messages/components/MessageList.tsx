@@ -1,6 +1,7 @@
 import {
   AnchorHTMLAttributes,
   HTMLAttributes,
+  memo,
   ReactNode,
   useEffect,
   useLayoutEffect,
@@ -31,8 +32,15 @@ import { MarkdownCodeBlock } from './MarkdownCodeBlock';
 
 const MESSAGE_LIST_GAP = 14;
 const MESSAGE_LIST_BOTTOM_PADDING = 8;
-const MESSAGE_LIST_OVERSCAN = 720;
+const MESSAGE_LIST_OVERSCAN = 800;
 const MESSAGE_LIST_FALLBACK_VIEWPORT_HEIGHT = 720;
+const CODE_BLOCK_KEEPALIVE_MULTIPLIER_ABOVE = 1.25;
+const CODE_BLOCK_KEEPALIVE_MULTIPLIER_BELOW = 1.75;
+const DIAGRAM_KEEPALIVE_MULTIPLIER_ABOVE = 2;
+const DIAGRAM_KEEPALIVE_MULTIPLIER_BELOW = 3;
+const CODE_BLOCK_PATTERN = /```[\w+-]*\n|```/;
+const RENDERABLE_DIAGRAM_PATTERN =
+  /```(?:mermaid|svg|xml|html|image\/svg\+xml)\b|<svg[\s>]/i;
 
 type MessageListProps = {
   activeConversation: Conversation;
@@ -49,6 +57,7 @@ type MessageListProps = {
   sourceDrawerMessageId?: string;
   sourcePreviewCache: Record<string, SourcePreview>;
   sourcePreviewLoading: Record<string, boolean>;
+  renderNonce: number;
   themeMode: ThemeMode;
 };
 
@@ -65,11 +74,27 @@ type VirtualizedMessageBubbleProps = {
   onHeightChange: (messageId: string, height: number) => void;
   onSourcePreviewNeeded: (source: MessageSource) => void;
   onToggleSourceDrawer: (message: Message) => void;
+  renderNonce: number;
   sourcePreviewCache: Record<string, SourcePreview>;
   sourcePreviewLoading: Record<string, boolean>;
   themeMode: ThemeMode;
   top: number;
 };
+
+const haveRelevantSourceStatesChanged = (
+  sources: MessageSource[],
+  previousCache: Record<string, SourcePreview>,
+  nextCache: Record<string, SourcePreview>,
+  previousLoading: Record<string, boolean>,
+  nextLoading: Record<string, boolean>,
+) =>
+  sources.some((source) => {
+    const url = source.url;
+    return (
+      previousCache[url] !== nextCache[url] ||
+      !!previousLoading[url] !== !!nextLoading[url]
+    );
+  });
 
 const estimateMessageHeight = (message: Message): number => {
   const baseHeight = message.role === 'assistant' ? 128 : 92;
@@ -117,12 +142,13 @@ const findEndIndex = (layouts: MessageLayout[], targetOffset: number): number =>
   return result === -1 ? 0 : result;
 };
 
-function VirtualizedMessageBubble({
+function VirtualizedMessageBubbleComponent({
   isSourceDrawerOpen,
   message,
   onHeightChange,
   onSourcePreviewNeeded,
   onToggleSourceDrawer,
+  renderNonce,
   sourcePreviewCache,
   sourcePreviewLoading,
   themeMode,
@@ -158,7 +184,8 @@ function VirtualizedMessageBubble({
     };
   }, [message.id, onHeightChange]);
 
-  const markdownComponents = {
+  const markdownComponents = useMemo(
+    () => ({
     a: ({
       href,
       children,
@@ -230,6 +257,7 @@ function VirtualizedMessageBubble({
             ? node.position.start.offset
             : 'block'
         }`}
+        renderNonce={renderNonce}
         themeMode={themeMode}
         {...props}
       >
@@ -241,7 +269,15 @@ function VirtualizedMessageBubble({
     }: HTMLAttributes<HTMLPreElement> & {
       children?: ReactNode;
     }) => <>{children}</>,
-  };
+    }),
+    [
+      message,
+      onSourcePreviewNeeded,
+      sourcePreviewCache,
+      sourcePreviewLoading,
+      themeMode,
+    ],
+  );
 
   return (
     <div
@@ -290,6 +326,29 @@ function VirtualizedMessageBubble({
   );
 }
 
+const VirtualizedMessageBubble = memo(
+  VirtualizedMessageBubbleComponent,
+  (previousProps, nextProps) => {
+    if (
+      previousProps.message !== nextProps.message ||
+      previousProps.top !== nextProps.top ||
+      previousProps.renderNonce !== nextProps.renderNonce ||
+      previousProps.themeMode !== nextProps.themeMode ||
+      previousProps.isSourceDrawerOpen !== nextProps.isSourceDrawerOpen
+    ) {
+      return false;
+    }
+
+    return !haveRelevantSourceStatesChanged(
+      previousProps.message.sources,
+      previousProps.sourcePreviewCache,
+      nextProps.sourcePreviewCache,
+      previousProps.sourcePreviewLoading,
+      nextProps.sourcePreviewLoading,
+    );
+  },
+);
+
 export function MessageList({
   activeConversation,
   initialMessageHeights,
@@ -301,6 +360,7 @@ export function MessageList({
   sourceDrawerMessageId,
   sourcePreviewCache,
   sourcePreviewLoading,
+  renderNonce,
   themeMode,
 }: MessageListProps) {
   const conversationRenderKey = `${activeConversation.id}:${activeConversation.fetchedAt ?? 'base'}`;
@@ -349,7 +409,7 @@ export function MessageList({
     };
   }, []);
 
-  const { totalHeight, visibleLayouts } = useMemo(() => {
+  const { allLayouts, totalHeight, visibleLayouts } = useMemo(() => {
     const layouts: MessageLayout[] = [];
     let offset = 0;
 
@@ -375,6 +435,7 @@ export function MessageList({
 
     if (layouts.length === 0) {
       return {
+        allLayouts: layouts,
         totalHeight: totalContentHeight,
         visibleLayouts: layouts,
       };
@@ -390,10 +451,59 @@ export function MessageList({
     );
 
     return {
+      allLayouts: layouts,
       totalHeight: Math.max(totalContentHeight, normalizedViewportHeight),
       visibleLayouts: layouts.slice(startIndex, endIndex + 1),
     };
   }, [activeConversation.messages, measuredHeights, scrollTop, viewportHeight]);
+  const renderedLayouts = useMemo(() => {
+    if (allLayouts.length === 0) {
+      return visibleLayouts;
+    }
+
+    const normalizedViewportHeight =
+      viewportHeight || MESSAGE_LIST_FALLBACK_VIEWPORT_HEIGHT;
+    const codeKeepAliveStart =
+      scrollTop - normalizedViewportHeight * CODE_BLOCK_KEEPALIVE_MULTIPLIER_ABOVE;
+    const codeKeepAliveEnd =
+      scrollTop + normalizedViewportHeight * CODE_BLOCK_KEEPALIVE_MULTIPLIER_BELOW;
+    const keepAliveStart =
+      scrollTop - normalizedViewportHeight * DIAGRAM_KEEPALIVE_MULTIPLIER_ABOVE;
+    const keepAliveEnd =
+      scrollTop + normalizedViewportHeight * DIAGRAM_KEEPALIVE_MULTIPLIER_BELOW;
+    const codeLayouts = allLayouts.filter(
+      (layout) =>
+        CODE_BLOCK_PATTERN.test(layout.message.text) &&
+        layout.end >= codeKeepAliveStart &&
+        layout.start <= codeKeepAliveEnd,
+    );
+
+    const diagramLayouts = allLayouts.filter(
+      (layout) =>
+        RENDERABLE_DIAGRAM_PATTERN.test(layout.message.text) &&
+        layout.end >= keepAliveStart &&
+        layout.start <= keepAliveEnd,
+    );
+
+    if (diagramLayouts.length === 0 && codeLayouts.length === 0) {
+      return visibleLayouts;
+    }
+
+    const layoutsByMessageId = new Map<string, MessageLayout>();
+    visibleLayouts.forEach((layout) => {
+      layoutsByMessageId.set(layout.message.id, layout);
+    });
+    codeLayouts.forEach((layout) => {
+      layoutsByMessageId.set(layout.message.id, layout);
+    });
+    diagramLayouts.forEach((layout) => {
+      layoutsByMessageId.set(layout.message.id, layout);
+    });
+
+    return Array.from(layoutsByMessageId.values()).sort(
+      (left, right) => left.start - right.start,
+    );
+  }, [allLayouts, scrollTop, viewportHeight, visibleLayouts]);
 
   const commitScrollPosition = (nextScrollTop: number) => {
     const messageListElement = messageListRef.current;
@@ -563,7 +673,7 @@ export function MessageList({
         className="message-list__viewport"
         style={{ height: `${totalHeight}px` }}
       >
-        {visibleLayouts.map(({ message, start }) => (
+        {renderedLayouts.map(({ message, start }) => (
           <VirtualizedMessageBubble
             key={message.id}
             isSourceDrawerOpen={sourceDrawerMessageId === message.id}
@@ -571,6 +681,7 @@ export function MessageList({
             onHeightChange={handleMessageHeightChange}
             onSourcePreviewNeeded={onSourcePreviewNeeded}
             onToggleSourceDrawer={onToggleSourceDrawer}
+            renderNonce={renderNonce}
             sourcePreviewCache={sourcePreviewCache}
             sourcePreviewLoading={sourcePreviewLoading}
             themeMode={themeMode}

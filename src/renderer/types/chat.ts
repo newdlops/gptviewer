@@ -13,6 +13,7 @@ export type MessageSource = {
 
 export type ImportedConversation = {
   fetchedAt: string;
+  importOrigin?: 'chat-url';
   messages: Array<{ role: ChatRole; sources: MessageSource[]; text: string }>;
   refreshRequest?: SharedConversationRefreshRequest;
   sourceUrl: string;
@@ -31,8 +32,10 @@ export type Message = {
 export type Conversation = {
   fetchedAt?: string;
   id: string;
+  importOrigin?: 'chat-url';
   isSharedImport?: boolean;
   refreshRequest?: SharedConversationRefreshRequest;
+  projectSyncStatus?: 'viewer-created';
   title: string;
   summary: string;
   sourceUrl?: string;
@@ -46,9 +49,15 @@ export type WorkspaceConversationNode = {
   conversationId: string;
 };
 
+export type WorkspaceFolderSource = {
+  kind: 'project';
+  projectUrl: string;
+};
+
 export type WorkspaceFolderNode = {
   id: string;
   name: string;
+  source?: WorkspaceFolderSource;
   type: 'folder';
   children: WorkspaceNode[];
 };

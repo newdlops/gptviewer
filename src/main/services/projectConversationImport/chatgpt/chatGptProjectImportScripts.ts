@@ -1,6 +1,10 @@
 export type ProjectConversationListSnapshot = {
   canScrollMore: boolean;
   conversations: Array<{ chatUrl: string; title: string }>;
+  lastConversationUrl: string;
+  listItemCount: number;
+  scrollHeight: number;
+  scrollTop: number;
   projectTitle: string;
 };
 
@@ -39,6 +43,9 @@ export const buildCollectProjectConversationListSnapshotScript = (
       : document.documentElement;
   };
   const scrollTarget = findScrollTarget(listRoot);
+  const listItems = Array.from(
+    (listRoot || document).querySelectorAll('li'),
+  ).filter((element) => isVisible(element));
   const titleCandidates = [
     document.querySelector('main h1'),
     document.querySelector('[data-testid*="project"] h1'),
@@ -66,7 +73,8 @@ export const buildCollectProjectConversationListSnapshotScript = (
     }
     seenUrls.add(chatUrl);
     const row = link.closest('li, [role="listitem"], article, section, div');
-    const title = clean(link.textContent) || clean(row?.textContent) || '프로젝트 대화';
+    const titleElement = row?.querySelector('div.text-sm.font-medium');
+    const title = clean(titleElement?.textContent) || '프로젝트 대화';
     conversations.push({
       chatUrl,
       title,
@@ -78,6 +86,10 @@ export const buildCollectProjectConversationListSnapshotScript = (
   return {
     canScrollMore,
     conversations,
+    lastConversationUrl: conversations.at(-1)?.chatUrl || '',
+    listItemCount: listItems.length,
+    scrollHeight: scrollTarget instanceof HTMLElement ? scrollTarget.scrollHeight : 0,
+    scrollTop: scrollTarget instanceof HTMLElement ? scrollTarget.scrollTop : 0,
     projectTitle,
   };
 })()
@@ -113,15 +125,29 @@ export const buildScrollProjectConversationListScript = (
   if (!(scrollTarget instanceof HTMLElement)) {
     return false;
   }
+  const listItems = Array.from(
+    (listRoot || document).querySelectorAll('li'),
+  ).filter((element) => isVisible(element));
   const previousTop = scrollTarget.scrollTop;
+  const previousHeight = scrollTarget.scrollHeight;
+  const lastItem = listItems.at(-1);
+  if (lastItem instanceof HTMLElement) {
+    lastItem.scrollIntoView({ block: 'end' });
+  }
+  scrollTarget.dispatchEvent(new WheelEvent('wheel', {
+    bubbles: true,
+    cancelable: true,
+    deltaY: Math.max(scrollTarget.clientHeight * 0.92, 420),
+  }));
   const nextTop = Math.min(
-    previousTop + Math.max(scrollTarget.clientHeight * 0.88, 320),
+    scrollTarget.scrollTop + Math.max(scrollTarget.clientHeight * 0.92, 420),
     scrollTarget.scrollHeight - scrollTarget.clientHeight,
   );
   if (nextTop <= previousTop + 4) {
-    return false;
+    return scrollTarget.scrollHeight > previousHeight + 4;
   }
-  scrollTarget.scrollTop = nextTop;
+  scrollTarget.scrollTo({ top: nextTop, behavior: 'instant' });
+  scrollTarget.dispatchEvent(new Event('scroll', { bubbles: true }));
   return true;
 })()
 `;

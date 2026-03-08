@@ -1,5 +1,6 @@
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react';
 import type { Conversation, SourceDrawerState, WorkspaceNode } from '../../../types/chat';
+import { useConversationContentActions } from './useConversationContentActions';
 import { useProjectConversationImportActions } from './useProjectConversationImportActions';
 import { useSharedConversationActions } from './useSharedConversationActions';
 import { useWorkspaceTreeActions } from './useWorkspaceTreeActions';
@@ -19,6 +20,13 @@ type UseWorkspaceActionsArgs = {
 };
 
 export function useWorkspaceActions(args: UseWorkspaceActionsArgs) {
+  const conversationContentActions = useConversationContentActions({
+    conversations: args.conversations,
+    removeConversationScrollState: args.removeConversationScrollState,
+    setConversations: args.setConversations,
+    setSourceDrawer: args.setSourceDrawer,
+  });
+
   const treeActions = useWorkspaceTreeActions({
     activeConversationId: args.activeConversationId,
     conversations: args.conversations,
@@ -54,6 +62,7 @@ export function useWorkspaceActions(args: UseWorkspaceActionsArgs) {
   });
 
   return {
+    ...conversationContentActions,
     ...projectConversationImportActions,
     ...treeActions,
     ...sharedConversationActions,

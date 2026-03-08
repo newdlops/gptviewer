@@ -46,6 +46,8 @@ export function SharedConversationRefreshConfigModal({
                     mode:
                       event.target.value === 'chatgpt-share-flow'
                         ? 'chatgpt-share-flow'
+                        : event.target.value === 'direct-chat-page'
+                          ? 'direct-chat-page'
                         : 'direct-share-page',
                   }
                 : current,
@@ -53,10 +55,11 @@ export function SharedConversationRefreshConfigModal({
           }
         >
           <option value="direct-share-page">공유 링크 직접 새로고침</option>
+          <option value="direct-chat-page">원본 링크 직접 새로고침</option>
           <option value="chatgpt-share-flow">GPT 웹앱 자동 새로고침</option>
         </select>
         <label className="modal__label" htmlFor="refresh-share-url">
-          현재 공유 링크
+          현재 링크
           <small className="modal__label-meta">읽기 전용</small>
         </label>
         <input
@@ -110,6 +113,9 @@ export function SharedConversationRefreshConfigModal({
         />
         <p className="modal__hint">
           자동 새로고침은 보조 ChatGPT 창을 열어 <code>Share</code> 모달과 <code>Update and Copy Link</code> 흐름을 시도합니다.
+        </p>
+        <p className="modal__hint">
+          원본 링크 직접 새로고침은 공유 링크 단계를 건너뛰고 현재 ChatGPT 대화 DOM을 바로 가져옵니다.
         </p>
         <p className="modal__hint">
           프로젝트 대화라면 먼저 프로젝트를 연 뒤 해당 대화의 더보기 메뉴에서 공유하기를 시도합니다.

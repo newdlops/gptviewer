@@ -143,6 +143,7 @@ export const normalizeImportedConversation = (
           : undefined,
       mode:
         requestRecord.mode === 'chatgpt-share-flow' ||
+        requestRecord.mode === 'direct-chat-page' ||
         requestRecord.mode === 'direct-share-page'
           ? requestRecord.mode
           : undefined,
@@ -160,6 +161,8 @@ export const normalizeImportedConversation = (
       typeof record.fetchedAt === 'string'
         ? record.fetchedAt
         : new Date().toISOString(),
+    importOrigin:
+      record.importOrigin === 'chat-url' ? 'chat-url' : undefined,
     messages,
     refreshRequest: normalizeRefreshRequest(record.refreshRequest),
     sourceUrl: typeof record.sourceUrl === 'string' ? record.sourceUrl : '',

@@ -7,6 +7,7 @@ import type {
   Conversation,
   Message,
   MessageSource,
+  WorkspaceFolderSource,
   WorkspaceNode,
 } from '../../../types/chat';
 
@@ -132,6 +133,7 @@ const normalizeConversation = (value: unknown): Conversation | null => {
           : undefined,
       mode:
         requestRecord.mode === 'chatgpt-share-flow' ||
+        requestRecord.mode === 'direct-chat-page' ||
         requestRecord.mode === 'direct-share-page'
           ? requestRecord.mode
           : undefined,
@@ -150,8 +152,13 @@ const normalizeConversation = (value: unknown): Conversation | null => {
         ? record.fetchedAt.trim()
         : undefined,
     id,
+    importOrigin: record.importOrigin === 'chat-url' ? 'chat-url' : undefined,
     isSharedImport: record.isSharedImport === true,
     messages,
+    projectSyncStatus:
+      record.projectSyncStatus === 'viewer-created'
+        ? 'viewer-created'
+        : undefined,
     refreshRequest: normalizeRefreshRequest(record.refreshRequest),
     sourceUrl:
       typeof record.sourceUrl === 'string' && record.sourceUrl.trim()
@@ -192,6 +199,23 @@ const normalizeWorkspaceNode = (value: unknown): WorkspaceNode | null => {
   }
 
   const name = typeof record.name === 'string' ? record.name.trim() : '';
+  const source = (() => {
+    if (!record.source || typeof record.source !== 'object') {
+      return undefined;
+    }
+    const sourceRecord = record.source as Record<string, unknown>;
+    const projectUrl =
+      typeof sourceRecord.projectUrl === 'string'
+        ? sourceRecord.projectUrl.trim()
+        : '';
+    if (sourceRecord.kind !== 'project' || !projectUrl) {
+      return undefined;
+    }
+    return {
+      kind: 'project',
+      projectUrl,
+    } satisfies WorkspaceFolderSource;
+  })();
   const children = Array.isArray(record.children)
     ? record.children
         .map((childNode) => normalizeWorkspaceNode(childNode))
@@ -206,6 +230,7 @@ const normalizeWorkspaceNode = (value: unknown): WorkspaceNode | null => {
     children,
     id,
     name,
+    source,
     type,
   };
 };

@@ -7,6 +7,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from 'react';
 import { WORKSPACE_ROOT_VALUE } from '../lib/workspaceTree';
+import { isChatUrlImportedConversation } from '../../app/lib/sharedConversationUtils';
 import type {
   Conversation,
   WorkspaceConversationNode,
@@ -40,6 +41,7 @@ type WorkspaceTreeProps = {
   isCollapsed: boolean;
   onConversationSelect: (conversationId: string) => void;
   onCreateFolder: (parentFolderId: string | null) => void;
+  onDeleteConversation: (conversationId: string) => void;
   onDeleteFolder: (folderId: string) => void;
   onNodeDrop: (nodeId: string, destinationFolderId: string | null) => void;
   onNodeReorder: (
@@ -49,8 +51,10 @@ type WorkspaceTreeProps = {
   ) => void;
   onFolderToggle: (folderId: string) => void;
   onMoveFolder: (folderId: string) => void;
+  onProjectFolder: (folderId: string) => void;
   onRenameConversation: (conversationId: string) => void;
   onRenameFolder: (folderId: string) => void;
+  onSyncProjectFolder: (folderId: string, projectUrl: string) => void;
   tree: WorkspaceNode[];
 };
 
@@ -81,11 +85,14 @@ type WorkspaceTreeNodeProps = {
   node: WorkspaceNode;
   onConversationSelect: (conversationId: string) => void;
   onCreateFolder: (parentFolderId: string | null) => void;
+  onDeleteConversation: (conversationId: string) => void;
   onDeleteFolder: (folderId: string) => void;
   onFolderToggle: (folderId: string) => void;
   onMoveFolder: (folderId: string) => void;
+  onProjectFolder: (folderId: string) => void;
   onRenameConversation: (conversationId: string) => void;
   onRenameFolder: (folderId: string) => void;
+  onSyncProjectFolder: (folderId: string, projectUrl: string) => void;
   onNodePointerDown: (
     event: ReactPointerEvent<HTMLElement>,
     payload: PointerDragPayload,
@@ -175,6 +182,36 @@ function DeleteActionIcon() {
   );
 }
 
+function SyncActionIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <path
+        d="M13.3 6.2a5.4 5.4 0 0 0-9.2-2.1M2.7 9.8a5.4 5.4 0 0 0 9.2 2.1M10.7 2.7h2.6v2.6M5.3 13.3H2.7v-2.6"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.5"
+      />
+    </svg>
+  );
+}
+
+function ProjectActionIcon() {
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <path
+        d="M2.7 3.7h10.6v8.6H2.7zM5.3 2.3v2.1M10.7 2.3v2.1M5.2 7.9h5.6"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.5"
+      />
+    </svg>
+  );
+}
+
 const getDropTargetFromElement = (
   element: Element | null,
   clientY: number,
@@ -239,6 +276,7 @@ function WorkspaceConversationLeaf({
   isCollapsed,
   node,
   onConversationSelect,
+  onDeleteConversation,
   onNodePointerDown,
   onRenameConversation,
   suppressedClickNodeId,
@@ -251,6 +289,7 @@ function WorkspaceConversationLeaf({
   isCollapsed: boolean;
   node: WorkspaceConversationNode;
   onConversationSelect: (conversationId: string) => void;
+  onDeleteConversation: (conversationId: string) => void;
   onNodePointerDown: (
     event: ReactPointerEvent<HTMLElement>,
     payload: PointerDragPayload,
@@ -305,7 +344,19 @@ function WorkspaceConversationLeaf({
         <span className="workspace-tree__conversation-icon" aria-hidden="true" />
         {!isCollapsed ? (
           <span className="workspace-tree__conversation-title">
-            {conversation.title}
+            <span className="workspace-tree__conversation-title-text">
+              {conversation.title}
+            </span>
+            {isChatUrlImportedConversation(conversation) ? (
+              <span className="workspace-tree__conversation-status">
+                원본 링크
+              </span>
+            ) : null}
+            {conversation.projectSyncStatus === 'viewer-created' ? (
+              <span className="workspace-tree__conversation-status">
+                뷰어에서 생성
+              </span>
+            ) : null}
           </span>
         ) : null}
       </button>
@@ -316,10 +367,21 @@ function WorkspaceConversationLeaf({
             type="button"
             onClick={() => onRenameConversation(conversation.id)}
             aria-label={`${conversation.title} 대화 이름 변경`}
-            title="대화 이름 변경"
+            data-tooltip="대화 이름 변경"
           >
             <span className="workspace-tree__folder-action-icon">
               <RenameActionIcon />
+            </span>
+          </button>
+          <button
+            className="workspace-tree__folder-action workspace-tree__folder-action--danger"
+            type="button"
+            onClick={() => onDeleteConversation(conversation.id)}
+            aria-label={`${conversation.title} 대화 삭제`}
+            data-tooltip="대화 삭제"
+          >
+            <span className="workspace-tree__folder-action-icon">
+              <DeleteActionIcon />
             </span>
           </button>
         </div>
@@ -339,11 +401,14 @@ function WorkspaceFolderBranch({
   node,
   onConversationSelect,
   onCreateFolder,
+  onDeleteConversation,
   onDeleteFolder,
   onFolderToggle,
   onMoveFolder,
+  onProjectFolder,
   onRenameConversation,
   onRenameFolder,
+  onSyncProjectFolder,
   onNodePointerDown,
   suppressedClickNodeId,
 }: {
@@ -357,11 +422,14 @@ function WorkspaceFolderBranch({
   node: WorkspaceFolderNode;
   onConversationSelect: (conversationId: string) => void;
   onCreateFolder: (parentFolderId: string | null) => void;
+  onDeleteConversation: (conversationId: string) => void;
   onDeleteFolder: (folderId: string) => void;
   onFolderToggle: (folderId: string) => void;
   onMoveFolder: (folderId: string) => void;
+  onProjectFolder: (folderId: string) => void;
   onRenameConversation: (conversationId: string) => void;
   onRenameFolder: (folderId: string) => void;
+  onSyncProjectFolder: (folderId: string, projectUrl: string) => void;
   onNodePointerDown: (
     event: ReactPointerEvent<HTMLElement>,
     payload: PointerDragPayload,
@@ -380,6 +448,7 @@ function WorkspaceFolderBranch({
     dropTargetState?.kind === 'sibling' &&
     dropTargetState.targetNodeId === node.id &&
     dropTargetState.position === 'after';
+  const isProjectFolder = node.source?.kind === 'project';
   const handleFolderKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault();
@@ -390,14 +459,14 @@ function WorkspaceFolderBranch({
   return (
     <div className="workspace-tree__branch">
       <div
-        className={`workspace-tree__folder-row${isDropInside ? ' is-drop-target' : ''}${isDragging ? ' is-dragging' : ''}${isDropBefore ? ' is-drop-before' : ''}${isDropAfter ? ' is-drop-after' : ''}`}
+        className={`workspace-tree__folder-row${isProjectFolder ? ' is-project-folder' : ''}${isDropInside ? ' is-drop-target' : ''}${isDragging ? ' is-dragging' : ''}${isDropBefore ? ' is-drop-before' : ''}${isDropAfter ? ' is-drop-after' : ''}`}
         style={getTreeNodeStyle(depth)}
         data-drop-folder-id={node.id}
         data-drop-node-id={node.id}
         data-drop-node-type="folder"
       >
         <div
-          className={`workspace-tree__folder${isExpanded ? ' is-expanded' : ''}${isDragging ? ' is-dragging' : ''}`}
+          className={`workspace-tree__folder${isExpanded ? ' is-expanded' : ''}${isProjectFolder ? ' is-project' : ''}${isDragging ? ' is-dragging' : ''}`}
           role="button"
           tabIndex={0}
           title={node.name}
@@ -425,21 +494,53 @@ function WorkspaceFolderBranch({
             </span>
           ) : null}
           <span
-            className={`workspace-tree__folder-icon${isExpanded ? ' is-expanded' : ''}`}
+            className={`workspace-tree__folder-icon${isExpanded ? ' is-expanded' : ''}${isProjectFolder ? ' is-project' : ''}`}
             aria-hidden="true"
           />
           {!isCollapsed ? (
-            <span className="workspace-tree__folder-label">{node.name}</span>
-          ) : null}
-        </div>
+          <span className="workspace-tree__folder-label">
+            <span className="workspace-tree__folder-label-text">{node.name}</span>
+          </span>
+        ) : null}
+      </div>
         {!isCollapsed ? (
           <div className="workspace-tree__folder-actions">
+            {node.source?.kind === 'project' ? (
+              <button
+                className="workspace-tree__folder-action workspace-tree__folder-action--sync"
+                type="button"
+                onClick={() =>
+                  node.source?.kind === 'project'
+                    ? onSyncProjectFolder(node.id, node.source.projectUrl)
+                    : undefined
+                }
+                aria-label={`${node.name} 프로젝트 동기화`}
+                data-tooltip="프로젝트 동기화"
+              >
+                <span className="workspace-tree__folder-action-icon">
+                  <SyncActionIcon />
+                </span>
+              </button>
+            ) : null}
+            {!isProjectFolder ? (
+              <button
+                className="workspace-tree__folder-action"
+                type="button"
+                onClick={() => onProjectFolder(node.id)}
+                aria-label={`${node.name} 프로젝트 폴더로 설정`}
+                data-tooltip="프로젝트 폴더로 설정"
+              >
+                <span className="workspace-tree__folder-action-icon">
+                  <ProjectActionIcon />
+                </span>
+              </button>
+            ) : null}
             <button
               className="workspace-tree__folder-action"
               type="button"
               onClick={() => onRenameFolder(node.id)}
               aria-label={`${node.name} 폴더 이름 변경`}
-              title="폴더 이름 변경"
+              data-tooltip="폴더 이름 변경"
             >
               <span className="workspace-tree__folder-action-icon">
                 <RenameActionIcon />
@@ -450,7 +551,7 @@ function WorkspaceFolderBranch({
               type="button"
               onClick={() => onCreateFolder(node.id)}
               aria-label={`${node.name} 아래에 폴더 만들기`}
-              title="하위 폴더 만들기"
+              data-tooltip="하위 폴더 만들기"
             >
               <span className="workspace-tree__folder-action-icon">
                 <CreateFolderActionIcon />
@@ -461,7 +562,7 @@ function WorkspaceFolderBranch({
               type="button"
               onClick={() => onMoveFolder(node.id)}
               aria-label={`${node.name} 폴더 이동`}
-              title="폴더 이동"
+              data-tooltip="폴더 이동"
             >
               <span className="workspace-tree__folder-action-icon">
                 <MoveActionIcon />
@@ -472,7 +573,7 @@ function WorkspaceFolderBranch({
               type="button"
               onClick={() => onDeleteFolder(node.id)}
               aria-label={`${node.name} 폴더 삭제`}
-              title="폴더 삭제"
+              data-tooltip="폴더 삭제"
             >
               <span className="workspace-tree__folder-action-icon">
                 <DeleteActionIcon />
@@ -496,11 +597,14 @@ function WorkspaceFolderBranch({
               node={childNode}
               onConversationSelect={onConversationSelect}
               onCreateFolder={onCreateFolder}
+              onDeleteConversation={onDeleteConversation}
               onDeleteFolder={onDeleteFolder}
               onFolderToggle={onFolderToggle}
               onMoveFolder={onMoveFolder}
+              onProjectFolder={onProjectFolder}
               onRenameConversation={onRenameConversation}
               onRenameFolder={onRenameFolder}
+              onSyncProjectFolder={onSyncProjectFolder}
               onNodePointerDown={onNodePointerDown}
               suppressedClickNodeId={suppressedClickNodeId}
             />
@@ -522,11 +626,14 @@ function WorkspaceTreeNode({
   node,
   onConversationSelect,
   onCreateFolder,
+  onDeleteConversation,
   onDeleteFolder,
   onFolderToggle,
   onMoveFolder,
+  onProjectFolder,
   onRenameConversation,
   onRenameFolder,
+  onSyncProjectFolder,
   onNodePointerDown,
   suppressedClickNodeId,
 }: WorkspaceTreeNodeProps) {
@@ -541,6 +648,7 @@ function WorkspaceTreeNode({
         isCollapsed={isCollapsed}
         node={node}
         onConversationSelect={onConversationSelect}
+        onDeleteConversation={onDeleteConversation}
         onNodePointerDown={onNodePointerDown}
         onRenameConversation={onRenameConversation}
         suppressedClickNodeId={suppressedClickNodeId}
@@ -560,11 +668,14 @@ function WorkspaceTreeNode({
       node={node}
       onConversationSelect={onConversationSelect}
       onCreateFolder={onCreateFolder}
+      onDeleteConversation={onDeleteConversation}
       onDeleteFolder={onDeleteFolder}
       onFolderToggle={onFolderToggle}
       onMoveFolder={onMoveFolder}
+      onProjectFolder={onProjectFolder}
       onRenameConversation={onRenameConversation}
       onRenameFolder={onRenameFolder}
+      onSyncProjectFolder={onSyncProjectFolder}
       onNodePointerDown={onNodePointerDown}
       suppressedClickNodeId={suppressedClickNodeId}
     />
@@ -580,13 +691,16 @@ export function WorkspaceTree({
   isCollapsed,
   onConversationSelect,
   onCreateFolder,
+  onDeleteConversation,
   onDeleteFolder,
   onNodeDrop,
   onNodeReorder,
   onFolderToggle,
   onMoveFolder,
+  onProjectFolder,
   onRenameConversation,
   onRenameFolder,
+  onSyncProjectFolder,
   tree,
 }: WorkspaceTreeProps) {
   const conversationLookup = new Map(
@@ -762,11 +876,14 @@ export function WorkspaceTree({
           node={node}
           onConversationSelect={onConversationSelect}
           onCreateFolder={onCreateFolder}
+          onDeleteConversation={onDeleteConversation}
           onDeleteFolder={onDeleteFolder}
           onFolderToggle={onFolderToggle}
           onMoveFolder={onMoveFolder}
+          onProjectFolder={onProjectFolder}
           onRenameConversation={onRenameConversation}
           onRenameFolder={onRenameFolder}
+          onSyncProjectFolder={onSyncProjectFolder}
           onNodePointerDown={handleNodePointerDown}
           suppressedClickNodeId={suppressedClickNodeId}
         />

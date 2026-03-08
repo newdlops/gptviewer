@@ -7,6 +7,7 @@ import {
   collectConversationIds,
   collectDescendantFolderIds,
   countTreeItems,
+  findConversationNodeId,
   findFirstConversationId,
   findFolderById,
   findParentFolderId,
@@ -15,15 +16,20 @@ import {
   moveNodeRelativeToTarget,
   renameFolderInTree,
   removeFolderFromTree,
+  removeNodeFromTree,
+  updateFolderSourceInTree,
 } from '../../conversations/lib/workspaceTree';
 import type { Conversation, SourceDrawerState, WorkspaceNode } from '../../../types/chat';
 import type {
   CreateFolderState,
+  DeleteConversationState,
   DeleteFolderState,
   MoveFolderState,
+  ProjectFolderState,
   RenameConversationState,
   RenameFolderState,
 } from '../lib/appTypes';
+import { normalizeProjectUrl } from '../lib/sharedConversationUtils';
 
 type UseWorkspaceTreeActionsArgs = {
   activeConversationId: string;
@@ -50,7 +56,9 @@ export function useWorkspaceTreeActions({
 }: UseWorkspaceTreeActionsArgs) {
   const [createFolderState, setCreateFolderState] = useState<CreateFolderState | null>(null);
   const [moveFolderState, setMoveFolderState] = useState<MoveFolderState | null>(null);
+  const [deleteConversationState, setDeleteConversationState] = useState<DeleteConversationState | null>(null);
   const [deleteFolderState, setDeleteFolderState] = useState<DeleteFolderState | null>(null);
+  const [projectFolderState, setProjectFolderState] = useState<ProjectFolderState | null>(null);
   const [renameConversationState, setRenameConversationState] = useState<RenameConversationState | null>(null);
   const [renameFolderState, setRenameFolderState] = useState<RenameFolderState | null>(null);
   const [folderOperationError, setFolderOperationError] = useState('');
@@ -66,10 +74,10 @@ export function useWorkspaceTreeActions({
   }, [moveFolderState, workspaceTree]);
 
   useEffect(() => {
-    if (!createFolderState && !moveFolderState && !deleteFolderState && !renameConversationState && !renameFolderState) {
+    if (!createFolderState && !moveFolderState && !deleteConversationState && !deleteFolderState && !projectFolderState && !renameConversationState && !renameFolderState) {
       setFolderOperationError('');
     }
-  }, [createFolderState, deleteFolderState, moveFolderState, renameConversationState, renameFolderState]);
+  }, [createFolderState, deleteConversationState, deleteFolderState, moveFolderState, projectFolderState, renameConversationState, renameFolderState]);
 
   const handleConversationSelect = (conversationId: string) => setActiveConversationId(conversationId);
   const handleFolderToggle = (folderId: string) => {
@@ -92,10 +100,7 @@ export function useWorkspaceTreeActions({
     const folderToMove = findFolderById(workspaceTree, folderId);
     if (!folderToMove) return;
     const currentParentFolderId = findParentFolderId(workspaceTree, folderId);
-    const destinationOptions = buildFolderOptions(
-      workspaceTree,
-      new Set([folderToMove.id, ...collectDescendantFolderIds(folderToMove)]),
-    );
+    const destinationOptions = buildFolderOptions(workspaceTree, new Set([folderToMove.id, ...collectDescendantFolderIds(folderToMove)]));
     setFolderOperationError('');
     setMoveFolderState({
       destinationFolderId: destinationOptions.some((option) => option.id === currentParentFolderId) ? currentParentFolderId : null,
@@ -109,6 +114,16 @@ export function useWorkspaceTreeActions({
     setFolderOperationError('');
     setRenameFolderState({ folderId, folderName: folderToRename.name, nextName: folderToRename.name });
   };
+  const openProjectFolderModal = (folderId: string) => {
+    const folder = findFolderById(workspaceTree, folderId);
+    if (!folder) return;
+    setFolderOperationError('');
+    setProjectFolderState({
+      folderId,
+      folderName: folder.name,
+      projectUrl: folder.source?.kind === 'project' ? folder.source.projectUrl : '',
+    });
+  };
   const openRenameConversationModal = (conversationId: string) => {
     const conversationToRename = conversations.find((conversation) => conversation.id === conversationId);
     if (!conversationToRename) return;
@@ -119,6 +134,15 @@ export function useWorkspaceTreeActions({
       nextTitle: conversationToRename.title,
     });
   };
+  const openDeleteConversationModal = (conversationId: string) => {
+    const conversationToDelete = conversations.find((conversation) => conversation.id === conversationId);
+    if (!conversationToDelete) return;
+    setFolderOperationError('');
+    setDeleteConversationState({
+      conversationId,
+      conversationTitle: conversationToDelete.title,
+    });
+  };
 
   const deleteFolder = (folderId: string) => {
     const removalResult = removeFolderFromTree(workspaceTree, folderId);
@@ -126,9 +150,7 @@ export function useWorkspaceTreeActions({
 
     const removedConversationIds = collectConversationIds([removalResult.removedFolder]);
     const removedFolderIds = [removalResult.removedFolder.id, ...collectDescendantFolderIds(removalResult.removedFolder)];
-    const nextConversations = conversations.filter(
-      (conversation) => !removedConversationIds.includes(conversation.id),
-    );
+    const nextConversations = conversations.filter((conversation) => !removedConversationIds.includes(conversation.id));
     const nextActiveConversationId = nextConversations.some(
       (conversation) => conversation.id === activeConversationId,
     )
@@ -144,6 +166,27 @@ export function useWorkspaceTreeActions({
       removedFolderIds.forEach((removedFolderId) => delete nextState[removedFolderId]);
       return nextState;
     });
+    setActiveConversationId(nextActiveConversationId);
+  };
+
+  const deleteConversation = (conversationId: string) => {
+    const conversationNodeId = findConversationNodeId(workspaceTree, conversationId);
+    if (!conversationNodeId) return;
+
+    const removalResult = removeNodeFromTree(workspaceTree, conversationNodeId);
+    if (!removalResult.removedNode) return;
+
+    const nextConversations = conversations.filter((conversation) => conversation.id !== conversationId);
+    const nextActiveConversationId = nextConversations.some(
+      (conversation) => conversation.id === activeConversationId,
+    )
+      ? activeConversationId
+      : findFirstConversationId(removalResult.tree) || nextConversations[0]?.id || '';
+
+    removeConversationScrollState([conversationId]);
+    setSourceDrawer(null);
+    setConversations(nextConversations);
+    setWorkspaceTree(removalResult.tree);
     setActiveConversationId(nextActiveConversationId);
   };
 
@@ -195,9 +238,26 @@ export function useWorkspaceTreeActions({
     if (!renameFolderState) return;
     const nextName = renameFolderState.nextName.trim();
     if (!nextName) return setFolderOperationError('폴더 이름을 입력해 주세요.');
-    setWorkspaceTree((currentTree) => renameFolderInTree(currentTree, renameFolderState.folderId, nextName));
+    setWorkspaceTree((currentTree) =>
+      renameFolderInTree(currentTree, renameFolderState.folderId, nextName),
+    );
     setFolderOperationError('');
     setRenameFolderState(null);
+  };
+
+  const handleProjectFolderSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!projectFolderState) return;
+    const normalizedProjectUrl = normalizeProjectUrl(projectFolderState.projectUrl);
+    if (!normalizedProjectUrl) return setFolderOperationError('올바른 ChatGPT 프로젝트 URL을 입력해 주세요.');
+    setWorkspaceTree((currentTree) =>
+      updateFolderSourceInTree(currentTree, projectFolderState.folderId, {
+        kind: 'project',
+        projectUrl: normalizedProjectUrl,
+      }),
+    );
+    setFolderOperationError('');
+    setProjectFolderState(null);
   };
 
   const handleRenameConversationSubmit = (event: FormEvent<HTMLFormElement>) => {
@@ -216,6 +276,8 @@ export function useWorkspaceTreeActions({
 
   return {
     createFolderState,
+    deleteConversationState,
+    deleteConversation,
     deleteFolder,
     deleteFolderState,
     folderOperationError,
@@ -224,6 +286,7 @@ export function useWorkspaceTreeActions({
     handleFolderDeleteRequest,
     handleFolderToggle,
     handleMoveFolderSubmit,
+    handleProjectFolderSubmit,
     handleRenameConversationSubmit,
     handleRenameFolderSubmit,
     handleTreeNodeDrop,
@@ -231,14 +294,19 @@ export function useWorkspaceTreeActions({
     moveFolderOptions,
     moveFolderState,
     openCreateFolderModal,
+    openDeleteConversationModal,
     openMoveFolderModal,
+    openProjectFolderModal,
     openRenameConversationModal,
     openRenameFolderModal,
+    projectFolderState,
     renameConversationState,
     renameFolderState,
     setCreateFolderState,
+    setDeleteConversationState,
     setDeleteFolderState,
     setMoveFolderState,
+    setProjectFolderState,
     setRenameConversationState,
     setRenameFolderState,
   };

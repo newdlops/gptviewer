@@ -1,5 +1,6 @@
 export type SharedConversationRefreshMode =
   | 'direct-share-page'
+  | 'direct-chat-page'
   | 'chatgpt-share-flow';
 
 export type SharedConversationRefreshErrorCode =
@@ -29,6 +30,7 @@ export type SharedConversationMessage = {
 export type SharedConversationRefreshRequest = {
   chatUrl?: string;
   conversationTitle?: string;
+  helperWindowMode?: 'background' | 'visible';
   mode?: SharedConversationRefreshMode;
   projectUrl?: string;
   shareUrl: string;
@@ -36,6 +38,7 @@ export type SharedConversationRefreshRequest = {
 
 export type SharedConversationImport = {
   fetchedAt: string;
+  importOrigin?: 'chat-url';
   messages: SharedConversationMessage[];
   refreshRequest?: SharedConversationRefreshRequest;
   sourceUrl: string;

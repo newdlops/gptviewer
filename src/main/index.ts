@@ -1,7 +1,8 @@
-import { app, BrowserWindow, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, shell, type IpcMainInvokeEvent } from 'electron';
 import type {
+  ProjectConversationCollectionResult,
+  ProjectConversationImportProgress,
   ProjectConversationImportRequest,
-  ProjectConversationImportResult,
 } from '../shared/import/projectConversationImport';
 import type {
   SharedConversationImport,
@@ -19,6 +20,7 @@ import {
   type SourcePreviewSnapshot,
 } from './parsers/sourcePreviewParser';
 import { ProjectConversationImportService } from './services/projectConversationImport/ProjectConversationImportService';
+import { ChatGptAutomationView } from './services/sharedConversationRefresh/chatgpt/ChatGptAutomationView';
 import { SharedConversationRefreshService } from './services/sharedConversationRefresh/SharedConversationRefreshService';
 import { SharedConversationRefreshError } from './services/sharedConversationRefresh/SharedConversationRefreshError';
 
@@ -756,9 +758,7 @@ const loadSharedConversation = async (
 const sharedConversationRefreshService = new SharedConversationRefreshService({
   loadSharedConversation,
 });
-const projectConversationImportService = new ProjectConversationImportService(
-  (request) => sharedConversationRefreshService.refreshConversation(request),
-);
+const projectConversationImportService = new ProjectConversationImportService();
 
 const loadRenderedSourcePreview = async (
   sourceUrl: string,
@@ -849,16 +849,19 @@ ipcMain.handle('shared-conversation:fetch', async (_event, rawUrl: string) => {
 });
 
 ipcMain.handle(
-  'project-conversation:import',
-  async (_event, request: ProjectConversationImportRequest) => {
+  'project-conversation:collect',
+  async (event: IpcMainInvokeEvent, request: ProjectConversationImportRequest) => {
     if (!request || typeof request !== 'object') {
       throw new Error('프로젝트 불러오기 요청이 올바르지 않습니다.');
     }
 
     try {
-      return (await projectConversationImportService.importProject(
+      return (await projectConversationImportService.collectProject(
         request.projectUrl,
-      )) as ProjectConversationImportResult;
+        (progress: ProjectConversationImportProgress) => {
+          event.sender.send('project-conversation:progress', progress);
+        },
+      )) as ProjectConversationCollectionResult;
     } catch (error) {
       if (error instanceof SharedConversationRefreshError) {
         throw new Error(
@@ -875,6 +878,13 @@ ipcMain.handle(
           : '프로젝트 대화를 불러오지 못했습니다.',
       );
     }
+  },
+);
+
+ipcMain.handle(
+  'chatgpt-automation:cleanup-background-pool',
+  async () => {
+    await ChatGptAutomationView.drainBackgroundPool();
   },
 );
 
@@ -901,6 +911,37 @@ ipcMain.handle(
         error instanceof Error
           ? error.message
           : '공유 대화를 새로고침하지 못했습니다.',
+      );
+    }
+  },
+);
+
+ipcMain.handle(
+  'chatgpt-conversation:import',
+  async (_event, request: SharedConversationRefreshRequest) => {
+    if (!request || typeof request !== 'object') {
+      throw new Error('원본 대화 가져오기 요청이 올바르지 않습니다.');
+    }
+
+    try {
+      return await sharedConversationRefreshService.importConversationFromChatUrl(
+        request,
+      );
+    } catch (error) {
+      if (error instanceof SharedConversationRefreshError) {
+        throw new Error(
+          encodeSharedConversationRefreshError({
+            code: error.code,
+            detail: error.detail,
+            message: error.message,
+          }),
+        );
+      }
+
+      throw new Error(
+        error instanceof Error
+          ? error.message
+          : '원본 ChatGPT 대화를 가져오지 못했습니다.',
       );
     }
   },

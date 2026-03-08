@@ -1,12 +1,7 @@
 import type {
-  ProjectConversationImportConversation,
-  ProjectConversationImportFailure,
-  ProjectConversationImportResult,
+  ProjectConversationCollectionResult,
+  ProjectConversationImportProgress,
 } from '../../../shared/import/projectConversationImport';
-import type {
-  SharedConversationRefreshRequest,
-  SharedConversationRefreshResult,
-} from '../../../shared/refresh/sharedConversationRefresh';
 import { CHATGPT_CHALLENGE_TEXT_MARKERS, CHATGPT_LOGIN_TEXT_MARKERS, CHATGPT_LOGIN_URL_PATTERNS, CHATGPT_PROJECT_CHAT_LIST_SELECTORS } from '../sharedConversationRefresh/chatgpt/ChatGptDomSelectors';
 import { ChatGptAutomationView } from '../sharedConversationRefresh/chatgpt/ChatGptAutomationView';
 import { waitForConversationListReady } from '../sharedConversationRefresh/chatgpt/chatGptConversationLoadHelpers';
@@ -16,14 +11,17 @@ import {
   buildScrollProjectConversationListScript,
   type ProjectConversationListSnapshot,
 } from './chatgpt/chatGptProjectImportScripts';
-import { SharedConversationRefreshError } from '../sharedConversationRefresh/SharedConversationRefreshError';
+import {
+  buildInstallProjectImportNetworkMonitorScript,
+  buildReadProjectImportNetworkStateScript,
+  type ProjectImportNetworkState,
+} from './chatgpt/chatGptProjectImportNetworkScripts';
 
-type ProjectConversationRefresh = (
-  request: SharedConversationRefreshRequest,
-) => Promise<SharedConversationRefreshResult>;
-
-const PROJECT_LIST_COLLECTION_TIMEOUT_MS = 18_000;
-const PROJECT_LIST_POLL_INTERVAL_MS = 180;
+const PROJECT_LIST_COLLECTION_TIMEOUT_MS = 20_000;
+const PROJECT_LIST_STABLE_LINK_CYCLES = 3;
+const PROJECT_LIST_POLL_INTERVAL_MS = 220;
+const PROJECT_LIST_SETTLE_IDLE_MS = 2_000;
+const PROJECT_LIST_SETTLE_TIMEOUT_MS = 12_000;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -64,23 +62,29 @@ const normalizeProjectUrl = (rawUrl: string) => {
   return parsedUrl.toString();
 };
 
-const shouldAbortImport = (error: unknown) =>
-  error instanceof SharedConversationRefreshError &&
-  ['login_required', 'window_closed'].includes(error.code);
+const mergeProjectConversationSnapshot = (
+  collected: Map<string, { chatUrl: string; title: string }>,
+  snapshot: ProjectConversationListSnapshot,
+) => {
+  snapshot.conversations.forEach((conversation) => {
+    collected.set(conversation.chatUrl, conversation);
+  });
+};
 
 export class ProjectConversationImportService {
-  constructor(
-    private readonly refreshSharedConversation: ProjectConversationRefresh,
-  ) {}
-
   private async collectProjectConversations(
     projectUrl: string,
+    onProgress?: (progress: ProjectConversationImportProgress) => void,
   ): Promise<ProjectConversationListSnapshot> {
-    const automationView = ChatGptAutomationView.acquire();
+    const automationView = await ChatGptAutomationView.acquire('background');
     try {
       await automationView.load(projectUrl);
+      await automationView.execute<boolean>(
+        buildInstallProjectImportNetworkMonitorScript(),
+      );
       const firstSnapshot = await automationView.getPageSnapshot();
       if (isLoginLikeSnapshot(firstSnapshot)) {
+        await automationView.presentForAttention();
         throw new Error('ChatGPT 로그인 또는 보안 확인이 필요합니다. 보조 창에서 먼저 마친 뒤 다시 시도해 주세요.');
       }
 
@@ -97,7 +101,12 @@ export class ProjectConversationImportService {
       const deadline = Date.now() + PROJECT_LIST_COLLECTION_TIMEOUT_MS;
       const collected = new Map<string, { chatUrl: string; title: string }>();
       let projectTitle = '프로젝트';
-      let stalledCount = 0;
+      let stableLinkCount = 0;
+      let lastConversationUrl = '';
+      let lastListItemCount = -1;
+      let lastCollectedCount = -1;
+      let lastNetworkActivityAt = 0;
+      let finalSnapshot: ProjectConversationListSnapshot | null = null;
 
       while (Date.now() < deadline && !automationView.isClosed()) {
         const snapshot = await automationView.execute<ProjectConversationListSnapshot>(
@@ -105,17 +114,37 @@ export class ProjectConversationImportService {
             CHATGPT_PROJECT_CHAT_LIST_SELECTORS,
           ),
         );
+        const networkState = await automationView.execute<ProjectImportNetworkState>(
+          buildReadProjectImportNetworkStateScript(),
+        );
         if (snapshot.projectTitle.trim()) {
           projectTitle = snapshot.projectTitle.trim();
         }
-
-        const previousCount = collected.size;
-        snapshot.conversations.forEach((conversation) => {
-          collected.set(conversation.chatUrl, conversation);
+        mergeProjectConversationSnapshot(collected, snapshot);
+        finalSnapshot = snapshot;
+        onProgress?.({
+          collectedCount: collected.size,
+          listItemCount: snapshot.listItemCount,
+          phase: 'collecting',
+          projectTitle,
         });
-        stalledCount = collected.size === previousCount ? stalledCount + 1 : 0;
 
-        if (!snapshot.canScrollMore && stalledCount >= 1) {
+        const didChangeCollectedCount = collected.size !== lastCollectedCount;
+        const didChangeList = snapshot.listItemCount !== lastListItemCount;
+        const didChangeLastConversation =
+          snapshot.lastConversationUrl !== lastConversationUrl;
+        const didChangeNetworkActivity =
+          networkState.lastActivityAt !== lastNetworkActivityAt;
+
+        stableLinkCount =
+          didChangeCollectedCount ||
+          didChangeList ||
+          didChangeLastConversation ||
+          didChangeNetworkActivity
+            ? 0
+            : stableLinkCount + 1;
+
+        if (collected.size > 0 && stableLinkCount >= PROJECT_LIST_STABLE_LINK_CYCLES) {
           break;
         }
 
@@ -124,7 +153,13 @@ export class ProjectConversationImportService {
             CHATGPT_PROJECT_CHAT_LIST_SELECTORS,
           ),
         );
-        if (!didScroll && stalledCount >= 2) {
+
+        lastCollectedCount = collected.size;
+        lastConversationUrl = snapshot.lastConversationUrl;
+        lastListItemCount = snapshot.listItemCount;
+        lastNetworkActivityAt = networkState.lastActivityAt;
+
+        if (!didScroll && collected.size > 0 && stableLinkCount > 0) {
           break;
         }
 
@@ -135,9 +170,78 @@ export class ProjectConversationImportService {
         throw new Error('프로젝트 불러오기 중 보조 ChatGPT 창이 닫혔습니다.');
       }
 
+      let settleCollectedCount = collected.size;
+      let settleListItemCount = finalSnapshot?.listItemCount ?? 0;
+      let settleLastConversationUrl = finalSnapshot?.lastConversationUrl ?? '';
+      let lastGrowthAt = Date.now();
+      let lastSettledNetworkActivityAt = lastNetworkActivityAt;
+      const settleDeadline = lastGrowthAt + PROJECT_LIST_SETTLE_TIMEOUT_MS;
+
+      while (Date.now() < settleDeadline && !automationView.isClosed()) {
+        await automationView.execute<boolean>(
+          buildScrollProjectConversationListScript(
+            CHATGPT_PROJECT_CHAT_LIST_SELECTORS,
+          ),
+        );
+        await sleep(PROJECT_LIST_POLL_INTERVAL_MS);
+
+        finalSnapshot = await automationView.execute<ProjectConversationListSnapshot>(
+          buildCollectProjectConversationListSnapshotScript(
+            CHATGPT_PROJECT_CHAT_LIST_SELECTORS,
+          ),
+        );
+        const networkState = await automationView.execute<ProjectImportNetworkState>(
+          buildReadProjectImportNetworkStateScript(),
+        );
+        if (finalSnapshot.projectTitle.trim()) {
+          projectTitle = finalSnapshot.projectTitle.trim();
+        }
+        mergeProjectConversationSnapshot(collected, finalSnapshot);
+        onProgress?.({
+          collectedCount: collected.size,
+          listItemCount: finalSnapshot.listItemCount,
+          phase: 'collecting',
+          projectTitle,
+        });
+
+        const didGrow =
+          collected.size !== settleCollectedCount ||
+          finalSnapshot.listItemCount !== settleListItemCount ||
+          finalSnapshot.lastConversationUrl !== settleLastConversationUrl;
+        const didChangeNetworkActivity =
+          networkState.lastActivityAt !== lastSettledNetworkActivityAt;
+
+        if (didGrow) {
+          settleCollectedCount = collected.size;
+          settleListItemCount = finalSnapshot.listItemCount;
+          settleLastConversationUrl = finalSnapshot.lastConversationUrl;
+          lastGrowthAt = Date.now();
+          lastSettledNetworkActivityAt = networkState.lastActivityAt;
+          continue;
+        }
+
+        if (didChangeNetworkActivity) {
+          lastSettledNetworkActivityAt = networkState.lastActivityAt;
+          lastGrowthAt = Date.now();
+          continue;
+        }
+
+        if (
+          networkState.inFlight === 0 &&
+          Date.now() - Math.max(lastGrowthAt, networkState.lastResponseAt) >=
+            PROJECT_LIST_SETTLE_IDLE_MS
+        ) {
+          break;
+        }
+      }
+
       return {
         canScrollMore: false,
         conversations: Array.from(collected.values()),
+        lastConversationUrl: finalSnapshot?.lastConversationUrl ?? '',
+        listItemCount: finalSnapshot?.listItemCount ?? collected.size,
+        scrollHeight: finalSnapshot?.scrollHeight ?? 0,
+        scrollTop: finalSnapshot?.scrollTop ?? 0,
         projectTitle,
       };
     } finally {
@@ -145,54 +249,22 @@ export class ProjectConversationImportService {
     }
   }
 
-  async importProject(projectUrlValue: string): Promise<ProjectConversationImportResult> {
+  async collectProject(
+    projectUrlValue: string,
+    onProgress?: (progress: ProjectConversationImportProgress) => void,
+  ): Promise<ProjectConversationCollectionResult> {
     const projectUrl = normalizeProjectUrl(projectUrlValue);
-    const collectedProject = await this.collectProjectConversations(projectUrl);
+    const collectedProject = await this.collectProjectConversations(
+      projectUrl,
+      onProgress,
+    );
 
     if (collectedProject.conversations.length === 0) {
       throw new Error('프로젝트에서 불러올 대화를 찾지 못했습니다.');
     }
 
-    const conversations: ProjectConversationImportConversation[] = [];
-    const failures: ProjectConversationImportFailure[] = [];
-
-    for (const conversation of collectedProject.conversations) {
-      try {
-        const importedConversation = await this.refreshSharedConversation({
-          chatUrl: conversation.chatUrl,
-          conversationTitle: conversation.title,
-          mode: 'chatgpt-share-flow',
-          projectUrl,
-          shareUrl: conversation.chatUrl,
-        });
-        conversations.push({
-          ...importedConversation,
-          chatUrl: conversation.chatUrl,
-        });
-      } catch (error) {
-        if (shouldAbortImport(error)) {
-          throw error;
-        }
-        failures.push({
-          chatUrl: conversation.chatUrl,
-          message:
-            error instanceof Error
-              ? error.message
-              : '대화를 불러오지 못했습니다.',
-          title: conversation.title,
-        });
-      }
-    }
-
-    if (conversations.length === 0) {
-      throw new Error(
-        failures[0]?.message ?? '프로젝트 대화를 불러오지 못했습니다.',
-      );
-    }
-
     return {
-      conversations,
-      failures,
+      conversations: collectedProject.conversations,
       fetchedAt: new Date().toISOString(),
       projectTitle: collectedProject.projectTitle || '프로젝트',
       projectUrl,

@@ -1,5 +1,8 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { ProjectConversationImportRequest } from '../shared/import/projectConversationImport';
+import type {
+  ProjectConversationImportProgress,
+  ProjectConversationImportRequest,
+} from '../shared/import/projectConversationImport';
 import type { GoogleDriveConfigInput } from '../shared/sync/googleDriveSync';
 import type { SharedConversationRefreshRequest } from '../shared/refresh/sharedConversationRefresh';
 import type { WorkspaceSnapshot } from '../shared/sync/workspaceSnapshot';
@@ -9,10 +12,31 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('source-icon:fetch', iconUrl, refererUrl),
   fetchSharedConversation: (url: string) =>
     ipcRenderer.invoke('shared-conversation:fetch', url),
-  importProjectConversations: (request: ProjectConversationImportRequest) =>
-    ipcRenderer.invoke('project-conversation:import', request),
+  collectProjectConversationLinks: (request: ProjectConversationImportRequest) =>
+    ipcRenderer.invoke('project-conversation:collect', request),
+  cleanupChatGptAutomationBackgroundPool: () =>
+    ipcRenderer.invoke('chatgpt-automation:cleanup-background-pool'),
+  onProjectConversationImportProgress: (
+    listener: (progress: ProjectConversationImportProgress) => void,
+  ) => {
+    const wrappedListener = (
+      _event: Electron.IpcRendererEvent,
+      progress: ProjectConversationImportProgress,
+    ) => {
+      listener(progress);
+    };
+    ipcRenderer.on('project-conversation:progress', wrappedListener);
+    return () => {
+      ipcRenderer.removeListener(
+        'project-conversation:progress',
+        wrappedListener,
+      );
+    };
+  },
   refreshSharedConversation: (request: SharedConversationRefreshRequest) =>
     ipcRenderer.invoke('shared-conversation:refresh', request),
+  importChatGptConversation: (request: SharedConversationRefreshRequest) =>
+    ipcRenderer.invoke('chatgpt-conversation:import', request),
   fetchSourcePreview: (url: string) =>
     ipcRenderer.invoke('source-preview:fetch', url),
   getGoogleDriveConfig: () => ipcRenderer.invoke('google-drive-sync:get-config'),

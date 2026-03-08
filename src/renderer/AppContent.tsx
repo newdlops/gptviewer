@@ -17,6 +17,7 @@ import { WorkspaceModals } from './features/app/components/modals/WorkspaceModal
 
 function AppContent() {
   const [clearLocalWorkspaceState, setClearLocalWorkspaceState] = useState<ClearLocalWorkspaceState | null>(null);
+  const [conversationRenderNonce, setConversationRenderNonce] = useState(0);
   const drawer = useDrawerState();
   const sourceState = useSourcePreviewState();
   const workspaceState = useWorkspaceSnapshotState({ clearSourceState: sourceState.clearSourceState });
@@ -82,15 +83,18 @@ function AppContent() {
         isCollapsed={drawer.isDrawerCollapsed}
         onConversationSelect={workspaceActions.handleConversationSelect}
         onCreateFolder={workspaceActions.openCreateFolderModal}
+        onDeleteConversation={workspaceActions.openDeleteConversationModal}
         onDeleteFolder={workspaceActions.handleFolderDeleteRequest}
         onFolderToggle={workspaceActions.handleFolderToggle}
         onImportOpen={() => workspaceActions.setIsImportModalOpen(true)}
-        onProjectImportOpen={() => workspaceActions.setIsProjectImportModalOpen(true)}
+        onProjectImportOpen={workspaceActions.openProjectImportModal}
         onMoveFolder={workspaceActions.openMoveFolderModal}
         onNodeDrop={workspaceActions.handleTreeNodeDrop}
         onNodeReorder={workspaceActions.handleTreeNodeReorder}
+        onProjectFolder={workspaceActions.openProjectFolderModal}
         onRenameConversation={workspaceActions.openRenameConversationModal}
         onRenameFolder={workspaceActions.openRenameFolderModal}
+        onSyncProjectFolder={workspaceActions.openProjectFolderSync}
         onThemeToggle={workspaceState.toggleThemeMode}
         themeMode={workspaceState.themeMode}
         tree={workspaceState.workspaceTree}
@@ -111,14 +115,19 @@ function AppContent() {
         initialScrollTop={
           workspaceState.activeConversation ? sourceState.messageScrollPositionsRef.current[workspaceState.activeConversation.id] : undefined
         }
+        onClearConversation={workspaceActions.openClearConversationModal}
         onMessageHeightChange={sourceState.handleMessageHeightChange}
         onOpenRefreshSettings={workspaceActions.openRefreshConfigModal}
         onRefreshConversation={workspaceActions.handleRefreshActiveConversation}
+        onRerenderConversation={() =>
+          setConversationRenderNonce((currentNonce) => currentNonce + 1)
+        }
         onScrollPositionChange={sourceState.handleMessageListScrollPositionChange}
         onSourcePreviewNeeded={sourceState.loadSourcePreview}
         onToggleSourceDrawer={sourceState.toggleSourceDrawer}
         refreshError={workspaceActions.refreshError}
         refreshingConversationId={workspaceActions.refreshingConversationId}
+        renderNonce={conversationRenderNonce}
         sourceDrawerMessageId={sourceState.sourceDrawer?.messageId}
         sourcePreviewCache={sourceState.sourcePreviewCache}
         sourcePreviewLoading={sourceState.sourcePreviewLoading}
@@ -151,13 +160,34 @@ function AppContent() {
       />
 
       <ProjectConversationImportModal
+        allFolderOptions={workspaceState.allFolderOptions}
+        canRetryAllFailures={workspaceActions.canRetryAllProjectConversationFailures}
         importError={workspaceActions.projectImportError}
+        failures={workspaceActions.projectImportFailures}
+        isBusy={
+          workspaceActions.isImportingProjectConversations ||
+          !!workspaceActions.retryingProjectConversationUrl
+        }
         isImporting={workspaceActions.isImportingProjectConversations}
-        isOpen={workspaceActions.isProjectImportModalOpen}
+        isOpen={
+          workspaceActions.isProjectImportModalOpen ||
+          workspaceActions.isImportingProjectConversations
+        }
+        mode={workspaceActions.projectImportMode}
         onClose={() => workspaceActions.setIsProjectImportModalOpen(false)}
+        onParentFolderChange={workspaceActions.setProjectImportParentFolderId}
         onProjectUrlChange={workspaceActions.setProjectImportUrl}
+        onRetryAllFailures={workspaceActions.handleRetryAllProjectConversationFailures}
+        onRetryFailure={workspaceActions.handleRetryProjectConversationFailure}
+        onPreferredStrategyChange={workspaceActions.setProjectImportPreferredStrategy}
         onSubmit={workspaceActions.handleImportProjectConversations}
+        parentFolderId={workspaceActions.projectImportParentFolderId}
+        preferredStrategy={workspaceActions.projectImportPreferredStrategy}
+        progress={workspaceActions.projectImportProgress}
         projectUrl={workspaceActions.projectImportUrl}
+        syncSummary={workspaceActions.projectSyncSummary}
+        workerCount={workspaceActions.projectImportWorkerCount}
+        onWorkerCountChange={workspaceActions.setProjectImportWorkerCount}
       />
 
       <SharedConversationRefreshConfigModal
@@ -171,17 +201,30 @@ function AppContent() {
         allFolderOptions={workspaceState.allFolderOptions}
         clearLocalWorkspaceState={clearLocalWorkspaceState}
         createFolderState={workspaceActions.createFolderState}
+        clearConversationState={workspaceActions.clearConversationState}
+        deleteConversationState={workspaceActions.deleteConversationState}
         deleteFolderState={workspaceActions.deleteFolderState}
         folderOperationError={workspaceActions.folderOperationError}
         moveFolderOptions={workspaceActions.moveFolderOptions}
         moveFolderState={workspaceActions.moveFolderState}
         onClearLocalWorkspace={handleClearLocalWorkspace}
         onCloseClearLocalWorkspace={() => setClearLocalWorkspaceState(null)}
+        onCloseClearConversation={() => workspaceActions.setClearConversationState(null)}
         onCloseCreateFolder={() => workspaceActions.setCreateFolderState(null)}
+        onCloseDeleteConversation={() => workspaceActions.setDeleteConversationState(null)}
         onCloseDeleteFolder={() => workspaceActions.setDeleteFolderState(null)}
         onCloseMoveFolder={() => workspaceActions.setMoveFolderState(null)}
+        onCloseProjectFolder={() => workspaceActions.setProjectFolderState(null)}
         onCloseRenameConversation={() => workspaceActions.setRenameConversationState(null)}
         onCloseRenameFolder={() => workspaceActions.setRenameFolderState(null)}
+        onConfirmDeleteConversation={(conversationId) => {
+          workspaceActions.deleteConversation(conversationId);
+          workspaceActions.setDeleteConversationState(null);
+        }}
+        onConfirmClearConversation={(conversationId) => {
+          workspaceActions.clearConversationContent(conversationId);
+          workspaceActions.setClearConversationState(null);
+        }}
         onConfirmDeleteFolder={(folderId) => {
           workspaceActions.deleteFolder(folderId);
           workspaceActions.setDeleteFolderState(null);
@@ -190,10 +233,13 @@ function AppContent() {
         onCreateFolderSubmit={workspaceActions.handleCreateFolderSubmit}
         onMoveFolderStateChange={workspaceActions.setMoveFolderState}
         onMoveFolderSubmit={workspaceActions.handleMoveFolderSubmit}
+        onProjectFolderStateChange={workspaceActions.setProjectFolderState}
+        onProjectFolderSubmit={workspaceActions.handleProjectFolderSubmit}
         onRenameConversationStateChange={workspaceActions.setRenameConversationState}
         onRenameConversationSubmit={workspaceActions.handleRenameConversationSubmit}
         onRenameFolderStateChange={workspaceActions.setRenameFolderState}
         onRenameFolderSubmit={workspaceActions.handleRenameFolderSubmit}
+        projectFolderState={workspaceActions.projectFolderState}
         renameConversationState={workspaceActions.renameConversationState}
         renameFolderState={workspaceActions.renameFolderState}
       />

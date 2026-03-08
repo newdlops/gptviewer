@@ -1,4 +1,4 @@
-import { BrowserWindow, WebContentsView, type Rectangle, type WebContents } from 'electron';
+import { BrowserWindow, WebContentsView, screen, type Rectangle, type WebContents } from 'electron';
 import {
   buildClickActionAboveScript,
   buildFindAndClickFloatingScript,
@@ -37,39 +37,95 @@ import {
   type ChatGptPageSnapshot,
   type SharedUrlCandidateSnapshot,
 } from './chatGptPageScripts';
+import {
+  ChatGptConversationNetworkMonitor,
+} from './chatGptConversationNetworkMonitor';
 
 export const CHATGPT_REFRESH_PARTITION = 'persist:gptviewer-chatgpt-refresh';
 
 const DEFAULT_WINDOW_BOUNDS = { height: 920, width: 1280 };
+const BACKGROUND_WINDOW_OPACITY = 0.01;
+const BACKGROUND_WINDOW_VISIBLE_PEEK = 1;
+export type ChatGptAutomationVisibilityMode = 'background' | 'visible';
+
+function getBackgroundWindowBounds(anchorWindow: BrowserWindow | null) {
+  const display = anchorWindow && !anchorWindow.isDestroyed()
+    ? screen.getDisplayMatching(anchorWindow.getBounds())
+    : screen.getPrimaryDisplay();
+  const workArea = display.workArea;
+  const width = Math.min(DEFAULT_WINDOW_BOUNDS.width, workArea.width);
+  const height = Math.min(DEFAULT_WINDOW_BOUNDS.height, workArea.height);
+  const x = workArea.x + workArea.width - BACKGROUND_WINDOW_VISIBLE_PEEK;
+  const y = workArea.y + workArea.height - BACKGROUND_WINDOW_VISIBLE_PEEK;
+  return { height, width, x, y };
+}
+
+function getForegroundWindowBounds(anchorWindow: BrowserWindow | null) {
+  const display = anchorWindow && !anchorWindow.isDestroyed()
+    ? screen.getDisplayMatching(anchorWindow.getBounds())
+    : screen.getPrimaryDisplay();
+  const workArea = display.workArea;
+  const width = Math.min(DEFAULT_WINDOW_BOUNDS.width, workArea.width);
+  const height = Math.min(DEFAULT_WINDOW_BOUNDS.height, workArea.height);
+  const x = workArea.x + Math.max(0, Math.floor((workArea.width - width) / 2));
+  const y = workArea.y + Math.max(0, Math.floor((workArea.height - height) / 2));
+  return { height, width, x, y };
+}
 
 export class ChatGptAutomationView {
-  private static sharedInstance: ChatGptAutomationView | null = null;
+  private static readonly backgroundIdleViews: ChatGptAutomationView[] = [];
+  private readonly anchorWindow: BrowserWindow | null;
   private closed = false;
+  private conversationNetworkMonitor: ChatGptConversationNetworkMonitor | null = null;
+  private inBackgroundPool = false;
   private readonly view: WebContentsView;
+  private readonly visibilityMode: ChatGptAutomationVisibilityMode;
   private readonly window: BrowserWindow;
 
-  static acquire() {
-    if (this.sharedInstance && !this.sharedInstance.isClosed()) {
-      this.sharedInstance.reveal();
-      return this.sharedInstance;
+  static async acquire(
+    visibilityMode: ChatGptAutomationVisibilityMode = 'visible',
+  ) {
+    if (visibilityMode === 'background') {
+      const pooledView = ChatGptAutomationView.backgroundIdleViews.pop();
+      if (pooledView && !pooledView.isClosed()) {
+        pooledView.inBackgroundPool = false;
+        return pooledView;
+      }
     }
-    this.sharedInstance = new ChatGptAutomationView();
-    return this.sharedInstance;
+    return new ChatGptAutomationView(visibilityMode);
   }
 
-  constructor() {
+  static async drainBackgroundPool() {
+    const pooledViews = [...ChatGptAutomationView.backgroundIdleViews];
+    ChatGptAutomationView.backgroundIdleViews.length = 0;
+    await Promise.all(
+      pooledViews.map(async (pooledView) => {
+        await pooledView.destroyImmediately();
+      }),
+    );
+  }
+
+  constructor(visibilityMode: ChatGptAutomationVisibilityMode) {
+    this.visibilityMode = visibilityMode;
+    this.anchorWindow =
+      visibilityMode === 'background' ? BrowserWindow.getFocusedWindow() : null;
+    const backgroundBounds =
+      visibilityMode === 'background' ? getBackgroundWindowBounds(this.anchorWindow) : null;
     this.window = new BrowserWindow({
       acceptFirstMouse: true,
       autoHideMenuBar: true,
-      height: DEFAULT_WINDOW_BOUNDS.height,
+      height: backgroundBounds?.height ?? DEFAULT_WINDOW_BOUNDS.height,
       minHeight: 820,
       minWidth: 1100,
       show: false,
+      skipTaskbar: visibilityMode === 'background',
       title: 'ChatGPT 새로고침',
       webPreferences: {
         backgroundThrottling: false,
       },
-      width: DEFAULT_WINDOW_BOUNDS.width,
+      width: backgroundBounds?.width ?? DEFAULT_WINDOW_BOUNDS.width,
+      x: backgroundBounds?.x,
+      y: backgroundBounds?.y,
     });
     this.view = new WebContentsView({
       webPreferences: {
@@ -84,12 +140,7 @@ export class ChatGptAutomationView {
     this.syncViewBounds();
     this.window.on('close', () => { this.closed = true; });
     this.window.on('resize', this.syncViewBounds);
-    this.window.on('closed', () => {
-      this.closed = true;
-      if (ChatGptAutomationView.sharedInstance === this) {
-        ChatGptAutomationView.sharedInstance = null;
-      }
-    });
+    this.window.on('closed', () => { this.closed = true; });
     this.view.webContents.on('destroyed', () => { this.closed = true; });
     this.view.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   }
@@ -101,11 +152,29 @@ export class ChatGptAutomationView {
     this.view.setBounds(this.toViewBounds(this.window.getContentBounds()));
   };
 
-  private reveal() {
+  private showBackgroundWindow() {
     if (this.window.isDestroyed()) return;
+    this.window.setOpacity(BACKGROUND_WINDOW_OPACITY);
+    this.window.setSkipTaskbar(true);
+    this.window.setBounds(getBackgroundWindowBounds(this.anchorWindow), false);
     if (this.window.isMinimized()) this.window.restore();
     if (!this.window.isVisible()) {
       this.window.showInactive();
+      return;
+    }
+    this.window.showInactive();
+  }
+
+  private reveal() {
+    if (this.window.isDestroyed()) return;
+    if (this.visibilityMode === 'background') {
+      this.showBackgroundWindow();
+      return;
+    }
+    if (this.window.isMinimized()) this.window.restore();
+    this.window.setOpacity(1);
+    if (!this.window.isVisible()) {
+      this.window.show();
     }
   }
 
@@ -117,9 +186,70 @@ export class ChatGptAutomationView {
 
   async close() {
     await this.persistSession();
-    if (!this.isClosed()) {
-      this.window.hide();
+    if (this.visibilityMode === 'background' && !this.isClosed()) {
+      await this.releaseToBackgroundPool();
+      return;
     }
+    if (this.conversationNetworkMonitor) {
+      await this.conversationNetworkMonitor.dispose();
+    }
+    if (!this.isClosed()) {
+      this.window.destroy();
+    }
+  }
+
+  private async destroyImmediately() {
+    this.inBackgroundPool = false;
+    if (this.conversationNetworkMonitor) {
+      await this.conversationNetworkMonitor.dispose();
+      this.conversationNetworkMonitor = null;
+    }
+    if (!this.isClosed()) {
+      this.window.destroy();
+    }
+  }
+
+  private async releaseToBackgroundPool() {
+    if (this.isClosed() || this.inBackgroundPool) {
+      return;
+    }
+
+    try {
+      this.view.webContents.stop();
+    } catch {
+      // Ignore stop failures on pooled background views.
+    }
+    this.conversationNetworkMonitor?.clear();
+    if (!this.window.isDestroyed()) {
+      this.showBackgroundWindow();
+    }
+    this.inBackgroundPool = true;
+    ChatGptAutomationView.backgroundIdleViews.push(this);
+  }
+
+  async presentForAttention() {
+    if (this.isClosed()) return;
+    const foregroundBounds = getForegroundWindowBounds(this.anchorWindow);
+    this.window.setSkipTaskbar(false);
+    this.window.setOpacity(1);
+    this.window.setBounds(foregroundBounds, false);
+    if (this.window.isMinimized()) this.window.restore();
+    this.window.show();
+    this.window.moveTop();
+    this.window.focus();
+  }
+
+  async enableConversationNetworkMonitoring() {
+    this.reveal();
+
+    if (!this.conversationNetworkMonitor) {
+      this.conversationNetworkMonitor = new ChatGptConversationNetworkMonitor(
+        this.view.webContents,
+      );
+    }
+
+    await this.conversationNetworkMonitor.ready();
+    this.conversationNetworkMonitor.clear();
   }
 
   async execute<T>(script: string): Promise<T> {
@@ -131,6 +261,14 @@ export class ChatGptAutomationView {
     await this.view.webContents.loadURL(url);
     await this.installClipboardBridge();
     await this.installShareResponseBridge();
+  }
+
+  getConversationNetworkRecords() {
+    return this.conversationNetworkMonitor?.getRecords() ?? [];
+  }
+
+  getLatestBackendApiHeaders() {
+    return this.conversationNetworkMonitor?.getLatestBackendApiHeaders() ?? null;
   }
 
   async hasButtonByLabels(labels: string[], testIds: string[] = []) { return this.execute<boolean>(buildHasButtonScript(labels, testIds)); }

@@ -1,6 +1,7 @@
 import type {
+  ProjectConversationCollectionResult,
+  ProjectConversationImportProgress,
   ProjectConversationImportRequest,
-  ProjectConversationImportResult,
 } from '../../shared/import/projectConversationImport';
 import type {
   GoogleDriveConfigInput,
@@ -35,12 +36,19 @@ interface ElectronAPI {
     refererUrl?: string,
   ): Promise<SourceIconImport | null>;
   fetchSharedConversation(url: string): Promise<SharedConversationImport>;
-  importProjectConversations(
+  collectProjectConversationLinks(
     request: ProjectConversationImportRequest,
-  ): Promise<ProjectConversationImportResult>;
+  ): Promise<ProjectConversationCollectionResult>;
+  cleanupChatGptAutomationBackgroundPool(): Promise<void>;
+  onProjectConversationImportProgress(
+    listener: (progress: ProjectConversationImportProgress) => void,
+  ): () => void;
   refreshSharedConversation(
     request: SharedConversationRefreshRequest,
   ): Promise<SharedConversationRefreshResult>;
+  importChatGptConversation(
+    request: SharedConversationRefreshRequest,
+  ): Promise<SharedConversationImport>;
   fetchSourcePreview(url: string): Promise<SourcePreviewImport>;
   getGoogleDriveConfig(): Promise<GoogleDriveConfigSummary>;
   getGoogleDriveSyncStatus(): Promise<GoogleDriveSyncStatus>;

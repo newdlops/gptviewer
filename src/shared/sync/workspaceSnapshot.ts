@@ -22,8 +22,10 @@ export type WorkspaceSnapshotMessage = {
 export type WorkspaceSnapshotConversation = {
   fetchedAt?: string;
   id: string;
+  importOrigin?: 'chat-url';
   isSharedImport?: boolean;
   messages: WorkspaceSnapshotMessage[];
+  projectSyncStatus?: 'viewer-created';
   refreshRequest?: SharedConversationRefreshRequest;
   sourceUrl?: string;
   summary: string;
@@ -37,10 +39,16 @@ export type WorkspaceSnapshotConversationNode = {
   type: 'conversation';
 };
 
+export type WorkspaceSnapshotFolderSource = {
+  kind: 'project';
+  projectUrl: string;
+};
+
 export type WorkspaceSnapshotFolderNode = {
   children: WorkspaceSnapshotNode[];
   id: string;
   name: string;
+  source?: WorkspaceSnapshotFolderSource;
   type: 'folder';
 };
 

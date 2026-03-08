@@ -32,6 +32,16 @@ export type DeleteFolderState = {
   folderName: string;
 };
 
+export type DeleteConversationState = {
+  conversationId: string;
+  conversationTitle: string;
+};
+
+export type ClearConversationState = {
+  conversationId: string;
+  conversationTitle: string;
+};
+
 export type ClearLocalWorkspaceState = {
   conversationCount: number;
   folderCount: number;
@@ -47,6 +57,12 @@ export type RenameFolderState = {
   folderId: string;
   folderName: string;
   nextName: string;
+};
+
+export type ProjectFolderState = {
+  folderId: string;
+  folderName: string;
+  projectUrl: string;
 };
 
 export type SharedConversationRefreshConfigState = {

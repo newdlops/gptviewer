@@ -12,6 +12,7 @@ type WorkspaceSidebarProps = {
   isCollapsed: boolean;
   onConversationSelect: (conversationId: string) => void;
   onCreateFolder: (parentFolderId: string | null) => void;
+  onDeleteConversation: (conversationId: string) => void;
   onDeleteFolder: (folderId: string) => void;
   onFolderToggle: (folderId: string) => void;
   onImportOpen: () => void;
@@ -19,8 +20,10 @@ type WorkspaceSidebarProps = {
   onMoveFolder: (folderId: string) => void;
   onNodeDrop: (nodeId: string, destinationFolderId: string | null) => void;
   onNodeReorder: (nodeId: string, targetNodeId: string, position: 'after' | 'before') => void;
+  onProjectFolder: (folderId: string) => void;
   onRenameConversation: (conversationId: string) => void;
   onRenameFolder: (folderId: string) => void;
+  onSyncProjectFolder: (folderId: string, projectUrl: string) => void;
   onThemeToggle: () => void;
   themeMode: ThemeMode;
   tree: WorkspaceNode[];
@@ -38,6 +41,7 @@ export function WorkspaceSidebar({
   isCollapsed,
   onConversationSelect,
   onCreateFolder,
+  onDeleteConversation,
   onDeleteFolder,
   onFolderToggle,
   onImportOpen,
@@ -45,8 +49,10 @@ export function WorkspaceSidebar({
   onMoveFolder,
   onNodeDrop,
   onNodeReorder,
+  onProjectFolder,
   onRenameConversation,
   onRenameFolder,
+  onSyncProjectFolder,
   onThemeToggle,
   themeMode,
   tree,
@@ -83,6 +89,7 @@ export function WorkspaceSidebar({
         isCollapsed={isCollapsed}
         onConversationSelect={onConversationSelect}
         onCreateFolder={onCreateFolder}
+        onDeleteConversation={onDeleteConversation}
         onDeleteFolder={onDeleteFolder}
         onNodeDrop={onNodeDrop}
         onNodeReorder={onNodeReorder}
@@ -90,6 +97,8 @@ export function WorkspaceSidebar({
         onMoveFolder={onMoveFolder}
         onRenameConversation={onRenameConversation}
         onRenameFolder={onRenameFolder}
+        onProjectFolder={onProjectFolder}
+        onSyncProjectFolder={onSyncProjectFolder}
         tree={tree}
       />
 

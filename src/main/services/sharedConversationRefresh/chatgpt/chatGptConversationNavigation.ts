@@ -13,10 +13,8 @@ import {
 import { ChatGptAutomationView } from './ChatGptAutomationView';
 import { waitForConversationListReady } from './chatGptConversationLoadHelpers';
 import { waitForFloatingMenuFromConversationRow } from './chatGptConversationMenuHelpers';
-import {
-  includesMarker,
-  type ShareEntryPointResult,
-} from './chatGptRefreshHelpers';
+import { buildScrollProjectConversationListScript } from '../../projectConversationImport/chatgpt/chatGptProjectImportScripts';
+import { includesMarker, type ShareEntryPointResult } from './chatGptRefreshHelpers';
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -53,7 +51,6 @@ const openSidebarIfCollapsed = async (automationView: ChatGptAutomationView) => 
   if (!hasOpenSidebarButton) {
     return;
   }
-
   await automationView.waitAndClickButtonByLabels(
     CHATGPT_OPEN_SIDEBAR_BUTTON_LABELS,
     [],
@@ -185,6 +182,22 @@ const waitForConversationRowShareEntryPoint = async (
       continue;
     }
 
+    if (rowMenuStep.status === 'not_found' && listHoverSelectors?.length) {
+      const didScroll = await automationView.execute<boolean>(
+        buildScrollProjectConversationListScript(listHoverSelectors),
+      );
+      if (!didScroll) {
+        await automationView.close();
+        return {
+          detail: `${lastSnapshot.currentUrl}\nproject conversation row not found for ${chatUrl}`,
+          status: 'share_button_not_found',
+        };
+      }
+      shouldPrimeListHover = true;
+      await sleep(intervalMs);
+      continue;
+    }
+
     await sleep(intervalMs);
   }
 
@@ -209,7 +222,6 @@ const openProjectPage = async (
     if (isSamePage(snapshot.currentUrl, projectUrl)) {
       return snapshot;
     }
-
     await openSidebarIfCollapsed(automationView);
     const openedProject = await automationView.tryClickLinkByUrl(projectUrl);
     if (!openedProject) {
@@ -238,7 +250,6 @@ export const openShareEntryPointFromSidebar = async (
   const loginState = isLoginLikeSnapshot(snapshot)
     ? snapshot.currentUrl || snapshot.title
     : '';
-
   await openSidebarIfCollapsed(automationView);
   return waitForConversationRowShareEntryPoint(
     automationView,
@@ -270,10 +281,7 @@ export const openShareEntryPointFromProject = async (
     intervalMs,
   );
   if (projectSnapshot === 'window_closed') {
-    return {
-      detail: firstSnapshot.currentUrl,
-      status: 'window_closed',
-    };
+    return { detail: firstSnapshot.currentUrl, status: 'window_closed' };
   }
   if (!projectSnapshot) {
     const snapshot = await automationView.getPageSnapshot();

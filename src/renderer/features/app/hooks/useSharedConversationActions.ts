@@ -16,6 +16,7 @@ import {
 import {
   buildConversationFromImport,
   buildRefreshRequest,
+  isChatUrlImportedConversation,
 } from '../lib/sharedConversationUtils';
 
 type UseSharedConversationActionsArgs = {
@@ -183,15 +184,26 @@ export function useSharedConversationActions({
     try {
       const refreshRequest = activeConversation.refreshRequest ?? {
         conversationTitle: activeConversation.title,
-        mode: 'direct-share-page',
+        helperWindowMode: 'background',
+        mode: isChatUrlImportedConversation(activeConversation)
+          ? 'direct-chat-page'
+          : 'direct-share-page',
         shareUrl: activeConversation.sourceUrl,
       };
-      if (refreshRequest.mode === 'chatgpt-share-flow' && !refreshRequest.chatUrl) {
+      const nextRefreshRequest = {
+        ...refreshRequest,
+        helperWindowMode: refreshRequest.helperWindowMode ?? 'background',
+      };
+      if (
+        (nextRefreshRequest.mode === 'chatgpt-share-flow' ||
+          nextRefreshRequest.mode === 'direct-chat-page') &&
+        !nextRefreshRequest.chatUrl
+      ) {
         throw new Error('원본 ChatGPT 대화 URL을 먼저 연결해 주세요.');
       }
       const importedConversation = normalizeImportedConversation(
         await window.electronAPI?.refreshSharedConversation(
-          refreshRequest,
+          nextRefreshRequest,
         ),
       );
       if (!importedConversation) throw new Error('공유 대화를 새로고침할 수 없습니다.');
@@ -223,7 +235,11 @@ export function useSharedConversationActions({
       chatUrl: conversation.refreshRequest?.chatUrl ?? '',
       conversationId,
       conversationTitle: conversation.title,
-      mode: conversation.refreshRequest?.mode ?? 'direct-share-page',
+      mode:
+        conversation.refreshRequest?.mode ??
+        (isChatUrlImportedConversation(conversation)
+          ? 'direct-chat-page'
+          : 'direct-share-page'),
       projectUrl: conversation.refreshRequest?.projectUrl ?? '',
       shareUrl: conversation.refreshRequest?.shareUrl ?? conversation.sourceUrl,
     });
@@ -243,7 +259,11 @@ export function useSharedConversationActions({
       refreshConfigState.mode,
     );
 
-    if (refreshConfigState.mode === 'chatgpt-share-flow' && !nextRefreshRequest.chatUrl) {
+    if (
+      (refreshConfigState.mode === 'chatgpt-share-flow' ||
+        refreshConfigState.mode === 'direct-chat-page') &&
+      !nextRefreshRequest.chatUrl
+    ) {
       setRefreshError('자동 새로고침에는 원본 ChatGPT 대화 URL이 필요합니다.');
       return;
     }

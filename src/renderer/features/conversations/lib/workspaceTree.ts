@@ -1,4 +1,8 @@
-import type { WorkspaceFolderNode, WorkspaceNode } from '../../../types/chat';
+import type {
+  WorkspaceFolderNode,
+  WorkspaceFolderSource,
+  WorkspaceNode,
+} from '../../../types/chat';
 
 export const SHARED_CONVERSATIONS_FOLDER_ID = 'workspace-root-imports';
 export const WORKSPACE_ROOT_VALUE = '__workspace-root__';
@@ -104,6 +108,7 @@ export const addFolderToTree = (
   nodes: WorkspaceNode[],
   folderName: string,
   parentFolderId: string | null,
+  source?: WorkspaceFolderSource,
 ): {
   folderId: string;
   tree: WorkspaceNode[];
@@ -114,6 +119,7 @@ export const addFolderToTree = (
     name: folderName,
     type: 'folder',
     children: [],
+    source,
   };
 
   return {
@@ -142,6 +148,29 @@ export const renameFolderInTree = (
     return {
       ...node,
       children: renameFolderInTree(node.children, folderId, nextName),
+    };
+  });
+
+export const updateFolderSourceInTree = (
+  nodes: WorkspaceNode[],
+  folderId: string,
+  nextSource?: WorkspaceFolderSource,
+): WorkspaceNode[] =>
+  nodes.map((node) => {
+    if (node.type !== 'folder') {
+      return node;
+    }
+
+    if (node.id === folderId) {
+      return {
+        ...node,
+        source: nextSource,
+      };
+    }
+
+    return {
+      ...node,
+      children: updateFolderSourceInTree(node.children, folderId, nextSource),
     };
   });
 

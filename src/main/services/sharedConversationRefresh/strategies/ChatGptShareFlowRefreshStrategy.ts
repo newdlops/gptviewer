@@ -87,7 +87,9 @@ export class ChatGptShareFlowRefreshStrategy {
       );
     }
 
-    const automationView = ChatGptAutomationView.acquire();
+    const automationView = await ChatGptAutomationView.acquire(
+      request.helperWindowMode ?? 'visible',
+    );
     const diagnostics = new ChatGptRefreshDiagnostics();
     let automationViewClosed = false;
     const closeAutomationView = async () => {
@@ -123,6 +125,7 @@ export class ChatGptShareFlowRefreshStrategy {
             );
         diagnostics.record('share-entry', `status=${shareEntryPointResult.status}`);
         if (shareEntryPointResult.status === 'login_required') {
+          await automationView.presentForAttention();
           throw new SharedConversationRefreshError(
             'login_required',
             'ChatGPT 로그인 또는 보안 확인이 끝나지 않았습니다. 보조 창에서 마친 뒤 다시 시도해 주세요.',
