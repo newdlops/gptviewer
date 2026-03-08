@@ -85,6 +85,7 @@ function AppContent() {
         onCreateFolder={workspaceActions.openCreateFolderModal}
         onDeleteConversation={workspaceActions.openDeleteConversationModal}
         onDeleteFolder={workspaceActions.handleFolderDeleteRequest}
+        onFolderSortToggle={workspaceActions.handleFolderSortToggle}
         onFolderToggle={workspaceActions.handleFolderToggle}
         onImportOpen={() => workspaceActions.setIsImportModalOpen(true)}
         onProjectImportOpen={workspaceActions.openProjectImportModal}

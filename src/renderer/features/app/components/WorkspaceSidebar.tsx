@@ -14,6 +14,7 @@ type WorkspaceSidebarProps = {
   onCreateFolder: (parentFolderId: string | null) => void;
   onDeleteConversation: (conversationId: string) => void;
   onDeleteFolder: (folderId: string) => void;
+  onFolderSortToggle: (folderId: string) => void;
   onFolderToggle: (folderId: string) => void;
   onImportOpen: () => void;
   onProjectImportOpen: () => void;
@@ -43,6 +44,7 @@ export function WorkspaceSidebar({
   onCreateFolder,
   onDeleteConversation,
   onDeleteFolder,
+  onFolderSortToggle,
   onFolderToggle,
   onImportOpen,
   onProjectImportOpen,
@@ -91,6 +93,7 @@ export function WorkspaceSidebar({
         onCreateFolder={onCreateFolder}
         onDeleteConversation={onDeleteConversation}
         onDeleteFolder={onDeleteFolder}
+        onFolderSortToggle={onFolderSortToggle}
         onNodeDrop={onNodeDrop}
         onNodeReorder={onNodeReorder}
         onFolderToggle={onFolderToggle}

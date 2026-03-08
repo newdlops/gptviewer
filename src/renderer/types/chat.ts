@@ -54,10 +54,13 @@ export type WorkspaceFolderSource = {
   projectUrl: string;
 };
 
+export type WorkspaceFolderSortMode = 'asc' | 'desc' | 'none';
+
 export type WorkspaceFolderNode = {
   id: string;
   name: string;
   source?: WorkspaceFolderSource;
+  sortMode?: WorkspaceFolderSortMode;
   type: 'folder';
   children: WorkspaceNode[];
 };

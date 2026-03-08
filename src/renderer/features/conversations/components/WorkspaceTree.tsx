@@ -12,6 +12,7 @@ import type {
   Conversation,
   WorkspaceConversationNode,
   WorkspaceFolderNode,
+  WorkspaceFolderSortMode,
   WorkspaceNode,
 } from '../../../types/chat';
 
@@ -43,6 +44,7 @@ type WorkspaceTreeProps = {
   onCreateFolder: (parentFolderId: string | null) => void;
   onDeleteConversation: (conversationId: string) => void;
   onDeleteFolder: (folderId: string) => void;
+  onFolderSortToggle: (folderId: string) => void;
   onNodeDrop: (nodeId: string, destinationFolderId: string | null) => void;
   onNodeReorder: (
     nodeId: string,
@@ -87,6 +89,7 @@ type WorkspaceTreeNodeProps = {
   onCreateFolder: (parentFolderId: string | null) => void;
   onDeleteConversation: (conversationId: string) => void;
   onDeleteFolder: (folderId: string) => void;
+  onFolderSortToggle: (folderId: string) => void;
   onFolderToggle: (folderId: string) => void;
   onMoveFolder: (folderId: string) => void;
   onProjectFolder: (folderId: string) => void;
@@ -211,6 +214,110 @@ function ProjectActionIcon() {
     </svg>
   );
 }
+
+function SortActionIcon({
+  sortMode,
+}: {
+  sortMode: WorkspaceFolderSortMode;
+}) {
+  if (sortMode === 'asc') {
+    return (
+      <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+        <path
+          d="M4 13V3m0 0-2 2m2-2 2 2M8.5 5.2h5M8.5 8h3.5M8.5 10.8h2"
+          fill="none"
+          stroke="currentColor"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeWidth="1.5"
+        />
+      </svg>
+    );
+  }
+
+  if (sortMode === 'desc') {
+    return (
+      <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+        <path
+          d="M4 3v10m0 0-2-2m2 2 2-2M8.5 5.2h2M8.5 8h3.5M8.5 10.8h5"
+          fill="none"
+          stroke="currentColor"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeWidth="1.5"
+        />
+      </svg>
+    );
+  }
+
+  return (
+    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <path
+        d="M3.2 4.6h9.6M3.2 8h7.2M3.2 11.4h4.8"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeWidth="1.5"
+      />
+    </svg>
+  );
+}
+
+const treeNodeTitleCollator = new Intl.Collator('ko', {
+  numeric: true,
+  sensitivity: 'base',
+});
+
+const getWorkspaceNodeDisplayTitle = (
+  node: WorkspaceNode,
+  conversationLookup: Map<string, Conversation>,
+): string => {
+  if (node.type === 'folder') {
+    return node.name;
+  }
+
+  return conversationLookup.get(node.conversationId)?.title ?? '';
+};
+
+const getFolderSortToggleTooltip = (
+  sortMode: WorkspaceFolderSortMode,
+): string => {
+  if (sortMode === 'asc') {
+    return '제목 내림차순 정렬';
+  }
+
+  if (sortMode === 'desc') {
+    return '정렬 해제';
+  }
+
+  return '제목 오름차순 정렬';
+};
+
+const getSortedWorkspaceChildren = (
+  nodes: WorkspaceNode[],
+  conversationLookup: Map<string, Conversation>,
+  sortMode: WorkspaceFolderSortMode,
+): WorkspaceNode[] => {
+  if (sortMode === 'none') {
+    return nodes;
+  }
+
+  const direction = sortMode === 'asc' ? 1 : -1;
+
+  return [...nodes].sort((leftNode, rightNode) => {
+    const titleComparison =
+      treeNodeTitleCollator.compare(
+        getWorkspaceNodeDisplayTitle(leftNode, conversationLookup),
+        getWorkspaceNodeDisplayTitle(rightNode, conversationLookup),
+      ) * direction;
+
+    if (titleComparison !== 0) {
+      return titleComparison;
+    }
+
+    return treeNodeTitleCollator.compare(leftNode.id, rightNode.id) * direction;
+  });
+};
 
 const getDropTargetFromElement = (
   element: Element | null,
@@ -403,6 +510,7 @@ function WorkspaceFolderBranch({
   onCreateFolder,
   onDeleteConversation,
   onDeleteFolder,
+  onFolderSortToggle,
   onFolderToggle,
   onMoveFolder,
   onProjectFolder,
@@ -424,6 +532,7 @@ function WorkspaceFolderBranch({
   onCreateFolder: (parentFolderId: string | null) => void;
   onDeleteConversation: (conversationId: string) => void;
   onDeleteFolder: (folderId: string) => void;
+  onFolderSortToggle: (folderId: string) => void;
   onFolderToggle: (folderId: string) => void;
   onMoveFolder: (folderId: string) => void;
   onProjectFolder: (folderId: string) => void;
@@ -449,6 +558,12 @@ function WorkspaceFolderBranch({
     dropTargetState.targetNodeId === node.id &&
     dropTargetState.position === 'after';
   const isProjectFolder = node.source?.kind === 'project';
+  const sortMode = node.sortMode ?? 'none';
+  const sortedChildren = getSortedWorkspaceChildren(
+    node.children,
+    conversationLookup,
+    sortMode,
+  );
   const handleFolderKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault();
@@ -536,6 +651,17 @@ function WorkspaceFolderBranch({
               </button>
             ) : null}
             <button
+              className={`workspace-tree__folder-action${sortMode !== 'none' ? ' workspace-tree__folder-action--active' : ''}`}
+              type="button"
+              onClick={() => onFolderSortToggle(node.id)}
+              aria-label={`${node.name} ${getFolderSortToggleTooltip(sortMode)}`}
+              data-tooltip={getFolderSortToggleTooltip(sortMode)}
+            >
+              <span className="workspace-tree__folder-action-icon">
+                <SortActionIcon sortMode={sortMode} />
+              </span>
+            </button>
+            <button
               className="workspace-tree__folder-action"
               type="button"
               onClick={() => onRenameFolder(node.id)}
@@ -584,7 +710,7 @@ function WorkspaceFolderBranch({
       </div>
       {isExpanded ? (
         <div className="workspace-tree__children">
-          {node.children.map((childNode) => (
+          {sortedChildren.map((childNode) => (
             <WorkspaceTreeNode
               key={childNode.id}
               activeConversationId={activeConversationId}
@@ -599,6 +725,7 @@ function WorkspaceFolderBranch({
               onCreateFolder={onCreateFolder}
               onDeleteConversation={onDeleteConversation}
               onDeleteFolder={onDeleteFolder}
+              onFolderSortToggle={onFolderSortToggle}
               onFolderToggle={onFolderToggle}
               onMoveFolder={onMoveFolder}
               onProjectFolder={onProjectFolder}
@@ -628,6 +755,7 @@ function WorkspaceTreeNode({
   onCreateFolder,
   onDeleteConversation,
   onDeleteFolder,
+  onFolderSortToggle,
   onFolderToggle,
   onMoveFolder,
   onProjectFolder,
@@ -670,6 +798,7 @@ function WorkspaceTreeNode({
       onCreateFolder={onCreateFolder}
       onDeleteConversation={onDeleteConversation}
       onDeleteFolder={onDeleteFolder}
+      onFolderSortToggle={onFolderSortToggle}
       onFolderToggle={onFolderToggle}
       onMoveFolder={onMoveFolder}
       onProjectFolder={onProjectFolder}
@@ -693,6 +822,7 @@ export function WorkspaceTree({
   onCreateFolder,
   onDeleteConversation,
   onDeleteFolder,
+  onFolderSortToggle,
   onNodeDrop,
   onNodeReorder,
   onFolderToggle,
@@ -878,6 +1008,7 @@ export function WorkspaceTree({
           onCreateFolder={onCreateFolder}
           onDeleteConversation={onDeleteConversation}
           onDeleteFolder={onDeleteFolder}
+          onFolderSortToggle={onFolderSortToggle}
           onFolderToggle={onFolderToggle}
           onMoveFolder={onMoveFolder}
           onProjectFolder={onProjectFolder}

@@ -8,6 +8,7 @@ import type {
   Message,
   MessageSource,
   WorkspaceFolderSource,
+  WorkspaceFolderSortMode,
   WorkspaceNode,
 } from '../../../types/chat';
 
@@ -216,6 +217,10 @@ const normalizeWorkspaceNode = (value: unknown): WorkspaceNode | null => {
       projectUrl,
     } satisfies WorkspaceFolderSource;
   })();
+  const sortMode =
+    record.sortMode === 'asc' || record.sortMode === 'desc' || record.sortMode === 'none'
+      ? (record.sortMode as WorkspaceFolderSortMode)
+      : undefined;
   const children = Array.isArray(record.children)
     ? record.children
         .map((childNode) => normalizeWorkspaceNode(childNode))
@@ -231,6 +236,7 @@ const normalizeWorkspaceNode = (value: unknown): WorkspaceNode | null => {
     id,
     name,
     source,
+    sortMode,
     type,
   };
 };

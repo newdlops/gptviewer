@@ -18,11 +18,31 @@ Updated: 2026-03-08
 
 ### Key Files
 - `src/renderer/features/messages/components/MarkdownCodeBlock.tsx`
+- `src/renderer/features/messages/components/MarkdownCodeSourcePanel.tsx`
+- `src/renderer/features/messages/lib/useMarkdownCodeBlockRendering.ts`
+- `src/renderer/features/messages/lib/markdownCodeBlockState.ts`
+- `src/renderer/features/messages/lib/markdownCodeBlockUtils.ts`
+- `src/renderer/features/messages/lib/mermaidLayout.ts`
+- `src/renderer/features/messages/lib/mermaidVariants.ts`
 - `src/renderer/features/messages/lib/useZoomableDiagramViewport.ts`
 - `src/renderer/features/messages/components/MessageList.tsx`
 - `src/renderer/features/messages/styles/message.css`
 
 ### Current State
+- `MarkdownCodeBlock.tsx` was refactored and slimmed down into a UI-focused component.
+- Main split:
+  - component shell: `components/MarkdownCodeBlock.tsx`
+  - source panel UI: `components/MarkdownCodeSourcePanel.tsx`
+  - render/cache/effect state: `lib/useMarkdownCodeBlockRendering.ts`
+  - stores/types: `lib/markdownCodeBlockState.ts`
+  - markdown/code helpers: `lib/markdownCodeBlockUtils.ts`
+  - mermaid SVG sizing/candidate selection: `lib/mermaidLayout.ts`
+  - mermaid transform/wrapping logic: `lib/mermaidVariants.ts`
+- Current size snapshot after refactor:
+  - `MarkdownCodeBlock.tsx`: 265 lines
+  - `useMarkdownCodeBlockRendering.ts`: 394 lines
+  - `mermaidVariants.ts`: 1102 lines
+- Next cleanup candidate inside the markdown/code-block area is `mermaidVariants.ts` if further modularization is needed.
 - Mermaid rendered blocks support:
   - zoom in/out
   - fit/reset
@@ -79,7 +99,41 @@ Updated: 2026-03-08
   - wrapped subgraph rows are no longer nested under the original outer subgraph
   - instead, each wrapped row becomes a sibling `subgraph ... direction LR` block, with direct row-to-row edges between their boundary nodes
   - goal: prevent Mermaid from collapsing nested row subgraphs back into a single tall vertical column
+- Layout forcing for wrapped subgraphs was strengthened again:
+  - both the global-subgraph DAG wrapper and the local subgraph-chain wrapper now reintroduce an explicit outer wrapper subgraph with `direction TB`
+  - row subgraphs inside that wrapper are blank-labeled and transparent, while the outer wrapper keeps the original subgraph title
+  - row bodies now prefer inline chain syntax (`A[[...]] --> B[[...]] --> C[[...]]`) when possible, instead of separate definition + edge lines
+  - goal: force Mermaid to honor multi-row stacking more aggressively while still preserving the original titled group semantics
+- Layout forcing was changed again to follow a stronger Mermaid-friendly pattern:
+  - wrapped subgraph rows are now emitted as sibling `subgraph` blocks instead of being nested in an outer wrapper
+  - the original subgraph title is kept on the first emitted row; later rows are blank-labeled
+  - row stacking is now forced with invisible spacer nodes and `~~~` links between sibling row subgraphs
+  - this change was based on a user-provided working Mermaid pattern where `subgraph SG1`, `spacer`, `subgraph SG2`, and `SG1 ~~~ spacer ~~~ SG2` reliably produced the desired stacked layout
+- Mermaid wrap strategy was adjusted again after user feedback:
+  - original titled root subgraph is now preserved again via an outer wrapper subgraph with `direction TB`
+  - inside that wrapper, row subgraphs are stacked using invisible spacer nodes plus `~~~` links
+  - actual semantic row-boundary edges (for example `D --> E`) are also re-added so relationships do not disappear
+  - wrapped rendering no longer evaluates only one transformed variant; it now renders multiple wrapped candidates (default, 2-row, 3-row, 4-row, 5-row) and picks the narrowest usable one against the available code-block width
+  - goal: resolve overflow more reliably while keeping visible relationships and preserving the original subgraph grouping semantics
+- Mermaid wrap strategy was adjusted again after clarified user intent:
+  - the outer wrapper subgraph was removed again because it caused Mermaid to collapse rows back into a tall pillar
+  - root-level sibling subgraphs are now emitted once per wrapped row (`subgraph-child`, `subgraph-child`, ...)
+  - the first root-level row keeps the original subgraph title; later rows are blank-labeled
+  - invisible spacer nodes plus `~~~` links are still used to encourage stacked layout
+  - actual semantic row-boundary edges (for example `D --> E`) are preserved alongside spacer links
 - `맞춤`, `자동조절`, and `코드 보기` / `렌더링` now share the same action-button styling in the code block header.
+- Mermaid error handling / manual fix workflow was added:
+  - render path is now classified as `original`, `wrapper`, or `custom`
+  - wrapper failures are surfaced as warnings when original render still succeeds
+  - original/custom failures are surfaced as blocking errors
+  - code-view header now shows an issue badge (`원본 오류`, `변환 경고`, `변환 오류`, `사용자 오류`)
+  - code view now always exposes:
+    - original Mermaid
+    - transformed Mermaid when a wrapper/generated source exists
+    - editable `사용자 직접 수정 Mermaid`
+  - custom Mermaid source is persisted in `customMermaidSourceStore` by `persistenceKey`
+  - saving custom Mermaid switches rendering to the user source and caches it for later renders
+  - clearing custom Mermaid returns the block to original/transformed rendering
 - `MessageList` still uses virtualization.
 - Mermaid/SVG blocks and fenced code blocks near the viewport are kept alive longer to reduce visible pop-in.
 - Message bubbles are memoized so scroll alone does not rerender every visible block.
@@ -191,3 +245,172 @@ Updated: 2026-03-08
   - batch concurrency is no longer hardcoded in `projectConversationImportBatch.ts`
   - strategy order is selected in `projectConversationImportHelpers.ts`
   - background helper-window mode is controlled through `SharedConversationRefreshRequest.helperWindowMode` and `ChatGptAutomationView.acquire(...)`
+
+## Latest Mermaid Layout Note
+- Mermaid wrapped-subgraph layout is currently being tuned in `src/renderer/features/messages/components/MarkdownCodeBlock.tsx`.
+- Current implementation center is `src/renderer/features/messages/lib/mermaidVariants.ts`.
+- `mermaidVariants.ts` was split and is now a barrel file.
+- Current file split:
+  - `src/renderer/features/messages/lib/mermaidVariantShared.ts`
+  - `src/renderer/features/messages/lib/mermaidTopLevelVariants.ts`
+  - `src/renderer/features/messages/lib/mermaidWrappedVariants.ts`
+  - `src/renderer/features/messages/lib/mermaidVariants.ts` (re-export only)
+- `mermaidWrappedVariants.ts` was further split to reduce size:
+  - `src/renderer/features/messages/lib/mermaidWrappedGraph.ts`
+  - `src/renderer/features/messages/lib/mermaidWrappedGlobalSubgraphs.ts`
+  - `src/renderer/features/messages/lib/mermaidWrappedLinearSubgraphs.ts`
+  - `src/renderer/features/messages/lib/mermaidWrappedVariants.ts` now keeps only top-level variant builders and simple-chain wrapping
+- Current active rules:
+  - wrapped candidates are generated as explicit `2/3/4/5-row` variants
+  - candidate selection prefers lower row counts first, then wider non-overflowing layouts
+  - wrapped variants are built from the original Mermaid source, not from a pre-verticalized source
+  - `top-level subgraph` variants (`independent` / `compact`) now rebuild each group as:
+    - visible root subgraph
+    - nested child subgraph with `direction LR`
+  - wrapped row variants also use the same nested `root -> child(LR)` structure
+  - root groups are connected with invisible spacer links (`~~~`) to force row-level placement
+  - row-to-row semantic edges are preserved directly between boundary nodes
+- Current visual goal:
+  - root-level groups should stack as rows
+  - child subgraph internals should remain horizontal (`LR`)
+  - overflow should be reduced without fragmenting diagrams into unnecessary many rows
+- Latest confirmed change:
+  - `top-level subgraph` and wrapped-row builders were unified to the same nested structure
+  - root groups are no longer hidden
+
+## Latest Code Editor Note
+- The editable `사용자 직접 수정 Mermaid` panel now uses an editor-like layout in:
+  - `src/renderer/features/messages/components/MarkdownCodeSourcePanel.tsx`
+  - `src/renderer/features/messages/styles/message.css`
+- Current editable mode behavior:
+  - line-number gutter on the left
+  - syntax-highlighted background layer using existing `react-syntax-highlighter`
+  - transparent textarea input layer on top
+  - scroll syncing between textarea, gutter, and highlight layer
+  - gutter now uses a single `pre` block with the same font-size/line-height as the editor input, to reduce line-spacing mismatch
+- Validation passed after this change:
+  - `npx tsc --noEmit`
+  - `npm run lint`
+
+## Latest Custom Mermaid Cache / Preview Note
+- User-requested Mermaid custom editing is now partially completed.
+- Added URL-scoped custom Mermaid cache:
+  - `src/renderer/features/messages/lib/customMermaidSourceCache.ts`
+- Added live draft preview hook:
+  - `src/renderer/features/messages/lib/useMermaidDraftPreview.ts`
+- `useMarkdownCodeBlockRendering.ts` now:
+  - derives a shared cache key from `chatUrl || sourceUrl || conversation.id` plus original Mermaid source
+  - restores saved custom Mermaid from localStorage-backed cache
+  - saves and clears custom Mermaid in both in-memory state and shared cache
+- `MessageList.tsx` now passes `sharedCacheScope` into `MarkdownCodeBlock`
+- `MarkdownCodeBlock.tsx` now shows a right-side live preview for editable Mermaid source
+- `MarkdownCodeSourcePanel.tsx` now supports:
+  - optional `preview` content
+  - side-by-side editable editor + preview layout
+  - `code-block__source-editor` class so editable overflow measurement can target the editor pane
+- `message.css` now includes preview pane/editor layout styles
+- Resulting behavior:
+  - user-edited Mermaid can be saved to cache
+  - same URL-scoped Mermaid can be restored on later refresh/reload
+  - editable Mermaid panel shows live preview on the right while typing
+- Validation passed after this change:
+  - `npx tsc --noEmit`
+  - `npm run lint`
+
+## Latest Workspace Tree Sort Note
+- Folder-level title sort toggle was added to the workspace tree.
+- Scope:
+  - per-folder tri-state view mode: `none -> asc -> desc -> none`
+  - applied at render time only, so stored child order is preserved when sort is off
+  - persisted on folder nodes via `sortMode`
+- Main files:
+  - `src/renderer/types/chat.ts`
+  - `src/shared/sync/workspaceSnapshot.ts`
+  - `src/renderer/features/conversations/lib/workspaceSnapshot.ts`
+  - `src/renderer/features/conversations/lib/workspaceTree.ts`
+  - `src/renderer/features/app/hooks/useWorkspaceTreeActions.ts`
+  - `src/renderer/features/conversations/components/WorkspaceTree.tsx`
+  - `src/renderer/features/app/components/WorkspaceSidebar.tsx`
+  - `src/renderer/AppContent.tsx`
+  - `src/renderer/features/conversations/styles/workspaceTree.css`
+- UI:
+  - folder action button cycles sort mode
+  - active sort button gets highlighted
+- Validation passed:
+  - `npx tsc --noEmit`
+  - `npm run lint`
+
+## Latest Conversation Smart Scroll Note
+- Conversation stream now has a section-jump rail beside the scrollbar.
+- Implemented in:
+  - `src/renderer/features/messages/lib/messageSections.ts`
+  - `src/renderer/features/messages/components/MessageList.tsx`
+  - `src/renderer/features/messages/styles/message.css`
+- Current behavior:
+  - assistant messages are summarized into section labels
+  - section markers are positioned proportionally against the scrollable range
+  - hover shows a tooltip with the extracted section label
+  - click scrolls directly to that section start
+  - current section marker is highlighted based on current scroll position
+- Notes:
+  - labels prefer markdown headings, then fall back to the first cleaned sentence
+  - duplicate adjacent labels are skipped
+- Validation passed:
+  - `npx tsc --noEmit`
+  - `npm run lint`
+
+## Latest Smart Scroll Overlay Note
+- The section rail no longer lives inside the scrolling content.
+- `MessageList` now uses a non-scrolling wrapper shell:
+  - `src/renderer/features/messages/components/MessageList.tsx`
+  - `src/renderer/features/messages/styles/message.css`
+- Current behavior:
+  - section anchors float on the right as an overlay
+  - the rail stays visible while content scrolls
+  - the rail is slightly hidden/off-edge until hover/focus
+  - hover tooltip is now a horizontal floating pill beside the rail
+- Validation passed:
+  - `npx tsc --noEmit`
+  - `npm run lint`
+
+## Latest Smart Scroll Hover Performance Note
+- The section rail reveal no longer uses per-mousemove React state.
+- `MessageList` now uses:
+  - an invisible right-edge trigger zone
+  - CSS sibling hover/focus rules to reveal the rail
+  - CSS pseudo-element tooltips on markers via `data-label`
+- This was done to reduce stutter when the cursor passes near anchors while scrolling.
+- Main files:
+  - `src/renderer/features/messages/components/MessageList.tsx`
+  - `src/renderer/features/messages/styles/message.css`
+- Validation passed:
+  - `npx tsc --noEmit`
+  - `npm run lint`
+
+## Latest Smart Scroll Proximity Note
+- The section rail no longer activates across the whole right edge.
+- `MessageList` now toggles rail visibility only when:
+  - the cursor is near the right edge, and
+  - the cursor is close to an actual section marker vertically
+- Implementation uses DOM class toggling via refs + `requestAnimationFrame`, not React hover state.
+- Main files:
+  - `src/renderer/features/messages/components/MessageList.tsx`
+  - `src/renderer/features/messages/styles/message.css`
+- Validation passed:
+  - `npx tsc --noEmit`
+  - `npm run lint`
+
+## Latest Smart Scroll Marker Stability Note
+- Section markers no longer change size or shift position on hover.
+- Hover/active feedback is now color + halo only, to reduce jitter near the rail.
+- Main file:
+  - `src/renderer/features/messages/styles/message.css`
+- Validation passed:
+  - `npm run lint`
+
+## Latest Smart Scroll Rail Stability Note
+- The section rail container itself no longer slides horizontally on proximity/hover.
+- Removed the rail-level `translateX(...)` reveal animation so the rail stays in a fixed position.
+- Only opacity now changes when the rail becomes active.
+- Main file:
+  - `src/renderer/features/messages/styles/message.css`

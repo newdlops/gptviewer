@@ -198,6 +198,12 @@
   transform: translateY(-1px);
 }
 
+.workspace-tree__folder-action--active {
+  border-color: color-mix(in srgb, var(--accent) 32%, var(--border-soft) 68%);
+  background: color-mix(in srgb, var(--accent-soft) 44%, var(--panel-bg-strong) 56%);
+  color: var(--accent-strong);
+}
+
 .workspace-tree__folder-action--danger:hover {
   color: #d45151;
 }

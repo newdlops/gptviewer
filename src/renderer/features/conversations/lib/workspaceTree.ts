@@ -1,5 +1,6 @@
 import type {
   WorkspaceFolderNode,
+  WorkspaceFolderSortMode,
   WorkspaceFolderSource,
   WorkspaceNode,
 } from '../../../types/chat';
@@ -171,6 +172,29 @@ export const updateFolderSourceInTree = (
     return {
       ...node,
       children: updateFolderSourceInTree(node.children, folderId, nextSource),
+    };
+  });
+
+export const updateFolderSortModeInTree = (
+  nodes: WorkspaceNode[],
+  folderId: string,
+  nextSortMode: WorkspaceFolderSortMode,
+): WorkspaceNode[] =>
+  nodes.map((node) => {
+    if (node.type !== 'folder') {
+      return node;
+    }
+
+    if (node.id === folderId) {
+      return {
+        ...node,
+        sortMode: nextSortMode,
+      };
+    }
+
+    return {
+      ...node,
+      children: updateFolderSortModeInTree(node.children, folderId, nextSortMode),
     };
   });
 

@@ -17,9 +17,15 @@ import {
   renameFolderInTree,
   removeFolderFromTree,
   removeNodeFromTree,
+  updateFolderSortModeInTree,
   updateFolderSourceInTree,
 } from '../../conversations/lib/workspaceTree';
-import type { Conversation, SourceDrawerState, WorkspaceNode } from '../../../types/chat';
+import type {
+  Conversation,
+  SourceDrawerState,
+  WorkspaceFolderSortMode,
+  WorkspaceNode,
+} from '../../../types/chat';
 import type {
   CreateFolderState,
   DeleteConversationState,
@@ -62,6 +68,19 @@ export function useWorkspaceTreeActions({
   const [renameConversationState, setRenameConversationState] = useState<RenameConversationState | null>(null);
   const [renameFolderState, setRenameFolderState] = useState<RenameFolderState | null>(null);
   const [folderOperationError, setFolderOperationError] = useState('');
+  const getNextFolderSortMode = (
+    currentSortMode: WorkspaceFolderSortMode | undefined,
+  ): WorkspaceFolderSortMode => {
+    if (currentSortMode === 'asc') {
+      return 'desc';
+    }
+
+    if (currentSortMode === 'desc') {
+      return 'none';
+    }
+
+    return 'asc';
+  };
 
   const moveFolderOptions = useMemo(() => {
     if (!moveFolderState) return [];
@@ -82,6 +101,21 @@ export function useWorkspaceTreeActions({
   const handleConversationSelect = (conversationId: string) => setActiveConversationId(conversationId);
   const handleFolderToggle = (folderId: string) => {
     setExpandedFolderState((current) => ({ ...current, [folderId]: !current[folderId] }));
+  };
+  const handleFolderSortToggle = (folderId: string) => {
+    const folder = findFolderById(workspaceTree, folderId);
+
+    if (!folder) {
+      return;
+    }
+
+    setWorkspaceTree((currentTree) =>
+      updateFolderSortModeInTree(
+        currentTree,
+        folderId,
+        getNextFolderSortMode(folder.sortMode),
+      ),
+    );
   };
   const handleTreeNodeDrop = (nodeId: string, destinationFolderId: string | null) => {
     if (!canDropNodeInFolder(workspaceTree, nodeId, destinationFolderId)) return;
@@ -285,6 +319,7 @@ export function useWorkspaceTreeActions({
     handleCreateFolderSubmit,
     handleFolderDeleteRequest,
     handleFolderToggle,
+    handleFolderSortToggle,
     handleMoveFolderSubmit,
     handleProjectFolderSubmit,
     handleRenameConversationSubmit,

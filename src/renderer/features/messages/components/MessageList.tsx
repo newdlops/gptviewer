@@ -2,6 +2,7 @@ import {
   AnchorHTMLAttributes,
   HTMLAttributes,
   memo,
+  MouseEvent,
   ReactNode,
   useEffect,
   useLayoutEffect,
@@ -29,6 +30,7 @@ import {
 import { InlineAssistantLink } from './InlineAssistantLink';
 import { LazySourceFavicon } from './SourceFavicon';
 import { MarkdownCodeBlock } from './MarkdownCodeBlock';
+import { buildMessageSections } from '../lib/messageSections';
 
 const MESSAGE_LIST_GAP = 14;
 const MESSAGE_LIST_BOTTOM_PADDING = 8;
@@ -75,6 +77,7 @@ type VirtualizedMessageBubbleProps = {
   onSourcePreviewNeeded: (source: MessageSource) => void;
   onToggleSourceDrawer: (message: Message) => void;
   renderNonce: number;
+  sharedCacheScope: string;
   sourcePreviewCache: Record<string, SourcePreview>;
   sourcePreviewLoading: Record<string, boolean>;
   themeMode: ThemeMode;
@@ -149,6 +152,7 @@ function VirtualizedMessageBubbleComponent({
   onSourcePreviewNeeded,
   onToggleSourceDrawer,
   renderNonce,
+  sharedCacheScope,
   sourcePreviewCache,
   sourcePreviewLoading,
   themeMode,
@@ -258,6 +262,7 @@ function VirtualizedMessageBubbleComponent({
             : 'block'
         }`}
         renderNonce={renderNonce}
+        sharedCacheScope={sharedCacheScope}
         themeMode={themeMode}
         {...props}
       >
@@ -276,6 +281,7 @@ function VirtualizedMessageBubbleComponent({
       sourcePreviewCache,
       sourcePreviewLoading,
       themeMode,
+      sharedCacheScope,
     ],
   );
 
@@ -364,8 +370,11 @@ export function MessageList({
   themeMode,
 }: MessageListProps) {
   const conversationRenderKey = `${activeConversation.id}:${activeConversation.fetchedAt ?? 'base'}`;
+  const messageListShellRef = useRef<HTMLDivElement | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
+  const sectionRailRef = useRef<HTMLDivElement | null>(null);
   const onScrollPositionChangeRef = useRef(onScrollPositionChange);
+  const proximityFrameRef = useRef<number | null>(null);
   const scrollFrameRef = useRef<number | null>(null);
   const programmaticScrollFrameRef = useRef<number | null>(null);
   const restoredConversationKeyRef = useRef<string | null>(null);
@@ -504,6 +513,52 @@ export function MessageList({
       (left, right) => left.start - right.start,
     );
   }, [allLayouts, scrollTop, viewportHeight, visibleLayouts]);
+  const sections = useMemo(() => buildMessageSections(allLayouts), [allLayouts]);
+  const maxScrollTop = useMemo(
+    () =>
+      Math.max(
+        totalHeight - (viewportHeight || MESSAGE_LIST_FALLBACK_VIEWPORT_HEIGHT),
+        0,
+      ),
+    [totalHeight, viewportHeight],
+  );
+  const sectionAnchors = useMemo(() => {
+    if (sections.length === 0) {
+      return [];
+    }
+
+    const railPadding = 16;
+    const markerSize = 10;
+    const usableHeight = Math.max(viewportHeight - railPadding * 2 - markerSize, 0);
+
+    return sections.map((section) => {
+      const clampedStart = Math.min(section.start, maxScrollTop);
+      const progress = maxScrollTop > 0 ? clampedStart / maxScrollTop : 0;
+
+      return {
+        ...section,
+        top: railPadding + usableHeight * progress,
+      };
+    });
+  }, [maxScrollTop, sections, viewportHeight]);
+  const activeSectionId = useMemo(() => {
+    if (sections.length === 0) {
+      return null;
+    }
+
+    const targetOffset = scrollTop + Math.max(viewportHeight * 0.18, 32);
+    let currentSectionId = sections[0].id;
+
+    for (const section of sections) {
+      if (section.start > targetOffset) {
+        break;
+      }
+
+      currentSectionId = section.id;
+    }
+
+    return currentSectionId;
+  }, [scrollTop, sections, viewportHeight]);
 
   const commitScrollPosition = (nextScrollTop: number) => {
     const messageListElement = messageListRef.current;
@@ -605,6 +660,10 @@ export function MessageList({
 
   useEffect(() => {
     return () => {
+      if (proximityFrameRef.current !== null) {
+        window.cancelAnimationFrame(proximityFrameRef.current);
+      }
+
       if (scrollFrameRef.current !== null) {
         window.cancelAnimationFrame(scrollFrameRef.current);
       }
@@ -659,36 +718,129 @@ export function MessageList({
   const handleUserScrollIntent = () => {
     autoBottomConversationKeyRef.current = null;
   };
+  const handleSectionJump = (targetStart: number) => {
+    autoBottomConversationKeyRef.current = null;
+    commitScrollPosition(Math.min(targetStart, maxScrollTop));
+  };
+  const setSectionRailProximity = (isNearAnchor: boolean) => {
+    const railElement = sectionRailRef.current;
+
+    if (!railElement) {
+      return;
+    }
+
+    railElement.classList.toggle('is-proximate', isNearAnchor);
+  };
+  const updateSectionRailProximity = (event: MouseEvent<HTMLDivElement>) => {
+    const shellElement = messageListShellRef.current;
+    const railElement = sectionRailRef.current;
+
+    if (!shellElement || !railElement) {
+      return;
+    }
+
+    if (proximityFrameRef.current !== null) {
+      window.cancelAnimationFrame(proximityFrameRef.current);
+    }
+
+    const { clientX, clientY } = event;
+    proximityFrameRef.current = window.requestAnimationFrame(() => {
+      proximityFrameRef.current = null;
+
+      const shellRect = shellElement.getBoundingClientRect();
+      const distanceFromRight = shellRect.right - clientX;
+
+      if (distanceFromRight > 64) {
+        setSectionRailProximity(false);
+        return;
+      }
+
+      const markers = railElement.querySelectorAll<HTMLButtonElement>(
+        '.message-list__section-marker',
+      );
+
+      if (markers.length === 0) {
+        setSectionRailProximity(false);
+        return;
+      }
+
+      let nearestDistance = Number.POSITIVE_INFINITY;
+
+      markers.forEach((marker) => {
+        const rect = marker.getBoundingClientRect();
+        const centerY = rect.top + rect.height / 2;
+        nearestDistance = Math.min(nearestDistance, Math.abs(centerY - clientY));
+      });
+
+      setSectionRailProximity(nearestDistance <= 44);
+    });
+  };
+  const handleSectionRailLeave = () => {
+    setSectionRailProximity(false);
+  };
 
   return (
     <div
-      className="message-list"
-      ref={messageListRef}
-      onPointerDownCapture={handleUserScrollIntent}
-      onScroll={handleMessageListScroll}
-      onTouchStartCapture={handleUserScrollIntent}
-      onWheelCapture={handleUserScrollIntent}
+      className="message-list-shell"
+      ref={messageListShellRef}
+      onMouseLeave={handleSectionRailLeave}
+      onMouseMove={updateSectionRailProximity}
     >
       <div
-        className="message-list__viewport"
-        style={{ height: `${totalHeight}px` }}
+        className="message-list"
+        ref={messageListRef}
+        onPointerDownCapture={handleUserScrollIntent}
+        onScroll={handleMessageListScroll}
+        onTouchStartCapture={handleUserScrollIntent}
+        onWheelCapture={handleUserScrollIntent}
       >
-        {renderedLayouts.map(({ message, start }) => (
-          <VirtualizedMessageBubble
-            key={message.id}
-            isSourceDrawerOpen={sourceDrawerMessageId === message.id}
-            message={message}
-            onHeightChange={handleMessageHeightChange}
-            onSourcePreviewNeeded={onSourcePreviewNeeded}
-            onToggleSourceDrawer={onToggleSourceDrawer}
-            renderNonce={renderNonce}
-            sourcePreviewCache={sourcePreviewCache}
-            sourcePreviewLoading={sourcePreviewLoading}
-            themeMode={themeMode}
-            top={start}
-          />
-        ))}
+        <div
+          className="message-list__viewport"
+          style={{ height: `${totalHeight}px` }}
+        >
+          {renderedLayouts.map(({ message, start }) => (
+            <VirtualizedMessageBubble
+              key={message.id}
+              isSourceDrawerOpen={sourceDrawerMessageId === message.id}
+              message={message}
+              onHeightChange={handleMessageHeightChange}
+              onSourcePreviewNeeded={onSourcePreviewNeeded}
+              onToggleSourceDrawer={onToggleSourceDrawer}
+              renderNonce={renderNonce}
+              sharedCacheScope={
+                activeConversation.refreshRequest?.chatUrl ||
+                activeConversation.sourceUrl ||
+                activeConversation.id
+              }
+              sourcePreviewCache={sourcePreviewCache}
+              sourcePreviewLoading={sourcePreviewLoading}
+              themeMode={themeMode}
+              top={start}
+            />
+          ))}
+        </div>
       </div>
+      {sectionAnchors.length > 0 ? (
+        <div
+          className="message-list__section-rail"
+          ref={sectionRailRef}
+        >
+          {sectionAnchors.map((section) => (
+            <button
+              key={section.id}
+              className={`message-list__section-marker${
+                activeSectionId === section.id ? ' is-active' : ''
+              }`}
+              type="button"
+              style={{ top: `${section.top}px` }}
+              aria-label={`${section.label} 위치로 이동`}
+              title={section.label}
+              data-label={section.label}
+              onClick={() => handleSectionJump(section.start)}
+            />
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }

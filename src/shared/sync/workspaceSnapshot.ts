@@ -49,6 +49,7 @@ export type WorkspaceSnapshotFolderNode = {
   id: string;
   name: string;
   source?: WorkspaceSnapshotFolderSource;
+  sortMode?: 'asc' | 'desc' | 'none';
   type: 'folder';
 };
 
