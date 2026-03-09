@@ -16,4 +16,10 @@ export const rendererConfig: Configuration = {
   resolve: {
     extensions: ['.js', '.ts', '.jsx', '.tsx', '.css'],
   },
+  // 웹팩 개발 서버의 에러 오버레이가 화면을 가리지 않도록 설정
+  devServer: {
+    client: {
+      overlay: false,
+    },
+  } as any,
 };
