@@ -1,11 +1,14 @@
 import {
   app,
   BrowserWindow,
+  dialog, // 추가
   ipcMain,
   screen,
   shell,
   type IpcMainInvokeEvent,
 } from 'electron';
+import { writeFile } from 'node:fs/promises'; // 추가
+import { join } from 'node:path'; // 추가 (이미 있을 수 있음 확인)
 import type {
   ProjectConversationCollectionResult,
   ProjectConversationImportProgress,
@@ -2452,6 +2455,42 @@ ipcMain.handle(
     );
     chatGptImageAssetInFlight.set(cacheKey, queuedTask);
     return queuedTask;
+  },
+);
+
+ipcMain.handle(
+  'image:save',
+  async (_event, dataUrl: string, defaultName?: string) => {
+    if (!dataUrl || !dataUrl.startsWith('data:image/')) {
+      throw new Error('올바른 이미지 데이터가 아닙니다.');
+    }
+
+    const matches = dataUrl.match(/^data:image\/([a-zA-Z+]+);base64,(.+)$/);
+    if (!matches) {
+      throw new Error('이미지 데이터를 파싱할 수 없습니다.');
+    }
+
+    const ext = matches[1];
+    const base64Data = matches[2];
+    const buffer = Buffer.from(base64Data, 'base64');
+
+    const { filePath } = await dialog.showSaveDialog({
+      defaultPath: defaultName || `image.${ext}`,
+      filters: [
+        {
+          extensions: [ext],
+          name: 'Images',
+        },
+      ],
+      title: '이미지 저장',
+    });
+
+    if (filePath) {
+      await writeFile(filePath, buffer);
+      return { filePath, success: true };
+    }
+
+    return { success: false };
   },
 );
 

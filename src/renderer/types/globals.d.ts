@@ -60,6 +60,10 @@ interface ElectronAPI {
     chatUrl: string,
     assetUrl: string,
   ): Promise<ChatGptImageAssetImport | null>;
+  saveImage(
+    dataUrl: string,
+    defaultName?: string,
+  ): Promise<{ filePath?: string; success: boolean }>;
   fetchSourcePreview(url: string): Promise<SourcePreviewImport>;
   getGoogleDriveConfig(): Promise<GoogleDriveConfigSummary>;
   getGoogleDriveSyncStatus(): Promise<GoogleDriveSyncStatus>;

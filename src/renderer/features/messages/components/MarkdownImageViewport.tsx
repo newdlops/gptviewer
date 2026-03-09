@@ -268,6 +268,22 @@ function MarkdownImageViewportComponent({
             >
               자동조절
             </button>
+            <button
+              className="message-image__action-button"
+              type="button"
+              onClick={async () => {
+                if (resolvedSrc && window.confirm('이 이미지를 저장하시겠습니까?')) {
+                  const defaultName = fileId ? `${fileId}.png` : 'image.png';
+                  const result = await window.electronAPI?.saveImage(resolvedSrc, defaultName);
+                  if (result?.success) {
+                    alert('이미지가 저장되었습니다.');
+                  }
+                }
+              }}
+              title="이미지를 로컬 파일로 저장합니다"
+            >
+              저장
+            </button>
           </div>
         ) : null}
       </div>

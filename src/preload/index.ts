@@ -43,6 +43,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('source-preview:fetch', url),
   resolveChatGptImageAsset: (chatUrl: string, assetUrl: string) =>
     ipcRenderer.invoke('chatgpt-image:resolve', chatUrl, assetUrl),
+  saveImage: (dataUrl: string, defaultName?: string) =>
+    ipcRenderer.invoke('image:save', dataUrl, defaultName),
   getGoogleDriveConfig: () => ipcRenderer.invoke('google-drive-sync:get-config'),
   getGoogleDriveSyncStatus: () =>
     ipcRenderer.invoke('google-drive-sync:get-status'),

@@ -83,9 +83,17 @@ const clamp = (value: number, min: number, max: number): number =>
   Math.min(max, Math.max(min, value));
 
 const getAvailableShellWidth = (shellElement: HTMLDivElement) => {
-  const parentWidth = shellElement.parentElement?.clientWidth ?? shellElement.clientWidth;
-  // 윈도우 너비의 90% 또는 설정된 최대 너비 중 작은 값 선택
-  return Math.max(Math.min(parentWidth, MAX_READABLE_SHELL_WIDTH, window.innerWidth * 0.9), 1);
+  const parent = shellElement.parentElement;
+  if (!parent) return 1;
+
+  // 부모의 실제 가용 너비(패딩 제외)를 계산
+  const styles = window.getComputedStyle(parent);
+  const paddingLeft = parseFloat(styles.paddingLeft || '0');
+  const paddingRight = parseFloat(styles.paddingRight || '0');
+  const parentInnerWidth = parent.clientWidth - paddingLeft - paddingRight;
+
+  // 가용 너비와 시스템 최대치 중 작은 값 선택
+  return Math.max(Math.min(parentInnerWidth, MAX_READABLE_SHELL_WIDTH), 1);
 };
 
 const clampShellWidthToBounds = (shellElement: HTMLDivElement) => {
@@ -485,18 +493,15 @@ export function useZoomableDiagramViewport(
     metrics: DiagramMetrics,
     targetScale: number,
   ) => {
-    clampShellWidthToBounds(shellElement);
-    const currentWidth = shellElement.clientWidth;
-    const currentHeight = shellElement.clientHeight;
     const maxWidth = getAvailableShellWidth(shellElement);
-    const maxHeight = Math.max(
-      currentHeight,
-      Math.min(MAX_READABLE_SHELL_HEIGHT, Math.floor(window.innerHeight * 6)),
-    );
+    const maxHeight = Math.min(MAX_READABLE_SHELL_HEIGHT, window.innerHeight * 0.7);
+    
+    // 셸이 부모 가용 너비를 넘지 않도록 강력히 제한 (핸들 가시성 및 UI 유지)
     const requiredWidth = metrics.contentWidth * targetScale + FIT_PADDING * 2;
     const requiredHeight = metrics.contentHeight * targetScale + FIT_PADDING * 2;
-    const nextWidth = clamp(requiredWidth, Math.min(currentWidth, maxWidth), maxWidth);
-    const nextHeight = clamp(requiredHeight, currentHeight, maxHeight);
+    
+    const nextWidth = Math.min(requiredWidth, maxWidth);
+    const nextHeight = Math.min(requiredHeight, maxHeight);
 
     shellElement.style.width = `${nextWidth}px`;
     shellElement.style.height = `${nextHeight}px`;

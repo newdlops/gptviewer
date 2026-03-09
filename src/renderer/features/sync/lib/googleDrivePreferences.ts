@@ -9,7 +9,7 @@ export const GOOGLE_DRIVE_AUTO_SYNC_INTERVAL_OPTIONS = [
   { label: '5분', value: 300_000 },
 ] as const;
 
-export const DEFAULT_GOOGLE_DRIVE_AUTO_SYNC_INTERVAL_MS = 30_000;
+export const DEFAULT_GOOGLE_DRIVE_AUTO_SYNC_INTERVAL_MS = 0;
 
 export type GoogleDrivePreferences = {
   autoSyncIntervalMs: number;

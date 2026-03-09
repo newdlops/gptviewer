@@ -78,6 +78,7 @@ function AppContent() {
           isGoogleDriveBusy: googleDriveSync.isGoogleDriveBusy,
           isLocalRestorePending: googleDriveSync.isLocalRestorePending,
           onOpenGoogleDriveConfig: googleDriveSync.openGoogleDriveConfigModal,
+          onRestore: googleDriveSync.handleGoogleDriveRestore,
           onSignIn: googleDriveSync.handleGoogleDriveSignIn,
           onSyncNow: googleDriveSync.handleGoogleDriveSyncNow,
         }}

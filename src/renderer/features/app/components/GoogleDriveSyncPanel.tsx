@@ -10,6 +10,7 @@ type GoogleDriveSyncPanelProps = {
   isGoogleDriveBusy: boolean;
   isLocalRestorePending: boolean;
   onOpenGoogleDriveConfig: () => void;
+  onRestore: () => void;
   onSignIn: () => void;
   onSyncNow: () => void;
 };
@@ -23,6 +24,7 @@ export function GoogleDriveSyncPanel({
   isGoogleDriveBusy,
   isLocalRestorePending,
   onOpenGoogleDriveConfig,
+  onRestore,
   onSignIn,
   onSyncNow,
 }: GoogleDriveSyncPanelProps) {
@@ -41,11 +43,7 @@ export function GoogleDriveSyncPanel({
               : googleDriveSyncStatus?.message ?? '연결 상태를 확인하는 중...'}
         </span>
         {googleDriveSyncStatus?.lastSyncedAt ? (
-          <small>마지막 동기화 {new Date(googleDriveSyncStatus.lastSyncedAt).toLocaleString('ko-KR')}</small>
-        ) : null}
-        <small>자동 동기화: {googleDriveAutoSyncIntervalLabel}</small>
-        {isLocalRestorePending ? (
-          <small>로컬 작업 공간을 비웠습니다. 지금 동기화하면 Drive에서 복원합니다.</small>
+          <small>마지막 저장 {new Date(googleDriveSyncStatus.lastSyncedAt).toLocaleString('ko-KR')}</small>
         ) : null}
         {googleDriveErrorMessage ? (
           <small className="drawer-sync__error">
@@ -62,10 +60,30 @@ export function GoogleDriveSyncPanel({
       <div className="drawer-sync__actions">
         {isSignedIn ? (
           <>
-            <Button variant="ghost" onClick={onSyncNow} disabled={isGoogleDriveBusy || isGoogleDriveAutoSyncing}>
-              <span className="drawer-button__icon" aria-hidden="true">{isLocalRestorePending ? '↓' : '↻'}</span>
-              <span className="drawer-button__label">{isLocalRestorePending ? 'Drive에서 복원' : '지금 동기화'}</span>
-            </Button>
+            <div className="drawer-sync__action-group">
+              <Button 
+                variant="ghost" 
+                onClick={onSyncNow} 
+                disabled={isGoogleDriveBusy || isGoogleDriveAutoSyncing}
+                title="현재 로컬 데이터를 Google Drive에 저장합니다 (덮어쓰기)"
+              >
+                <span className="drawer-button__icon" aria-hidden="true">↑</span>
+                <span className="drawer-button__label">저장하기</span>
+              </Button>
+              <Button 
+                variant="ghost" 
+                onClick={() => {
+                  if (window.confirm('Google Drive에서 데이터를 불러오시겠습니까? 현재 로컬 작업 공간의 데이터가 교체됩니다.')) {
+                    onRestore();
+                  }
+                }} 
+                disabled={isGoogleDriveBusy || isGoogleDriveAutoSyncing || !googleDriveSyncStatus?.hasRemoteSnapshot}
+                title="Google Drive에서 마지막 저장된 데이터를 불러옵니다 (로컬 덮어쓰기)"
+              >
+                <span className="drawer-button__icon" aria-hidden="true">↓</span>
+                <span className="drawer-button__label">불러오기</span>
+              </Button>
+            </div>
             <Button variant="ghost" onClick={onOpenGoogleDriveConfig} disabled={isGoogleDriveBusy || isGoogleDriveAutoSyncing}>
               <span className="drawer-button__icon" aria-hidden="true">⚙</span>
               <span className="drawer-button__label">설정</span>
