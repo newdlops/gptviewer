@@ -1,4 +1,11 @@
-import { app, BrowserWindow, ipcMain, shell, type IpcMainInvokeEvent } from 'electron';
+import {
+  app,
+  BrowserWindow,
+  ipcMain,
+  screen,
+  shell,
+  type IpcMainInvokeEvent,
+} from 'electron';
 import type {
   ProjectConversationCollectionResult,
   ProjectConversationImportProgress,
@@ -6,6 +13,7 @@ import type {
 } from '../shared/import/projectConversationImport';
 import type {
   SharedConversationImport,
+  SharedConversationImportWarning,
   SharedConversationMessage,
   SharedConversationRefreshRequest,
   SharedConversationSource,
@@ -19,8 +27,24 @@ import {
   getHostnameFallback,
   type SourcePreviewSnapshot,
 } from './parsers/sourcePreviewParser';
+import {
+  parseChatGptConversationHtmlSnapshot,
+  parseChatGptStandaloneHtml,
+} from './parsers/chatGptConversationHtmlParser';
+import {
+  buildChatGptConversationNetworkDiagnostics,
+  parseChatGptConversationNetworkRecords,
+} from './parsers/chatGptConversationNetworkParser';
 import { ProjectConversationImportService } from './services/projectConversationImport/ProjectConversationImportService';
 import { ChatGptAutomationView } from './services/sharedConversationRefresh/chatgpt/ChatGptAutomationView';
+import { ChatGptConversationNetworkMonitor } from './services/sharedConversationRefresh/chatgpt/chatGptConversationNetworkMonitor';
+import {
+  buildActivateDeepResearchEmbedsScript,
+  buildExtractConversationHtmlSnapshotScript,
+  buildExtractStandaloneHtmlSnapshotScript,
+  type ExtractedConversationHtmlSnapshot,
+  type ExtractedStandaloneHtmlSnapshot,
+} from './services/sharedConversationRefresh/chatgpt/chatGptConversationImportScripts';
 import { SharedConversationRefreshService } from './services/sharedConversationRefresh/SharedConversationRefreshService';
 import { SharedConversationRefreshError } from './services/sharedConversationRefresh/SharedConversationRefreshError';
 
@@ -31,6 +55,98 @@ type SourceIconImport = {
   contentType?: string;
   dataUrl: string;
   finalUrl: string;
+};
+
+type FrameStandaloneSnapshot = ExtractedStandaloneHtmlSnapshot & {
+  frameOrigin: string;
+  frameUrl: string;
+};
+
+const isMeaningfulDeepResearchUrl = (value: string | null | undefined): boolean => {
+  const normalizedValue = (value || '').trim();
+  return (
+    !!normalizedValue &&
+    normalizedValue !== 'about:blank' &&
+    normalizedValue.startsWith('http') &&
+    normalizedValue.includes('connector_openai_deep_research')
+  );
+};
+
+const showPreviewWindowInBackground = (window: BrowserWindow) => {
+  const display = screen.getDisplayMatching(
+    window.getBounds(),
+  ) || screen.getPrimaryDisplay();
+  const { workArea } = display;
+  const { width, height } = window.getBounds();
+  const visibleEdge = 8;
+  const x = workArea.x + workArea.width - visibleEdge;
+  const y = workArea.y + workArea.height - visibleEdge;
+
+  window.setBounds({
+    x,
+    y,
+    width,
+    height,
+  });
+  window.setOpacity(0.01);
+  window.setVisibleOnAllWorkspaces(false, {
+    visibleOnFullScreen: false,
+  });
+  window.showInactive();
+};
+
+const extractBestStandaloneSnapshotFromSubframes = async (
+  previewWindow: BrowserWindow,
+): Promise<FrameStandaloneSnapshot | null> => {
+  const frames = previewWindow.webContents.mainFrame.framesInSubtree.filter(
+    (frame) => frame !== previewWindow.webContents.mainFrame && !frame.isDestroyed(),
+  );
+
+  let bestSnapshot: FrameStandaloneSnapshot | null = null;
+
+  for (const frame of frames) {
+    let snapshot: ExtractedStandaloneHtmlSnapshot | null = null;
+
+    try {
+      snapshot = (await frame.executeJavaScript(
+        buildExtractStandaloneHtmlSnapshotScript(),
+        true,
+      )) as ExtractedStandaloneHtmlSnapshot;
+    } catch {
+      continue;
+    }
+
+    if (!snapshot || typeof snapshot.html !== 'string' || !snapshot.html.trim()) {
+      continue;
+    }
+
+    const typedSnapshot: FrameStandaloneSnapshot = {
+      ...snapshot,
+      frameOrigin: frame.origin || '',
+      frameUrl: frame.url || snapshot.currentUrl || '',
+    };
+
+    const typedSnapshotLooksLikeDeepResearchFrame =
+      isMeaningfulDeepResearchUrl(typedSnapshot.frameUrl) ||
+      isMeaningfulDeepResearchUrl(typedSnapshot.currentUrl) ||
+      typedSnapshot.frameOrigin.includes('oaiusercontent.com');
+    const bestSnapshotLooksLikeDeepResearchFrame =
+      bestSnapshot &&
+      (isMeaningfulDeepResearchUrl(bestSnapshot.frameUrl) ||
+        isMeaningfulDeepResearchUrl(bestSnapshot.currentUrl) ||
+        bestSnapshot.frameOrigin.includes('oaiusercontent.com'));
+
+    if (
+      !bestSnapshot ||
+      (!bestSnapshotLooksLikeDeepResearchFrame &&
+        !!typedSnapshotLooksLikeDeepResearchFrame) ||
+      typedSnapshot.html.length > bestSnapshot.html.length
+    ) {
+      bestSnapshot = typedSnapshot;
+    }
+  }
+
+  return bestSnapshot;
 };
 
 const SOURCE_PREVIEW_EXTRACTION_SCRIPT = `
@@ -566,6 +682,37 @@ const extractLargestRscPayload = (html: string): string | null => {
   );
 };
 
+const extractDeepResearchIframeSrcFromHtml = (
+  html: string,
+  fallbackUrl: string,
+): string | null => {
+  const iframeMatch =
+    html.match(
+      /<iframe\b[^>]*(?:title="internal:\/\/deep-research"|src="([^"]*connector_openai_deep_research[^"]*)")[^>]*src="([^"]+)"[^>]*>/i,
+    ) ??
+    html.match(
+      /<iframe\b[^>]*src="([^"]*connector_openai_deep_research[^"]*)"[^>]*(?:title="internal:\/\/deep-research")?[^>]*>/i,
+    );
+
+  const rawSrc =
+    iframeMatch?.[2] ??
+    iframeMatch?.[1] ??
+    '';
+
+  if (!rawSrc) {
+    return null;
+  }
+
+  try {
+    return new URL(rawSrc, fallbackUrl).toString();
+  } catch {
+    return null;
+  }
+};
+
+const SHARED_DEEP_RESEARCH_WARNING_MESSAGE =
+  '이 대화는 공유 URL에서 불러왔으며, 신버전 Deep Research 본문 일부를 가져오지 못했을 수 있습니다. 가능하면 원본 ChatGPT 대화 링크로 다시 불러오세요.';
+
 const extractSharedConversationFromHtml = (
   html: string,
   fallbackUrl: string,
@@ -724,6 +871,704 @@ const extractSharedConversationFromHtml = (
   };
 };
 
+const mergeDeepResearchMessages = (
+  baseConversation: Omit<SharedConversationImport, 'fetchedAt'> | null,
+  iframeConversation: Omit<SharedConversationImport, 'fetchedAt' | 'refreshRequest'> | null,
+  fallbackUrl: string,
+): Omit<SharedConversationImport, 'fetchedAt'> | null => {
+  if (!baseConversation && !iframeConversation) {
+    return null;
+  }
+
+  if (!baseConversation && iframeConversation) {
+    return {
+      ...iframeConversation,
+      sourceUrl: fallbackUrl,
+      title: sanitizeConversationTitle(iframeConversation.title ?? '공유 대화'),
+    };
+  }
+
+  if (!baseConversation || !iframeConversation || iframeConversation.messages.length === 0) {
+    return baseConversation;
+  }
+
+  const iframeMessages = iframeConversation.messages.filter(
+    (message) => !!message.text.trim(),
+  );
+  if (iframeMessages.length === 0) {
+    return baseConversation;
+  }
+
+  const lastAssistantIndex = [...baseConversation.messages]
+    .map((message, index) => ({ index, message }))
+    .reverse()
+    .find(({ message }) => message.role === 'assistant')?.index;
+
+  const iframeJoinedText = iframeMessages.map((message) => message.text.trim()).join('\n\n').trim();
+
+  if (!iframeJoinedText) {
+    return baseConversation;
+  }
+
+  if (
+    baseConversation.messages.some(
+      (message) => message.role === 'assistant' && message.text.trim() === iframeJoinedText,
+    )
+  ) {
+    return baseConversation;
+  }
+
+  const shouldReplaceLastAssistant =
+    lastAssistantIndex !== undefined &&
+    (() => {
+      const lastAssistantText =
+        baseConversation.messages[lastAssistantIndex]?.text?.trim() ?? '';
+      if (!lastAssistantText) {
+        return true;
+      }
+
+      if (/심층\s*리서치|deep\s*research/i.test(lastAssistantText)) {
+        return true;
+      }
+
+      return lastAssistantText.length < Math.max(300, Math.floor(iframeJoinedText.length * 0.35));
+    })();
+
+  const mergedMessages = [...baseConversation.messages];
+  if (shouldReplaceLastAssistant && lastAssistantIndex !== undefined) {
+    mergedMessages.splice(lastAssistantIndex, 1, ...iframeMessages);
+  } else {
+    mergedMessages.push(...iframeMessages);
+  }
+
+  const summarySource =
+    mergedMessages.find((message) => message.role === 'assistant')?.text ??
+    mergedMessages[0]?.text ??
+    '';
+
+  return {
+    ...baseConversation,
+    messages: mergedMessages,
+    sourceUrl: fallbackUrl,
+    summary: summarySource.replace(/\n/g, ' ').slice(0, 80),
+    title: sanitizeConversationTitle(
+      baseConversation.title || iframeConversation.title || '공유 대화',
+    ),
+  };
+};
+
+const getConversationTextStats = (
+  conversation: Omit<SharedConversationImport, 'fetchedAt' | 'refreshRequest'> | null,
+) => {
+  if (!conversation) {
+    return {
+      assistantChars: 0,
+      messageCount: 0,
+      totalChars: 0,
+    };
+  }
+
+  let assistantChars = 0;
+  let totalChars = 0;
+
+  conversation.messages.forEach((message) => {
+    const textLength = message.text.trim().length;
+    totalChars += textLength;
+    if (message.role === 'assistant') {
+      assistantChars += textLength;
+    }
+  });
+
+  return {
+    assistantChars,
+    messageCount: conversation.messages.length,
+    totalChars,
+  };
+};
+
+const shouldPreferRenderedSharedConversationBase = (
+  staticConversation: Omit<SharedConversationImport, 'fetchedAt' | 'refreshRequest'> | null,
+  renderedConversation: Omit<SharedConversationImport, 'fetchedAt' | 'refreshRequest'> | null,
+  staticDeepResearchIframeSrc: string | null,
+): boolean => {
+  if (!renderedConversation) {
+    return false;
+  }
+
+  if (!staticConversation || !staticDeepResearchIframeSrc) {
+    return true;
+  }
+
+  const staticStats = getConversationTextStats(staticConversation);
+  const renderedStats = getConversationTextStats(renderedConversation);
+
+  if (renderedStats.assistantChars > staticStats.assistantChars * 1.1) {
+    return true;
+  }
+
+  if (
+    renderedStats.messageCount >= Math.max(1, staticStats.messageCount - 8) &&
+    renderedStats.totalChars > staticStats.totalChars * 1.05
+  ) {
+    return true;
+  }
+
+  return false;
+};
+
+const mergeRenderedSharedConversationBase = (
+  staticConversation: Omit<SharedConversationImport, 'fetchedAt' | 'refreshRequest'> | null,
+  renderedConversation: Omit<SharedConversationImport, 'fetchedAt' | 'refreshRequest'> | null,
+): Omit<SharedConversationImport, 'fetchedAt' | 'refreshRequest'> | null => {
+  if (!staticConversation) {
+    return renderedConversation;
+  }
+
+  if (!renderedConversation) {
+    return staticConversation;
+  }
+
+  const mergedMessages = [...staticConversation.messages];
+  let staticCursor = 0;
+  let replacements = 0;
+
+  const normalizeForCompare = (value: string) =>
+    value.replace(/\s+/g, ' ').trim();
+
+  for (const renderedMessage of renderedConversation.messages) {
+    const renderedText = renderedMessage.text.trim();
+    if (!renderedText) {
+      continue;
+    }
+
+    let matchedIndex = -1;
+    for (let index = staticCursor; index < mergedMessages.length; index += 1) {
+      if (mergedMessages[index].role === renderedMessage.role) {
+        matchedIndex = index;
+        break;
+      }
+    }
+
+    if (matchedIndex === -1) {
+      break;
+    }
+
+    const staticMessage = mergedMessages[matchedIndex];
+    const staticText = staticMessage.text.trim();
+    const normalizedStaticText = normalizeForCompare(staticText);
+    const normalizedRenderedText = normalizeForCompare(renderedText);
+
+    const shouldReplace =
+      renderedMessage.role === 'assistant' &&
+      normalizedRenderedText.length > normalizedStaticText.length * 1.08 &&
+      (
+        !normalizedStaticText ||
+        normalizedRenderedText.includes(normalizedStaticText.slice(0, 120)) ||
+        normalizedStaticText.includes(normalizedRenderedText.slice(0, 120)) ||
+        normalizedRenderedText.length - normalizedStaticText.length > 800
+      );
+
+    if (shouldReplace) {
+      mergedMessages[matchedIndex] = {
+        ...staticMessage,
+        sources:
+          renderedMessage.sources.length > 0
+            ? renderedMessage.sources
+            : staticMessage.sources,
+        text: renderedMessage.text,
+      };
+      replacements += 1;
+    }
+
+    staticCursor = matchedIndex + 1;
+  }
+
+  console.info(
+    `[gptviewer][shared-deep-research:rendered-share-merge-base] static=${staticConversation.messages.length} rendered=${renderedConversation.messages.length} replacements=${replacements}`,
+  );
+
+  if (replacements === 0) {
+    return staticConversation;
+  }
+
+  const summarySource =
+    mergedMessages.find((message) => message.role === 'assistant')?.text ??
+    mergedMessages[0]?.text ??
+    '';
+
+  return {
+    ...staticConversation,
+    messages: mergedMessages,
+    summary: summarySource.replace(/\n/g, ' ').slice(0, 80),
+    title: sanitizeConversationTitle(
+      staticConversation.title || renderedConversation.title || '공유 대화',
+    ),
+  };
+};
+
+const loadRenderedStandaloneConversation = async (
+  iframeUrl: string,
+): Promise<Omit<SharedConversationImport, 'fetchedAt' | 'refreshRequest'> | null> => {
+  const previewWindow = new BrowserWindow({
+    show: false,
+    webPreferences: {
+      contextIsolation: true,
+      sandbox: true,
+      nodeIntegration: false,
+    },
+  });
+
+  previewWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  const networkMonitor = new ChatGptConversationNetworkMonitor(
+    previewWindow.webContents,
+  );
+
+  try {
+    showPreviewWindowInBackground(previewWindow);
+    const networkMonitorReadyPromise = networkMonitor
+      .ready()
+      .catch((): void => undefined);
+    await previewWindow.loadURL(iframeUrl, {
+      httpReferrer: iframeUrl,
+    });
+    console.info(
+      `[gptviewer][shared-deep-research:rendered-load] iframeUrl=${iframeUrl}`,
+    );
+    await Promise.race([
+      networkMonitorReadyPromise,
+      new Promise((resolve) => setTimeout(resolve, 1_500)),
+    ]);
+
+    const deadline = Date.now() + 12_000;
+    let bestSnapshot: ExtractedStandaloneHtmlSnapshot | null = null;
+
+    while (Date.now() < deadline && !previewWindow.isDestroyed()) {
+      try {
+        await previewWindow.webContents.executeJavaScript(
+          buildActivateDeepResearchEmbedsScript(),
+          true,
+        );
+      } catch {
+        // Ignore activation failures and continue probing.
+      }
+
+      const snapshot = await previewWindow.webContents.executeJavaScript(
+        buildExtractStandaloneHtmlSnapshotScript(),
+        true,
+      );
+
+      if (
+        snapshot &&
+        typeof snapshot === 'object' &&
+        'html' in snapshot &&
+        typeof snapshot.html === 'string' &&
+        snapshot.html.length > (bestSnapshot?.html.length ?? 0)
+      ) {
+        bestSnapshot = snapshot as ExtractedStandaloneHtmlSnapshot;
+        console.info(
+          `[gptviewer][shared-deep-research:rendered-snapshot] currentUrl=${
+            bestSnapshot.currentUrl || iframeUrl
+          } html=${bestSnapshot.html.length} iframeCount=${
+            bestSnapshot.iframeCount ?? 0
+          } allIframeCount=${bestSnapshot.allIframeCount ?? 0} depth=${
+            bestSnapshot.maxIframeDepth ?? 0
+          } iframeSrcs=${(bestSnapshot.iframeSrcs || []).join('|') || '-'} preview=${
+            bestSnapshot.htmlPreview || '-'
+          }`,
+        );
+      }
+
+      const hasUsefulNestedIframe =
+        (bestSnapshot?.allIframeCount ?? 0) > 0 ||
+        (bestSnapshot?.maxIframeDepth ?? 0) > 0 ||
+        (bestSnapshot?.iframeSrcs?.length ?? 0) > 0;
+      const hasSubstantialStandaloneHtml =
+        (bestSnapshot?.html.length ?? 0) > 2_000;
+      const hasOaiNetworkRecords = networkMonitor
+        .getRecords()
+        .some((record) => record.url.includes('oaiusercontent.com'));
+
+      if (
+        hasUsefulNestedIframe ||
+        hasSubstantialStandaloneHtml ||
+        hasOaiNetworkRecords
+      ) {
+        break;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+
+    const networkConversation = parseChatGptConversationNetworkRecords(
+      networkMonitor.getRecords(),
+      iframeUrl,
+    );
+    console.info(
+      `[gptviewer][shared-deep-research:rendered-network] iframeUrl=${iframeUrl} parsed=${
+        networkConversation ? 'yes' : 'no'
+      } messages=${networkConversation?.messages.length ?? 0}`,
+    );
+    if (!networkConversation) {
+      console.info(
+        `[gptviewer][shared-deep-research:rendered-network-diagnostics]\n${buildChatGptConversationNetworkDiagnostics(
+          networkMonitor.getRecords(),
+          iframeUrl,
+        )}`,
+      );
+    }
+
+    if (networkConversation) {
+      return networkConversation;
+    }
+
+    if (!bestSnapshot?.html) {
+      console.info(
+        `[gptviewer][shared-deep-research:rendered-empty] iframeUrl=${iframeUrl}`,
+      );
+      return null;
+    }
+
+    const parsedConversation = parseChatGptStandaloneHtml(
+      bestSnapshot.html,
+      bestSnapshot.currentUrl || iframeUrl,
+    );
+
+    console.info(
+      `[gptviewer][shared-deep-research:rendered-parse] iframeUrl=${iframeUrl} parsed=${
+        parsedConversation ? 'yes' : 'no'
+      } messages=${parsedConversation?.messages.length ?? 0}`,
+    );
+
+    return parsedConversation;
+  } catch {
+    console.info(
+      `[gptviewer][shared-deep-research:rendered-error] iframeUrl=${iframeUrl}`,
+    );
+    return null;
+  } finally {
+    await networkMonitor.dispose();
+    if (!previewWindow.isDestroyed()) {
+      previewWindow.destroy();
+    }
+  }
+};
+
+type RenderedSharedConversationEnhancement = {
+  baseConversation: Omit<
+    SharedConversationImport,
+    'fetchedAt' | 'refreshRequest'
+  > | null;
+  deepResearchConversation: Omit<
+    SharedConversationImport,
+    'fetchedAt' | 'refreshRequest'
+  > | null;
+  deepResearchIframeSrc: string | null;
+};
+
+const shouldPreferNetworkSharedConversationBase = (
+  currentConversation: Omit<
+    SharedConversationImport,
+    'fetchedAt' | 'refreshRequest'
+  > | null,
+  networkConversation: Omit<
+    SharedConversationImport,
+    'fetchedAt' | 'refreshRequest'
+  > | null,
+): boolean => {
+  if (!networkConversation) {
+    return false;
+  }
+
+  if (!currentConversation) {
+    return true;
+  }
+
+  const currentStats = getConversationTextStats(currentConversation);
+  const networkStats = getConversationTextStats(networkConversation);
+
+  if (networkStats.assistantChars > currentStats.assistantChars * 1.1) {
+    return true;
+  }
+
+  if (
+    networkStats.messageCount >= Math.max(1, currentStats.messageCount - 8) &&
+    networkStats.totalChars > currentStats.totalChars * 1.05
+  ) {
+    return true;
+  }
+
+  return false;
+};
+
+const loadRenderedSharedConversationEnhancement = async (
+  shareUrl: string,
+): Promise<RenderedSharedConversationEnhancement> => {
+  const previewWindow = new BrowserWindow({
+    show: false,
+    webPreferences: {
+      contextIsolation: true,
+      sandbox: true,
+      nodeIntegration: false,
+    },
+  });
+
+  previewWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  const networkMonitor = new ChatGptConversationNetworkMonitor(
+    previewWindow.webContents,
+  );
+
+  try {
+    showPreviewWindowInBackground(previewWindow);
+    const networkMonitorReadyPromise = networkMonitor
+      .ready()
+      .catch((): void => undefined);
+    await previewWindow.loadURL(shareUrl, {
+      httpReferrer: shareUrl,
+    });
+    console.info(
+      `[gptviewer][shared-deep-research:rendered-share-load] url=${shareUrl}`,
+    );
+    await Promise.race([
+      networkMonitorReadyPromise,
+      new Promise((resolve) => setTimeout(resolve, 1_500)),
+    ]);
+
+    const deadline = Date.now() + 14_000;
+    let bestConversationSnapshot: ExtractedConversationHtmlSnapshot | null =
+      null;
+    let bestStandaloneSnapshot: ExtractedStandaloneHtmlSnapshot | null = null;
+    let discoveredIframeSrc: string | null = null;
+    let deepResearchDetectedAt: number | null = null;
+
+    while (Date.now() < deadline && !previewWindow.isDestroyed()) {
+      try {
+        await previewWindow.webContents.executeJavaScript(
+          buildActivateDeepResearchEmbedsScript(),
+          true,
+        );
+      } catch {
+        // Ignore activation failures and continue probing.
+      }
+
+      const [conversationSnapshot, standaloneSnapshot] = await Promise.all([
+        previewWindow.webContents.executeJavaScript(
+          buildExtractConversationHtmlSnapshotScript(),
+          true,
+        ),
+        previewWindow.webContents.executeJavaScript(
+          buildExtractStandaloneHtmlSnapshotScript(),
+          true,
+        ),
+      ]);
+
+      if (
+        conversationSnapshot &&
+        typeof conversationSnapshot === 'object' &&
+        'blocks' in conversationSnapshot &&
+        Array.isArray(conversationSnapshot.blocks)
+      ) {
+        const typedSnapshot =
+          conversationSnapshot as ExtractedConversationHtmlSnapshot;
+        const blockCount = typedSnapshot.blocks.length;
+        const conversationHtmlLength =
+          typedSnapshot.conversationHtml?.length ?? 0;
+        const currentBestBlockCount = bestConversationSnapshot?.blocks.length ?? 0;
+        const currentBestHtmlLength =
+          bestConversationSnapshot?.conversationHtml?.length ?? 0;
+
+        if (
+          blockCount > currentBestBlockCount ||
+          (blockCount === currentBestBlockCount &&
+            conversationHtmlLength > currentBestHtmlLength)
+        ) {
+          bestConversationSnapshot = typedSnapshot;
+          console.info(
+            `[gptviewer][shared-deep-research:rendered-share-snapshot] url=${shareUrl} blocks=${blockCount} html=${conversationHtmlLength}`,
+          );
+        }
+
+        const blockIframeSrc =
+          typedSnapshot.blocks.find((block) => !!block.deepResearchIframeSrc)
+            ?.deepResearchIframeSrc ?? null;
+        if (
+          isMeaningfulDeepResearchUrl(blockIframeSrc) &&
+          blockIframeSrc !== discoveredIframeSrc
+        ) {
+          discoveredIframeSrc = blockIframeSrc;
+          deepResearchDetectedAt = Date.now();
+          console.info(
+            `[gptviewer][shared-deep-research:rendered-share-iframe] url=${shareUrl} iframeUrl=${blockIframeSrc}`,
+          );
+        }
+      }
+
+      if (
+        standaloneSnapshot &&
+        typeof standaloneSnapshot === 'object' &&
+        'html' in standaloneSnapshot &&
+        typeof standaloneSnapshot.html === 'string'
+      ) {
+        const typedSnapshot =
+          standaloneSnapshot as ExtractedStandaloneHtmlSnapshot;
+        const looksLikeNestedStandalone =
+          (typedSnapshot.maxIframeDepth ?? 0) > 0 ||
+          (typedSnapshot.currentUrl || '') !== shareUrl ||
+          (typedSnapshot.iframeSrcs || []).some((iframeSrc) =>
+            isMeaningfulDeepResearchUrl(iframeSrc),
+          );
+        if (
+          looksLikeNestedStandalone &&
+          (typedSnapshot.html.length > (bestStandaloneSnapshot?.html.length ?? 0) ||
+            (typedSnapshot.iframeSrcs || []).some((iframeSrc) =>
+              isMeaningfulDeepResearchUrl(iframeSrc),
+            ))
+        ) {
+          bestStandaloneSnapshot = typedSnapshot;
+          console.info(
+            `[gptviewer][shared-deep-research:rendered-share-standalone] url=${shareUrl} currentUrl=${
+              typedSnapshot.currentUrl || shareUrl
+            } html=${typedSnapshot.html.length} iframeCount=${
+              typedSnapshot.iframeCount ?? 0
+            } allIframeCount=${typedSnapshot.allIframeCount ?? 0} depth=${
+              typedSnapshot.maxIframeDepth ?? 0
+            } iframeSrcs=${(typedSnapshot.iframeSrcs || []).join('|') || '-'} preview=${
+              typedSnapshot.htmlPreview || '-'
+            }`,
+          );
+        }
+      }
+
+      const subframeSnapshot = await extractBestStandaloneSnapshotFromSubframes(
+        previewWindow,
+      );
+      if (
+        subframeSnapshot &&
+        subframeSnapshot.html.length > (bestStandaloneSnapshot?.html.length ?? 0)
+      ) {
+        bestStandaloneSnapshot = subframeSnapshot;
+        console.info(
+          `[gptviewer][shared-deep-research:rendered-share-subframe] url=${shareUrl} frameUrl=${
+            subframeSnapshot.frameUrl || '-'
+          } origin=${subframeSnapshot.frameOrigin || '-'} html=${
+            subframeSnapshot.html.length
+          } iframeCount=${subframeSnapshot.iframeCount ?? 0} allIframeCount=${
+            subframeSnapshot.allIframeCount ?? 0
+          } depth=${subframeSnapshot.maxIframeDepth ?? 0} preview=${
+            subframeSnapshot.htmlPreview || '-'
+          }`,
+        );
+      }
+
+      const hasUsefulStandaloneSnapshot =
+        (bestStandaloneSnapshot?.allIframeCount ?? 0) > 0 ||
+        (bestStandaloneSnapshot?.maxIframeDepth ?? 0) > 0 ||
+        (bestStandaloneSnapshot?.iframeSrcs?.length ?? 0) > 0 ||
+        (bestStandaloneSnapshot?.html.length ?? 0) > 2_000;
+      const hasOaiNetworkRecords = networkMonitor
+        .getRecords()
+        .some((record) => record.url.includes('oaiusercontent.com'));
+      const iframeGraceElapsed =
+        deepResearchDetectedAt !== null && Date.now() - deepResearchDetectedAt > 4_000;
+
+      if (
+        (bestConversationSnapshot?.blocks.length ?? 0) > 0 &&
+        (hasUsefulStandaloneSnapshot || hasOaiNetworkRecords)
+      ) {
+        break;
+      }
+
+      if (
+        (bestConversationSnapshot?.blocks.length ?? 0) > 0 &&
+        discoveredIframeSrc &&
+        iframeGraceElapsed
+      ) {
+        break;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+
+    const snapshotBaseConversation = bestConversationSnapshot
+      ? parseChatGptConversationHtmlSnapshot(bestConversationSnapshot, shareUrl)
+      : null;
+    const networkConversation = parseChatGptConversationNetworkRecords(
+      networkMonitor.getRecords(),
+      shareUrl,
+    );
+    const baseConversation = shouldPreferNetworkSharedConversationBase(
+      snapshotBaseConversation,
+      networkConversation,
+    )
+      ? networkConversation
+      : snapshotBaseConversation;
+    const deepResearchConversation =
+      bestStandaloneSnapshot &&
+      ((bestStandaloneSnapshot.currentUrl || '') !== shareUrl ||
+        (bestStandaloneSnapshot.maxIframeDepth ?? 0) > 0)
+        ? parseChatGptStandaloneHtml(
+            bestStandaloneSnapshot.html,
+            bestStandaloneSnapshot.currentUrl || shareUrl,
+          )
+        : null;
+
+    console.info(
+      `[gptviewer][shared-deep-research:rendered-share-network] url=${shareUrl} parsed=${
+        networkConversation ? 'yes' : 'no'
+      } messages=${networkConversation?.messages.length ?? 0}`,
+    );
+    if (!networkConversation) {
+      console.info(
+        `[gptviewer][shared-deep-research:rendered-share-network-diagnostics]\n${buildChatGptConversationNetworkDiagnostics(
+          networkMonitor.getRecords(),
+          shareUrl,
+        )}`,
+      );
+    }
+    console.info(
+      `[gptviewer][shared-deep-research:rendered-share-parse] url=${shareUrl} baseParsed=${
+        baseConversation ? 'yes' : 'no'
+      } baseMessages=${baseConversation?.messages.length ?? 0} iframeParsed=${
+        deepResearchConversation ? 'yes' : 'no'
+      } iframeMessages=${deepResearchConversation?.messages.length ?? 0}`,
+    );
+
+    const fallbackStandaloneIframeSrc =
+      bestStandaloneSnapshot &&
+      (isMeaningfulDeepResearchUrl(bestStandaloneSnapshot.currentUrl) ||
+        (bestStandaloneSnapshot.iframeSrcs || []).some((iframeSrc) =>
+          isMeaningfulDeepResearchUrl(iframeSrc),
+        ) ||
+        (((bestStandaloneSnapshot.currentUrl || '') !== shareUrl) &&
+          (bestStandaloneSnapshot.maxIframeDepth ?? 0) > 0))
+        ? isMeaningfulDeepResearchUrl(bestStandaloneSnapshot.currentUrl)
+          ? bestStandaloneSnapshot.currentUrl
+          : (bestStandaloneSnapshot.iframeSrcs || []).find((iframeSrc) =>
+              isMeaningfulDeepResearchUrl(iframeSrc),
+            ) || null
+        : null;
+
+    return {
+      baseConversation,
+      deepResearchConversation,
+      deepResearchIframeSrc: discoveredIframeSrc ?? fallbackStandaloneIframeSrc,
+    };
+  } catch {
+    console.info(
+      `[gptviewer][shared-deep-research:rendered-share-error] url=${shareUrl}`,
+    );
+    return {
+      baseConversation: null,
+      deepResearchConversation: null,
+      deepResearchIframeSrc: null,
+    };
+  } finally {
+    await networkMonitor.dispose();
+    if (!previewWindow.isDestroyed()) {
+      previewWindow.destroy();
+    }
+  }
+};
+
 const loadSharedConversation = async (
   url: string,
 ): Promise<SharedConversationImport> => {
@@ -739,19 +1584,178 @@ const loadSharedConversation = async (
 
   const finalUrl = response.url || url;
   const html = await response.text();
-  const parsedConversation = extractSharedConversationFromHtml(html, finalUrl);
+  let parsedConversation = extractSharedConversationFromHtml(html, finalUrl);
+  const staticDeepResearchIframeSrc = extractDeepResearchIframeSrcFromHtml(
+    html,
+    finalUrl,
+  );
+  let importWarning: SharedConversationImportWarning | undefined;
+  let deepResearchIframeSrc = staticDeepResearchIframeSrc;
+  console.info(
+    `[gptviewer][shared-load] url=${finalUrl} baseParsed=${
+      parsedConversation ? 'yes' : 'no'
+    } baseMessages=${parsedConversation?.messages.length ?? 0} deepResearchIframe=${
+      deepResearchIframeSrc ?? '-'
+    }`,
+  );
 
-  if (!parsedConversation) {
+  let deepResearchConversation: Omit<
+    SharedConversationImport,
+    'fetchedAt' | 'refreshRequest'
+  > | null = null;
+
+  if (!deepResearchIframeSrc) {
+    const renderedEnhancement = await loadRenderedSharedConversationEnhancement(
+      finalUrl,
+    );
+
+    const mergedRenderedBase = mergeRenderedSharedConversationBase(
+      parsedConversation,
+      renderedEnhancement.baseConversation,
+    );
+
+    const staticStats = getConversationTextStats(parsedConversation);
+    const renderedStats = getConversationTextStats(
+      renderedEnhancement.baseConversation,
+    );
+    const mergedBaseStats = getConversationTextStats(mergedRenderedBase);
+    const preferRenderedBase = shouldPreferRenderedSharedConversationBase(
+      parsedConversation,
+      renderedEnhancement.baseConversation,
+      staticDeepResearchIframeSrc,
+    );
+    const preferMergedBase =
+      !!mergedRenderedBase &&
+      mergedRenderedBase !== parsedConversation &&
+      mergedBaseStats.assistantChars >
+        Math.max(staticStats.assistantChars, renderedStats.assistantChars) *
+          1.02;
+
+    const baseChoice = preferMergedBase
+      ? 'merged'
+      : preferRenderedBase
+        ? 'rendered'
+        : mergedRenderedBase !== parsedConversation
+          ? 'merged'
+          : parsedConversation
+          ? 'static'
+          : 'rendered';
+    const shouldWarnAboutSharedDeepResearchGap =
+      !renderedEnhancement.deepResearchConversation &&
+      !!renderedEnhancement.baseConversation &&
+      (preferMergedBase ||
+        preferRenderedBase ||
+        renderedStats.messageCount !== staticStats.messageCount ||
+        renderedStats.assistantChars > staticStats.assistantChars * 1.01 ||
+        mergedBaseStats.assistantChars > staticStats.assistantChars * 1.01);
+
+    console.info(
+      `[gptviewer][shared-deep-research:rendered-share-compare] url=${finalUrl} staticMessages=${staticStats.messageCount} staticAssistantChars=${staticStats.assistantChars} renderedMessages=${renderedStats.messageCount} renderedAssistantChars=${renderedStats.assistantChars} mergedMessages=${mergedBaseStats.messageCount} mergedAssistantChars=${mergedBaseStats.assistantChars} choose=${baseChoice}`,
+    );
+
+    if (preferMergedBase && mergedRenderedBase) {
+      parsedConversation = mergedRenderedBase;
+    } else if (preferRenderedBase && renderedEnhancement.baseConversation) {
+      parsedConversation = renderedEnhancement.baseConversation;
+    } else if (mergedRenderedBase) {
+      parsedConversation = mergedRenderedBase;
+    }
+
+    if (
+      !deepResearchIframeSrc &&
+      isMeaningfulDeepResearchUrl(renderedEnhancement.deepResearchIframeSrc)
+    ) {
+      deepResearchIframeSrc = renderedEnhancement.deepResearchIframeSrc;
+    }
+
+    if (!deepResearchConversation && renderedEnhancement.deepResearchConversation) {
+      deepResearchConversation = renderedEnhancement.deepResearchConversation;
+    }
+
+    if (shouldWarnAboutSharedDeepResearchGap) {
+      importWarning = {
+        code: 'shared-deep-research-partial',
+        message: SHARED_DEEP_RESEARCH_WARNING_MESSAGE,
+      };
+    }
+
+    console.info(
+      `[gptviewer][shared-deep-research:rendered-share-merge-source] url=${finalUrl} baseParsed=${
+        parsedConversation ? 'yes' : 'no'
+      } baseMessages=${parsedConversation?.messages.length ?? 0} deepResearchIframe=${deepResearchIframeSrc ?? '-'} iframeMessages=${
+        deepResearchConversation?.messages.length ?? 0
+      }`,
+    );
+  }
+
+  if (deepResearchConversation) {
+    importWarning = undefined;
+  }
+
+  if (isMeaningfulDeepResearchUrl(deepResearchIframeSrc)) {
+    try {
+      const iframeResponse = await fetch(deepResearchIframeSrc, {
+        headers: {
+          accept: 'text/html,application/xhtml+xml',
+          referer: finalUrl,
+        },
+      });
+
+      if (iframeResponse.ok) {
+        const iframeHtml = await iframeResponse.text();
+        deepResearchConversation = parseChatGptStandaloneHtml(
+          iframeHtml,
+          deepResearchIframeSrc,
+        );
+        console.info(
+          `[gptviewer][shared-deep-research:static-fetch] iframeUrl=${deepResearchIframeSrc} status=${iframeResponse.status} html=${iframeHtml.length} parsed=${
+            deepResearchConversation ? 'yes' : 'no'
+          } messages=${deepResearchConversation?.messages.length ?? 0}`,
+        );
+      } else {
+        console.info(
+          `[gptviewer][shared-deep-research:static-fetch] iframeUrl=${deepResearchIframeSrc} status=${iframeResponse.status} html=0 parsed=no messages=0`,
+        );
+      }
+    } catch {
+      console.info(
+        `[gptviewer][shared-deep-research:static-fetch-error] iframeUrl=${deepResearchIframeSrc}`,
+      );
+      deepResearchConversation = null;
+    }
+
+    if (!deepResearchConversation) {
+      deepResearchConversation = await loadRenderedStandaloneConversation(
+        deepResearchIframeSrc,
+      );
+    }
+  }
+
+  const mergedConversation = mergeDeepResearchMessages(
+    parsedConversation,
+    deepResearchConversation,
+    finalUrl,
+  );
+  console.info(
+    `[gptviewer][shared-deep-research:merge] base=${
+      parsedConversation ? parsedConversation.messages.length : 0
+    } iframe=${deepResearchConversation ? deepResearchConversation.messages.length : 0} merged=${
+      mergedConversation ? mergedConversation.messages.length : 0
+    }`,
+  );
+
+  if (!mergedConversation) {
     throw new Error('공유 페이지에서 대화 내용을 찾지 못했습니다.');
   }
 
   return {
     fetchedAt: new Date().toISOString(),
+    importWarning,
     refreshRequest: {
       mode: 'direct-share-page',
       shareUrl: finalUrl,
     },
-    ...parsedConversation,
+    ...mergedConversation,
   };
 };
 
@@ -885,6 +1889,13 @@ ipcMain.handle(
   'chatgpt-automation:cleanup-background-pool',
   async () => {
     await ChatGptAutomationView.drainBackgroundPool();
+  },
+);
+
+ipcMain.handle(
+  'chatgpt-automation:reset-session-state',
+  async () => {
+    await ChatGptAutomationView.resetSessionState();
   },
 );
 

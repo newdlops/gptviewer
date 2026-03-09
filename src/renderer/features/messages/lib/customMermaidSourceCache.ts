@@ -115,3 +115,18 @@ export const clearCustomMermaidSourceFromCache = (cacheKey: string) => {
   customMermaidSourceCacheStore.delete(cacheKey);
   persistCustomMermaidSourceCache();
 };
+
+export const clearAllCustomMermaidSourceCache = () => {
+  ensureCustomMermaidSourceCacheLoaded();
+  customMermaidSourceCacheStore.clear();
+
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  try {
+    window.localStorage.removeItem(CUSTOM_MERMAID_SOURCE_CACHE_STORAGE_KEY);
+  } catch {
+    // Ignore localStorage failures and continue with the in-memory store only.
+  }
+};

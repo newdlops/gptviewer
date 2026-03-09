@@ -2,7 +2,7 @@ const PROJECT_CONVERSATION_IMPORT_PREFERENCES_STORAGE_KEY =
   'gptviewer.project-conversation-import-preferences.v1';
 
 export const PROJECT_CONVERSATION_IMPORT_STRATEGY_OPTIONS = [
-  { label: '공유 링크 우선', value: 'share-url-first' },
+  { label: '공유 대화 URL 우선', value: 'share-url-first' },
   { label: '원본 링크 우선', value: 'chat-url-first' },
 ] as const;
 

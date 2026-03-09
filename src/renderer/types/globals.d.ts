@@ -40,6 +40,7 @@ interface ElectronAPI {
     request: ProjectConversationImportRequest,
   ): Promise<ProjectConversationCollectionResult>;
   cleanupChatGptAutomationBackgroundPool(): Promise<void>;
+  resetChatGptAutomationSessionState(): Promise<void>;
   onProjectConversationImportProgress(
     listener: (progress: ProjectConversationImportProgress) => void,
   ): () => void;

@@ -1,4 +1,4 @@
-import { BrowserWindow, WebContentsView, screen, type Rectangle, type WebContents } from 'electron';
+import { BrowserWindow, WebContentsView, screen, session, type Rectangle, type WebContents } from 'electron';
 import {
   buildClickActionAboveScript,
   buildFindAndClickFloatingScript,
@@ -73,6 +73,7 @@ function getForegroundWindowBounds(anchorWindow: BrowserWindow | null) {
 }
 
 export class ChatGptAutomationView {
+  private static readonly allViews = new Set<ChatGptAutomationView>();
   private static readonly backgroundIdleViews: ChatGptAutomationView[] = [];
   private readonly anchorWindow: BrowserWindow | null;
   private closed = false;
@@ -81,6 +82,13 @@ export class ChatGptAutomationView {
   private readonly view: WebContentsView;
   private readonly visibilityMode: ChatGptAutomationVisibilityMode;
   private readonly window: BrowserWindow;
+
+  private static removeBackgroundIdleView(view: ChatGptAutomationView) {
+    const pooledIndex = ChatGptAutomationView.backgroundIdleViews.indexOf(view);
+    if (pooledIndex >= 0) {
+      ChatGptAutomationView.backgroundIdleViews.splice(pooledIndex, 1);
+    }
+  }
 
   static async acquire(
     visibilityMode: ChatGptAutomationVisibilityMode = 'visible',
@@ -103,6 +111,74 @@ export class ChatGptAutomationView {
         await pooledView.destroyImmediately();
       }),
     );
+  }
+
+  static async resetSessionState() {
+    const activeViews = [...ChatGptAutomationView.allViews];
+    ChatGptAutomationView.backgroundIdleViews.length = 0;
+    await Promise.all(
+      activeViews.map(async (view) => {
+        await view.destroyImmediately();
+      }),
+    );
+
+    const automationSession = session.fromPartition(CHATGPT_REFRESH_PARTITION);
+
+    try {
+      await automationSession.clearAuthCache();
+    } catch {
+      // Ignore auth cache reset failures.
+    }
+
+    try {
+      const cookies = await automationSession.cookies.get({});
+      await Promise.all(
+        cookies.map(async (cookie) => {
+          const domain = cookie.domain?.replace(/^\./, '');
+          if (!domain) {
+            return;
+          }
+
+          const removalUrl = `${cookie.secure ? 'https' : 'http'}://${domain}${cookie.path || '/'}`;
+          try {
+            await automationSession.cookies.remove(removalUrl, cookie.name);
+          } catch {
+            // Ignore individual cookie removal failures.
+          }
+        }),
+      );
+    } catch {
+      // Ignore cookie enumeration failures.
+    }
+
+    try {
+      await automationSession.clearStorageData({
+        storages: [
+          'cookies',
+          'filesystem',
+          'indexdb',
+          'localstorage',
+          'shadercache',
+          'websql',
+          'serviceworkers',
+          'cachestorage',
+        ],
+      });
+    } catch {
+      // Ignore storage clearing failures; cache clearing still runs below.
+    }
+
+    try {
+      await automationSession.clearCache();
+    } catch {
+      // Ignore cache clearing failures.
+    }
+
+    try {
+      await automationSession.flushStorageData();
+    } catch {
+      // Ignore flush failures after reset.
+    }
   }
 
   constructor(visibilityMode: ChatGptAutomationVisibilityMode) {
@@ -140,9 +216,18 @@ export class ChatGptAutomationView {
     this.syncViewBounds();
     this.window.on('close', () => { this.closed = true; });
     this.window.on('resize', this.syncViewBounds);
-    this.window.on('closed', () => { this.closed = true; });
-    this.view.webContents.on('destroyed', () => { this.closed = true; });
+    this.window.on('closed', () => {
+      this.closed = true;
+      ChatGptAutomationView.removeBackgroundIdleView(this);
+      ChatGptAutomationView.allViews.delete(this);
+    });
+    this.view.webContents.on('destroyed', () => {
+      this.closed = true;
+      ChatGptAutomationView.removeBackgroundIdleView(this);
+      ChatGptAutomationView.allViews.delete(this);
+    });
     this.view.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    ChatGptAutomationView.allViews.add(this);
   }
 
   get webContents(): WebContents { return this.view.webContents; }
@@ -200,6 +285,7 @@ export class ChatGptAutomationView {
 
   private async destroyImmediately() {
     this.inBackgroundPool = false;
+    ChatGptAutomationView.removeBackgroundIdleView(this);
     if (this.conversationNetworkMonitor) {
       await this.conversationNetworkMonitor.dispose();
       this.conversationNetworkMonitor = null;
@@ -207,6 +293,7 @@ export class ChatGptAutomationView {
     if (!this.isClosed()) {
       this.window.destroy();
     }
+    ChatGptAutomationView.allViews.delete(this);
   }
 
   private async releaseToBackgroundPool() {

@@ -27,6 +27,11 @@ export type SharedConversationMessage = {
   sources: SharedConversationSource[];
 };
 
+export type SharedConversationImportWarning = {
+  code: 'shared-deep-research-partial';
+  message: string;
+};
+
 export type SharedConversationRefreshRequest = {
   chatUrl?: string;
   conversationTitle?: string;
@@ -39,6 +44,7 @@ export type SharedConversationRefreshRequest = {
 export type SharedConversationImport = {
   fetchedAt: string;
   importOrigin?: 'chat-url';
+  importWarning?: SharedConversationImportWarning;
   messages: SharedConversationMessage[];
   refreshRequest?: SharedConversationRefreshRequest;
   sourceUrl: string;

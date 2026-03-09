@@ -31,6 +31,11 @@ type PendingRequestMeta = {
 const MAX_RECORDS = 200;
 const MAX_BODY_LENGTH = 2_000_000;
 const BACKEND_API_PREFIX = 'https://chatgpt.com/backend-api/';
+const RELEVANT_HOST_PATTERNS = [
+  'chatgpt.com',
+  'oaiusercontent.com',
+  'openai.com',
+];
 
 const normalizeHeaders = (headers: Record<string, string | string[]>) => {
   const normalized: Record<string, string> = {};
@@ -73,7 +78,7 @@ const isRelevantContentType = (mimeType?: string): boolean => {
 };
 
 const isRelevantResponse = (responseMeta: PendingResponseMeta): boolean => {
-  if (!responseMeta.url.includes('chatgpt.com')) {
+  if (!RELEVANT_HOST_PATTERNS.some((pattern) => responseMeta.url.includes(pattern))) {
     return false;
   }
 

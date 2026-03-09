@@ -192,6 +192,10 @@
   font-size: 0.9rem;
 }
 
+.modal__hint--success {
+  color: color-mix(in srgb, #2e7d32 78%, var(--text-primary) 22%);
+}
+
 .modal__error {
   margin: 0;
   color: #d45151;

@@ -4,7 +4,10 @@ import type {
   MessageSource,
   SourcePreview,
 } from '../../../types/chat';
-import type { SharedConversationRefreshRequest } from '../../../../shared/refresh/sharedConversationRefresh';
+import type {
+  SharedConversationImportWarning,
+  SharedConversationRefreshRequest,
+} from '../../../../shared/refresh/sharedConversationRefresh';
 
 export const formatClockLabel = (value: string | number | Date): string =>
   new Date(value).toLocaleTimeString('ko-KR', {
@@ -156,6 +159,33 @@ export const normalizeImportedConversation = (
     };
   };
 
+  const normalizeImportWarning = (
+    warningValue: unknown,
+  ): SharedConversationImportWarning | undefined => {
+    if (!warningValue || typeof warningValue !== 'object') {
+      return undefined;
+    }
+
+    const warningRecord = warningValue as Record<string, unknown>;
+    const code =
+      warningRecord.code === 'shared-deep-research-partial'
+        ? warningRecord.code
+        : null;
+    const message =
+      typeof warningRecord.message === 'string' && warningRecord.message.trim()
+        ? warningRecord.message.trim()
+        : '';
+
+    if (!code || !message) {
+      return undefined;
+    }
+
+    return {
+      code,
+      message,
+    };
+  };
+
   return {
     fetchedAt:
       typeof record.fetchedAt === 'string'
@@ -163,11 +193,12 @@ export const normalizeImportedConversation = (
         : new Date().toISOString(),
     importOrigin:
       record.importOrigin === 'chat-url' ? 'chat-url' : undefined,
+    importWarning: normalizeImportWarning(record.importWarning),
     messages,
     refreshRequest: normalizeRefreshRequest(record.refreshRequest),
     sourceUrl: typeof record.sourceUrl === 'string' ? record.sourceUrl : '',
     summary: typeof record.summary === 'string' ? record.summary : '',
-    title: typeof record.title === 'string' ? record.title : '공유 대화',
+    title: typeof record.title === 'string' ? record.title : '대화',
   };
 };
 

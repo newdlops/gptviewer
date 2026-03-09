@@ -169,13 +169,13 @@ export function ProjectConversationImportModal({
           </select>
           <p className="modal__hint">
             원본 링크 우선은 로그인된 ChatGPT 대화 페이지를 먼저 직접 읽고,
-            공유 링크 우선은 기존 공유 링크 갱신 경로를 먼저 시도합니다.
+            공유 대화 URL 우선은 기존 공유 대화 URL 갱신 경로를 먼저 시도합니다.
           </p>
         </div>
         <p className="modal__hint">
           {isSyncMode
             ? '프로젝트 채팅 목록을 다시 수집해서 현재 폴더의 대화와 비교하고, 누락된 대화만 가져옵니다.'
-            : '프로젝트 URL을 입력하면 프로젝트 이름으로 폴더를 만들고, 프로젝트의 대화들을 순서대로 공유 링크로 변환해 그 아래에 넣습니다.'}
+            : '프로젝트 URL을 입력하면 프로젝트 이름으로 폴더를 만들고, 프로젝트의 대화들을 순서대로 공유 대화 URL로 변환해 그 아래에 넣습니다.'}
         </p>
         <p className="modal__hint">
           이 작업은 로그인된 ChatGPT 세션과 보조 자동화 창이 필요합니다.

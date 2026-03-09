@@ -5,6 +5,11 @@ import type {
   SharedConversationRefreshResult,
 } from '../../../../shared/refresh/sharedConversationRefresh';
 import { ChatGptAutomationView } from '../chatgpt/ChatGptAutomationView';
+import {
+  buildLoginRequiredDetail,
+  ensureLoginAttentionIfNeeded,
+  runWithLoginResume,
+} from '../chatgpt/chatGptLoginState';
 import { openShareEntryPointFromDirectConversation } from '../chatgpt/chatGptDirectConversationNavigation';
 import {
   closeShareModal,
@@ -87,9 +92,17 @@ export class ChatGptShareFlowRefreshStrategy {
       );
     }
 
-    const automationView = await ChatGptAutomationView.acquire(
-      request.helperWindowMode ?? 'visible',
-    );
+    return runWithLoginResume({
+      initialMode: request.helperWindowMode ?? 'visible',
+      runAttempt: async (automationView) =>
+        this.refreshWithView(request, automationView),
+    });
+  }
+
+  private async refreshWithView(
+    request: SharedConversationRefreshRequest,
+    automationView: ChatGptAutomationView,
+  ): Promise<SharedConversationRefreshResult> {
     const diagnostics = new ChatGptRefreshDiagnostics();
     let automationViewClosed = false;
     const closeAutomationView = async () => {
@@ -105,6 +118,14 @@ export class ChatGptShareFlowRefreshStrategy {
       clipboard.clear();
       await automationView.load(request.projectUrl ?? request.chatUrl ?? 'https://chatgpt.com/');
       diagnostics.record('strategy', `loaded=${request.projectUrl ?? request.chatUrl ?? 'https://chatgpt.com/'}`);
+      const loginSnapshot = await ensureLoginAttentionIfNeeded(automationView);
+      if (loginSnapshot) {
+        throw new SharedConversationRefreshError(
+          'login_required',
+          'ChatGPT 로그인 또는 보안 확인이 끝나지 않았습니다. 보조 창에서 마친 뒤 다시 시도해 주세요.',
+          diagnostics.toDetail(buildLoginRequiredDetail(loginSnapshot)),
+        );
+      }
       let shareCopyResolution:
         | Awaited<ReturnType<typeof waitForShareCopyResolution>>
         | null = null;

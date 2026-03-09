@@ -1,4 +1,7 @@
-import type { SharedConversationRefreshRequest } from '../refresh/sharedConversationRefresh';
+import type {
+  SharedConversationImportWarning,
+  SharedConversationRefreshRequest,
+} from '../refresh/sharedConversationRefresh';
 
 export const WORKSPACE_SNAPSHOT_SCHEMA_VERSION = 1;
 
@@ -23,6 +26,7 @@ export type WorkspaceSnapshotConversation = {
   fetchedAt?: string;
   id: string;
   importOrigin?: 'chat-url';
+  importWarning?: SharedConversationImportWarning;
   isSharedImport?: boolean;
   messages: WorkspaceSnapshotMessage[];
   projectSyncStatus?: 'viewer-created';
@@ -36,7 +40,13 @@ export type WorkspaceSnapshotConversation = {
 export type WorkspaceSnapshotConversationNode = {
   conversationId: string;
   id: string;
+  meta: WorkspaceSnapshotNodeMeta;
   type: 'conversation';
+};
+
+export type WorkspaceSnapshotNodeMeta = {
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type WorkspaceSnapshotFolderSource = {
@@ -47,6 +57,7 @@ export type WorkspaceSnapshotFolderSource = {
 export type WorkspaceSnapshotFolderNode = {
   children: WorkspaceSnapshotNode[];
   id: string;
+  meta: WorkspaceSnapshotNodeMeta;
   name: string;
   source?: WorkspaceSnapshotFolderSource;
   sortMode?: 'asc' | 'desc' | 'none';

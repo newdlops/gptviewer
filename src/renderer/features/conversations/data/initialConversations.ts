@@ -1,5 +1,14 @@
 import type { Conversation, WorkspaceNode } from '../../../types/chat';
 
+const createInitialNodeMeta = (offsetMinutes: number) => {
+  const timestamp = new Date(Date.now() - offsetMinutes * 60_000).toISOString();
+
+  return {
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+};
+
 export const initialConversations: Conversation[] = [
   {
     id: 'drafts',
@@ -58,21 +67,25 @@ export const initialConversations: Conversation[] = [
 export const initialWorkspaceTree: WorkspaceNode[] = [
   {
     id: 'workspace-root-projects',
+    meta: createInitialNodeMeta(0),
     name: '프로젝트',
     type: 'folder',
     children: [
       {
         id: 'workspace-conversation-drafts',
+        meta: createInitialNodeMeta(1),
         type: 'conversation',
         conversationId: 'drafts',
       },
       {
         id: 'workspace-root-research',
+        meta: createInitialNodeMeta(2),
         name: '리서치',
         type: 'folder',
         children: [
           {
             id: 'workspace-conversation-research',
+            meta: createInitialNodeMeta(3),
             type: 'conversation',
             conversationId: 'research',
           },
@@ -82,11 +95,13 @@ export const initialWorkspaceTree: WorkspaceNode[] = [
   },
   {
     id: 'workspace-root-design',
+    meta: createInitialNodeMeta(4),
     name: '디자인',
     type: 'folder',
     children: [
       {
         id: 'workspace-conversation-review',
+        meta: createInitialNodeMeta(5),
         type: 'conversation',
         conversationId: 'review',
       },
@@ -94,7 +109,8 @@ export const initialWorkspaceTree: WorkspaceNode[] = [
   },
   {
     id: 'workspace-root-imports',
-    name: '공유 대화',
+    meta: createInitialNodeMeta(6),
+    name: '대화',
     type: 'folder',
     children: [],
   },

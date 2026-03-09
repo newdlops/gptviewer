@@ -1,8 +1,8 @@
 import {
   AnchorHTMLAttributes,
   HTMLAttributes,
+  useCallback,
   memo,
-  MouseEvent,
   ReactNode,
   useEffect,
   useLayoutEffect,
@@ -10,7 +10,7 @@ import {
   useRef,
   useState,
 } from 'react';
-import ReactMarkdown from 'react-markdown';
+import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type {
   Conversation,
@@ -43,6 +43,30 @@ const DIAGRAM_KEEPALIVE_MULTIPLIER_BELOW = 3;
 const CODE_BLOCK_PATTERN = /```[\w+-]*\n|```/;
 const RENDERABLE_DIAGRAM_PATTERN =
   /```(?:mermaid|svg|xml|html|image\/svg\+xml)\b|<svg[\s>]/i;
+const DATA_IMAGE_URL_PATTERN = /^data:image\/[a-z0-9.+-]+;base64,/i;
+const SEDIMENT_URL_PATTERN = /^sediment:\/\/file_[a-z0-9]+/i;
+const SAFE_LOCAL_URL_PATTERN = /^(attachment|sandbox|file):/i;
+
+const markdownUrlTransform = (url: string, key: string): string => {
+  const normalizedUrl = url.trim();
+  if (!normalizedUrl) {
+    return '';
+  }
+
+  if (
+    key === 'src' &&
+    (DATA_IMAGE_URL_PATTERN.test(normalizedUrl) ||
+      SEDIMENT_URL_PATTERN.test(normalizedUrl))
+  ) {
+    return normalizedUrl;
+  }
+
+  if (SAFE_LOCAL_URL_PATTERN.test(normalizedUrl)) {
+    return normalizedUrl;
+  }
+
+  return defaultUrlTransform(normalizedUrl);
+};
 
 type MessageListProps = {
   activeConversation: Conversation;
@@ -82,6 +106,18 @@ type VirtualizedMessageBubbleProps = {
   sourcePreviewLoading: Record<string, boolean>;
   themeMode: ThemeMode;
   top: number;
+};
+
+type SectionAnchor = {
+  id: string;
+  label: string;
+  role: Message['role'];
+  start: number;
+};
+
+type SectionOutlineProps = {
+  onSectionJump: (section: SectionAnchor) => void;
+  sections: SectionAnchor[];
 };
 
 const haveRelevantSourceStatesChanged = (
@@ -159,6 +195,36 @@ function VirtualizedMessageBubbleComponent({
   top,
 }: VirtualizedMessageBubbleProps) {
   const itemRef = useRef<HTMLDivElement | null>(null);
+  const createHeadingComponent = useCallback(
+    (Tag: 'h1' | 'h2') =>
+      ({
+        children,
+        node,
+        ...props
+      }: HTMLAttributes<HTMLHeadingElement> & {
+        children?: ReactNode;
+        node?: {
+          position?: {
+            start?: {
+              offset?: number;
+            };
+          };
+        };
+      }) => {
+        const offset =
+          typeof node?.position?.start?.offset === 'number'
+            ? node.position.start.offset
+            : null;
+        const sectionId = offset === null ? undefined : `${message.id}:${offset}`;
+
+        return (
+          <Tag data-section-id={sectionId} {...props}>
+            {children}
+          </Tag>
+        );
+      },
+    [message.id],
+  );
 
   useLayoutEffect(() => {
     const element = itemRef.current;
@@ -274,8 +340,11 @@ function VirtualizedMessageBubbleComponent({
     }: HTMLAttributes<HTMLPreElement> & {
       children?: ReactNode;
     }) => <>{children}</>,
+    h1: createHeadingComponent('h1'),
+    h2: createHeadingComponent('h2'),
     }),
     [
+      createHeadingComponent,
       message,
       onSourcePreviewNeeded,
       sourcePreviewCache,
@@ -291,14 +360,21 @@ function VirtualizedMessageBubbleComponent({
       className="message-list__item"
       style={{ top: `${top}px` }}
     >
-      <article className={`message-bubble message-bubble--${message.role}`}>
+      <article
+        className={`message-bubble message-bubble--${message.role}`}
+        data-section-id={message.role === 'user' ? `${message.id}:user` : undefined}
+      >
         {message.role === 'user' ? (
           <div className="message-bubble__meta">
             <span>나</span>
           </div>
         ) : null}
         <div className="message-bubble__content">
-          <ReactMarkdown components={markdownComponents} remarkPlugins={[remarkGfm]}>
+          <ReactMarkdown
+            components={markdownComponents}
+            remarkPlugins={[remarkGfm]}
+            urlTransform={markdownUrlTransform}
+          >
             {message.text}
           </ReactMarkdown>
         </div>
@@ -355,6 +431,62 @@ const VirtualizedMessageBubble = memo(
   },
 );
 
+const SectionOutline = memo(function SectionOutlineComponent({
+  onSectionJump,
+  sections,
+}: SectionOutlineProps) {
+  if (sections.length === 0) {
+    return null;
+  }
+
+  return (
+    <aside className="message-list__outline-column" aria-label="대화 목차">
+      <div className="message-list__outline-dock">
+        <button
+          className="message-list__outline-tab"
+          type="button"
+          aria-label="대화 목차"
+        >
+          목차
+        </button>
+        <div className="message-list__outline-panel">
+          <div className="message-list__outline-header">대화 목차</div>
+          <div className="message-list__outline-list">
+            {sections.map((section, index) => (
+              <button
+                key={section.id}
+                className={`message-list__outline-item${
+                  section.role === 'user'
+                    ? ' message-list__outline-item--user'
+                    : ''
+                }`}
+                type="button"
+                onClick={(event) => {
+                  const button = event.currentTarget;
+                  onSectionJump(section);
+                  window.requestAnimationFrame(() => {
+                    button.blur();
+                  });
+                }}
+              >
+                <span className="message-list__outline-index">{index + 1}</span>
+                <span className="message-list__outline-copy">
+                  {section.role === 'user' ? (
+                    <span className="message-list__outline-tag">질문</span>
+                  ) : null}
+                  <span className="message-list__outline-label">
+                    {section.label}
+                  </span>
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    </aside>
+  );
+});
+
 export function MessageList({
   activeConversation,
   initialMessageHeights,
@@ -372,11 +504,12 @@ export function MessageList({
   const conversationRenderKey = `${activeConversation.id}:${activeConversation.fetchedAt ?? 'base'}`;
   const messageListShellRef = useRef<HTMLDivElement | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
-  const sectionRailRef = useRef<HTMLDivElement | null>(null);
   const onScrollPositionChangeRef = useRef(onScrollPositionChange);
-  const proximityFrameRef = useRef<number | null>(null);
   const scrollFrameRef = useRef<number | null>(null);
   const programmaticScrollFrameRef = useRef<number | null>(null);
+  const jumpHighlightTimeoutRef = useRef<number | null>(null);
+  const highlightedAnchorRef = useRef<HTMLElement | null>(null);
+  const highlightedBubbleRef = useRef<HTMLElement | null>(null);
   const restoredConversationKeyRef = useRef<string | null>(null);
   const autoBottomConversationKeyRef = useRef<string | null>(null);
   const isProgrammaticScrollRef = useRef(false);
@@ -522,64 +655,30 @@ export function MessageList({
       ),
     [totalHeight, viewportHeight],
   );
-  const sectionAnchors = useMemo(() => {
-    if (sections.length === 0) {
-      return [];
-    }
 
-    const railPadding = 16;
-    const markerSize = 10;
-    const usableHeight = Math.max(viewportHeight - railPadding * 2 - markerSize, 0);
+  const commitScrollPosition = useCallback(
+    (nextScrollTop: number) => {
+      const messageListElement = messageListRef.current;
 
-    return sections.map((section) => {
-      const clampedStart = Math.min(section.start, maxScrollTop);
-      const progress = maxScrollTop > 0 ? clampedStart / maxScrollTop : 0;
-
-      return {
-        ...section,
-        top: railPadding + usableHeight * progress,
-      };
-    });
-  }, [maxScrollTop, sections, viewportHeight]);
-  const activeSectionId = useMemo(() => {
-    if (sections.length === 0) {
-      return null;
-    }
-
-    const targetOffset = scrollTop + Math.max(viewportHeight * 0.18, 32);
-    let currentSectionId = sections[0].id;
-
-    for (const section of sections) {
-      if (section.start > targetOffset) {
-        break;
+      if (!messageListElement) {
+        return;
       }
 
-      currentSectionId = section.id;
-    }
+      if (programmaticScrollFrameRef.current !== null) {
+        window.cancelAnimationFrame(programmaticScrollFrameRef.current);
+      }
 
-    return currentSectionId;
-  }, [scrollTop, sections, viewportHeight]);
-
-  const commitScrollPosition = (nextScrollTop: number) => {
-    const messageListElement = messageListRef.current;
-
-    if (!messageListElement) {
-      return;
-    }
-
-    if (programmaticScrollFrameRef.current !== null) {
-      window.cancelAnimationFrame(programmaticScrollFrameRef.current);
-    }
-
-    isProgrammaticScrollRef.current = true;
-    messageListElement.scrollTop = nextScrollTop;
-    setScrollTop(nextScrollTop);
-    onScrollPositionChangeRef.current(activeConversation.id, nextScrollTop);
-    programmaticScrollFrameRef.current = window.requestAnimationFrame(() => {
-      programmaticScrollFrameRef.current = null;
-      isProgrammaticScrollRef.current = false;
-    });
-  };
+      isProgrammaticScrollRef.current = true;
+      messageListElement.scrollTop = nextScrollTop;
+      setScrollTop(nextScrollTop);
+      onScrollPositionChangeRef.current(activeConversation.id, nextScrollTop);
+      programmaticScrollFrameRef.current = window.requestAnimationFrame(() => {
+        programmaticScrollFrameRef.current = null;
+        isProgrammaticScrollRef.current = false;
+      });
+    },
+    [activeConversation.id],
+  );
 
   useLayoutEffect(() => {
     const messageListElement = messageListRef.current;
@@ -660,17 +759,22 @@ export function MessageList({
 
   useEffect(() => {
     return () => {
-      if (proximityFrameRef.current !== null) {
-        window.cancelAnimationFrame(proximityFrameRef.current);
-      }
-
       if (scrollFrameRef.current !== null) {
         window.cancelAnimationFrame(scrollFrameRef.current);
       }
 
-       if (programmaticScrollFrameRef.current !== null) {
+      if (programmaticScrollFrameRef.current !== null) {
         window.cancelAnimationFrame(programmaticScrollFrameRef.current);
       }
+
+      if (jumpHighlightTimeoutRef.current !== null) {
+        window.clearTimeout(jumpHighlightTimeoutRef.current);
+      }
+
+      highlightedAnchorRef.current?.classList.remove('message-list__jump-highlight');
+      highlightedBubbleRef.current?.classList.remove(
+        'message-bubble--jump-highlight',
+      );
     };
   }, []);
 
@@ -718,73 +822,105 @@ export function MessageList({
   const handleUserScrollIntent = () => {
     autoBottomConversationKeyRef.current = null;
   };
-  const handleSectionJump = (targetStart: number) => {
-    autoBottomConversationKeyRef.current = null;
-    commitScrollPosition(Math.min(targetStart, maxScrollTop));
-  };
-  const setSectionRailProximity = (isNearAnchor: boolean) => {
-    const railElement = sectionRailRef.current;
 
-    if (!railElement) {
+  const highlightSectionAnchor = useCallback((sectionId: string) => {
+    const messageListElement = messageListRef.current;
+
+    if (!messageListElement) {
       return;
     }
 
-    railElement.classList.toggle('is-proximate', isNearAnchor);
-  };
-  const updateSectionRailProximity = (event: MouseEvent<HTMLDivElement>) => {
-    const shellElement = messageListShellRef.current;
-    const railElement = sectionRailRef.current;
+    const anchor = messageListElement.querySelector<HTMLElement>(
+      `[data-section-id="${CSS.escape(sectionId)}"]`,
+    );
 
-    if (!shellElement || !railElement) {
+    if (!anchor) {
       return;
     }
 
-    if (proximityFrameRef.current !== null) {
-      window.cancelAnimationFrame(proximityFrameRef.current);
+    highlightedAnchorRef.current?.classList.remove('message-list__jump-highlight');
+    highlightedBubbleRef.current?.classList.remove(
+      'message-bubble--jump-highlight',
+    );
+
+    anchor.classList.add('message-list__jump-highlight');
+    highlightedAnchorRef.current = anchor;
+
+    const bubble = anchor.closest<HTMLElement>('.message-bubble');
+    if (bubble && bubble !== anchor) {
+      bubble.classList.add('message-bubble--jump-highlight');
+      highlightedBubbleRef.current = bubble;
+    } else {
+      highlightedBubbleRef.current = null;
     }
 
-    const { clientX, clientY } = event;
-    proximityFrameRef.current = window.requestAnimationFrame(() => {
-      proximityFrameRef.current = null;
+    if (jumpHighlightTimeoutRef.current !== null) {
+      window.clearTimeout(jumpHighlightTimeoutRef.current);
+    }
 
-      const shellRect = shellElement.getBoundingClientRect();
-      const distanceFromRight = shellRect.right - clientX;
-
-      if (distanceFromRight > 64) {
-        setSectionRailProximity(false);
-        return;
-      }
-
-      const markers = railElement.querySelectorAll<HTMLButtonElement>(
-        '.message-list__section-marker',
+    jumpHighlightTimeoutRef.current = window.setTimeout(() => {
+      highlightedAnchorRef.current?.classList.remove(
+        'message-list__jump-highlight',
       );
+      highlightedBubbleRef.current?.classList.remove(
+        'message-bubble--jump-highlight',
+      );
+      highlightedAnchorRef.current = null;
+      highlightedBubbleRef.current = null;
+      jumpHighlightTimeoutRef.current = null;
+    }, 1800);
+  }, []);
 
-      if (markers.length === 0) {
-        setSectionRailProximity(false);
-        return;
-      }
+  const handleSectionJump = useCallback(
+    (section: SectionAnchor) => {
+      const targetStart = section.start;
+      autoBottomConversationKeyRef.current = null;
+      commitScrollPosition(Math.min(targetStart, maxScrollTop));
 
-      let nearestDistance = Number.POSITIVE_INFINITY;
+      const alignToAnchor = () => {
+        const messageListElement = messageListRef.current;
 
-      markers.forEach((marker) => {
-        const rect = marker.getBoundingClientRect();
-        const centerY = rect.top + rect.height / 2;
-        nearestDistance = Math.min(nearestDistance, Math.abs(centerY - clientY));
+        if (!messageListElement) {
+          return;
+        }
+
+        const anchor = messageListElement.querySelector<HTMLElement>(
+          `[data-section-id="${CSS.escape(section.id)}"]`,
+        );
+
+        if (!anchor) {
+          return;
+        }
+
+        const anchorRect = anchor.getBoundingClientRect();
+        const listRect = messageListElement.getBoundingClientRect();
+        const nextScrollTop = Math.max(
+          Math.min(
+            messageListElement.scrollTop +
+              (anchorRect.top - listRect.top) -
+              (messageListElement.clientHeight / 2 - anchorRect.height / 2),
+            maxScrollTop,
+          ),
+          0,
+        );
+
+        commitScrollPosition(nextScrollTop);
+        window.requestAnimationFrame(() => {
+          highlightSectionAnchor(section.id);
+        });
+      };
+
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(alignToAnchor);
       });
-
-      setSectionRailProximity(nearestDistance <= 44);
-    });
-  };
-  const handleSectionRailLeave = () => {
-    setSectionRailProximity(false);
-  };
+    },
+    [commitScrollPosition, highlightSectionAnchor, maxScrollTop],
+  );
 
   return (
     <div
       className="message-list-shell"
       ref={messageListShellRef}
-      onMouseLeave={handleSectionRailLeave}
-      onMouseMove={updateSectionRailProximity}
     >
       <div
         className="message-list"
@@ -820,27 +956,10 @@ export function MessageList({
           ))}
         </div>
       </div>
-      {sectionAnchors.length > 0 ? (
-        <div
-          className="message-list__section-rail"
-          ref={sectionRailRef}
-        >
-          {sectionAnchors.map((section) => (
-            <button
-              key={section.id}
-              className={`message-list__section-marker${
-                activeSectionId === section.id ? ' is-active' : ''
-              }`}
-              type="button"
-              style={{ top: `${section.top}px` }}
-              aria-label={`${section.label} 위치로 이동`}
-              title={section.label}
-              data-label={section.label}
-              onClick={() => handleSectionJump(section.start)}
-            />
-          ))}
-        </div>
-      ) : null}
+      <SectionOutline
+        onSectionJump={handleSectionJump}
+        sections={sections}
+      />
     </div>
   );
 }

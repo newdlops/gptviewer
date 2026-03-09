@@ -1,4 +1,7 @@
-import type { SharedConversationRefreshRequest } from '../../shared/refresh/sharedConversationRefresh';
+import type {
+  SharedConversationImportWarning,
+  SharedConversationRefreshRequest,
+} from '../../shared/refresh/sharedConversationRefresh';
 
 export type ChatRole = 'assistant' | 'user';
 
@@ -14,6 +17,7 @@ export type MessageSource = {
 export type ImportedConversation = {
   fetchedAt: string;
   importOrigin?: 'chat-url';
+  importWarning?: SharedConversationImportWarning;
   messages: Array<{ role: ChatRole; sources: MessageSource[]; text: string }>;
   refreshRequest?: SharedConversationRefreshRequest;
   sourceUrl: string;
@@ -33,6 +37,7 @@ export type Conversation = {
   fetchedAt?: string;
   id: string;
   importOrigin?: 'chat-url';
+  importWarning?: SharedConversationImportWarning;
   isSharedImport?: boolean;
   refreshRequest?: SharedConversationRefreshRequest;
   projectSyncStatus?: 'viewer-created';
@@ -45,8 +50,14 @@ export type Conversation = {
 
 export type WorkspaceConversationNode = {
   id: string;
+  meta: WorkspaceNodeMeta;
   type: 'conversation';
   conversationId: string;
+};
+
+export type WorkspaceNodeMeta = {
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type WorkspaceFolderSource = {
@@ -58,6 +69,7 @@ export type WorkspaceFolderSortMode = 'asc' | 'desc' | 'none';
 
 export type WorkspaceFolderNode = {
   id: string;
+  meta: WorkspaceNodeMeta;
   name: string;
   source?: WorkspaceFolderSource;
   sortMode?: WorkspaceFolderSortMode;

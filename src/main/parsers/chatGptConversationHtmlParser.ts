@@ -357,3 +357,37 @@ export const parseChatGptConversationDocumentHtml = (
     fallbackUrl,
   );
 };
+
+export const parseChatGptStandaloneHtml = (
+  documentHtml: string,
+  fallbackUrl: string,
+): Omit<SharedConversationImport, 'fetchedAt' | 'refreshRequest'> | null => {
+  const parsedConversation = parseChatGptConversationDocumentHtml(
+    documentHtml,
+    fallbackUrl,
+  );
+  if (parsedConversation) {
+    return parsedConversation;
+  }
+
+  const conversationHtml = extractConversationHtmlContainer(documentHtml);
+  const text = convertHtmlToMarkdown(conversationHtml);
+  if (!text) {
+    return null;
+  }
+
+  const title = normalizeTitle(extractTitleFromHtml(documentHtml) || 'ChatGPT 대화');
+
+  return {
+    messages: [
+      {
+        role: 'assistant',
+        sources: [],
+        text,
+      },
+    ],
+    sourceUrl: fallbackUrl,
+    summary: text.replace(/\n/g, ' ').slice(0, 80),
+    title,
+  };
+};

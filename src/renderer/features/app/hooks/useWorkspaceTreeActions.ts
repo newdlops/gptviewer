@@ -68,18 +68,31 @@ export function useWorkspaceTreeActions({
   const [renameConversationState, setRenameConversationState] = useState<RenameConversationState | null>(null);
   const [renameFolderState, setRenameFolderState] = useState<RenameFolderState | null>(null);
   const [folderOperationError, setFolderOperationError] = useState('');
+  const [globalFolderSortMode, setGlobalFolderSortMode] = useState<WorkspaceFolderSortMode | null>(() => {
+    const savedSortMode = window.localStorage.getItem('workspace-global-sort-mode');
+
+    if (
+      savedSortMode === 'asc' ||
+      savedSortMode === 'desc' ||
+      savedSortMode === 'none'
+    ) {
+      return savedSortMode;
+    }
+
+    return null;
+  });
   const getNextFolderSortMode = (
     currentSortMode: WorkspaceFolderSortMode | undefined,
-  ): WorkspaceFolderSortMode => {
-    if (currentSortMode === 'asc') {
-      return 'desc';
-    }
-
+  ): WorkspaceFolderSortMode | undefined => {
     if (currentSortMode === 'desc') {
-      return 'none';
+      return 'asc';
     }
 
-    return 'asc';
+    if (currentSortMode === 'asc') {
+      return undefined;
+    }
+
+    return 'desc';
   };
 
   const moveFolderOptions = useMemo(() => {
@@ -97,6 +110,14 @@ export function useWorkspaceTreeActions({
       setFolderOperationError('');
     }
   }, [createFolderState, deleteConversationState, deleteFolderState, moveFolderState, projectFolderState, renameConversationState, renameFolderState]);
+  useEffect(() => {
+    if (globalFolderSortMode === null) {
+      window.localStorage.removeItem('workspace-global-sort-mode');
+      return;
+    }
+
+    window.localStorage.setItem('workspace-global-sort-mode', globalFolderSortMode);
+  }, [globalFolderSortMode]);
 
   const handleConversationSelect = (conversationId: string) => setActiveConversationId(conversationId);
   const handleFolderToggle = (folderId: string) => {
@@ -115,6 +136,11 @@ export function useWorkspaceTreeActions({
         folderId,
         getNextFolderSortMode(folder.sortMode),
       ),
+    );
+  };
+  const handleGlobalFolderSortChange = (nextSortMode: WorkspaceFolderSortMode) => {
+    setGlobalFolderSortMode((currentSortMode) =>
+      currentSortMode === nextSortMode ? null : nextSortMode,
     );
   };
   const handleTreeNodeDrop = (nodeId: string, destinationFolderId: string | null) => {
@@ -315,11 +341,13 @@ export function useWorkspaceTreeActions({
     deleteFolder,
     deleteFolderState,
     folderOperationError,
+    globalFolderSortMode,
     handleConversationSelect,
     handleCreateFolderSubmit,
     handleFolderDeleteRequest,
     handleFolderToggle,
     handleFolderSortToggle,
+    handleGlobalFolderSortChange,
     handleMoveFolderSubmit,
     handleProjectFolderSubmit,
     handleRenameConversationSubmit,

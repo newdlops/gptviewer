@@ -3,12 +3,14 @@ import { canDropNodeInFolder, canMoveNodeRelativeToTarget, countTreeItems } from
 import { SourceDrawer } from './features/messages/components/SourceDrawer';
 import type { ClearLocalWorkspaceState } from './features/app/lib/appTypes';
 import { useDrawerState } from './features/app/hooks/useDrawerState';
+import { useAppSettingsActions } from './features/app/hooks/useAppSettingsActions';
 import { useGoogleDriveSync } from './features/app/hooks/useGoogleDriveSync';
 import { useSourcePreviewState } from './features/app/hooks/useSourcePreviewState';
 import { useWorkspaceActions } from './features/app/hooks/useWorkspaceActions';
 import { useWorkspaceSnapshotState } from './features/app/hooks/useWorkspaceSnapshotState';
 import { ConversationViewer } from './features/app/components/ConversationViewer';
 import { WorkspaceSidebar } from './features/app/components/WorkspaceSidebar';
+import { AppSettingsModal } from './features/app/components/modals/AppSettingsModal';
 import { GoogleDriveModals } from './features/app/components/modals/GoogleDriveModals';
 import { ProjectConversationImportModal } from './features/app/components/modals/ProjectConversationImportModal';
 import { SharedConversationImportModal } from './features/app/components/modals/SharedConversationImportModal';
@@ -18,6 +20,7 @@ import { WorkspaceModals } from './features/app/components/modals/WorkspaceModal
 function AppContent() {
   const [clearLocalWorkspaceState, setClearLocalWorkspaceState] = useState<ClearLocalWorkspaceState | null>(null);
   const [conversationRenderNonce, setConversationRenderNonce] = useState(0);
+  const appSettings = useAppSettingsActions();
   const drawer = useDrawerState();
   const sourceState = useSourcePreviewState();
   const workspaceState = useWorkspaceSnapshotState({ clearSourceState: sourceState.clearSourceState });
@@ -51,8 +54,6 @@ function AppContent() {
     setClearLocalWorkspaceState(null);
   };
 
-  const hasImportDestinationFolders = workspaceState.allFolderOptions.length > 0;
-
   return (
     <main
       ref={drawer.workspaceRef}
@@ -81,10 +82,12 @@ function AppContent() {
           onSyncNow: googleDriveSync.handleGoogleDriveSyncNow,
         }}
         isCollapsed={drawer.isDrawerCollapsed}
+        onOpenAppSettings={appSettings.openAppSettingsModal}
         onConversationSelect={workspaceActions.handleConversationSelect}
         onCreateFolder={workspaceActions.openCreateFolderModal}
         onDeleteConversation={workspaceActions.openDeleteConversationModal}
         onDeleteFolder={workspaceActions.handleFolderDeleteRequest}
+        onGlobalFolderSortChange={workspaceActions.handleGlobalFolderSortChange}
         onFolderSortToggle={workspaceActions.handleFolderSortToggle}
         onFolderToggle={workspaceActions.handleFolderToggle}
         onImportOpen={() => workspaceActions.setIsImportModalOpen(true)}
@@ -97,6 +100,7 @@ function AppContent() {
         onRenameFolder={workspaceActions.openRenameFolderModal}
         onSyncProjectFolder={workspaceActions.openProjectFolderSync}
         onThemeToggle={workspaceState.toggleThemeMode}
+        globalFolderSortMode={workspaceActions.globalFolderSortMode}
         themeMode={workspaceState.themeMode}
         tree={workspaceState.workspaceTree}
       />
@@ -144,7 +148,6 @@ function AppContent() {
 
       <SharedConversationImportModal
         allFolderOptions={workspaceState.allFolderOptions}
-        hasImportDestinationFolders={hasImportDestinationFolders}
         importChatUrl={workspaceActions.importChatUrl}
         importError={workspaceActions.importError}
         importFolderId={workspaceActions.importFolderId}
@@ -155,8 +158,10 @@ function AppContent() {
         onClose={() => workspaceActions.setIsImportModalOpen(false)}
         onFolderChange={workspaceActions.setImportFolderId}
         onProjectUrlChange={workspaceActions.setImportProjectUrl}
+        onPreferredStrategyChange={workspaceActions.setSharedImportPreferredStrategy}
         onShareUrlChange={workspaceActions.setShareUrl}
         onSubmit={workspaceActions.handleImportSharedConversation}
+        preferredStrategy={workspaceActions.sharedImportPreferredStrategy}
         shareUrl={workspaceActions.shareUrl}
       />
 
@@ -243,6 +248,19 @@ function AppContent() {
         projectFolderState={workspaceActions.projectFolderState}
         renameConversationState={workspaceActions.renameConversationState}
         renameFolderState={workspaceActions.renameFolderState}
+      />
+
+      <AppSettingsModal
+        chatGptSessionError={appSettings.chatGptSessionError}
+        chatGptSessionNotice={appSettings.chatGptSessionNotice}
+        isOpen={appSettings.isAppSettingsModalOpen}
+        isResettingChatGptSession={appSettings.isResettingChatGptSession}
+        isResettingMermaidCache={appSettings.isResettingMermaidCache}
+        mermaidCacheError={appSettings.mermaidCacheError}
+        mermaidCacheNotice={appSettings.mermaidCacheNotice}
+        onClose={appSettings.closeAppSettingsModal}
+        onResetMermaidCache={appSettings.handleResetMermaidCache}
+        onResetChatGptSessionState={appSettings.handleResetChatGptSessionState}
       />
 
       <GoogleDriveModals

@@ -120,6 +120,7 @@ export const buildConversationFromImport = (
   fetchedAt: importedConversation.fetchedAt,
   id: conversationId,
   importOrigin: importedConversation.importOrigin,
+  importWarning: importedConversation.importWarning,
   isSharedImport: true,
   messages: importedConversation.messages.map((message, index) => ({
     id: `${conversationId}-${index + 1}`,

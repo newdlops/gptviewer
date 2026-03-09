@@ -7,17 +7,25 @@ import {
   findFolderById,
   insertConversationIntoFolder,
   moveNodeInTree,
+  WORKSPACE_ROOT_VALUE,
 } from '../../conversations/lib/workspaceTree';
 import type { Conversation, SourceDrawerState, WorkspaceNode } from '../../../types/chat';
 import {
   isRefreshableSharedConversation,
+  parseFolderSelectValue,
   type SharedConversationRefreshConfigState,
 } from '../lib/appTypes';
 import {
   buildConversationFromImport,
   buildRefreshRequest,
+  normalizeChatUrl,
   isChatUrlImportedConversation,
 } from '../lib/sharedConversationUtils';
+import {
+  loadSharedConversationImportPreferences,
+  saveSharedConversationImportPreferences,
+  type SharedConversationImportStrategyPreference,
+} from '../lib/sharedConversationImportPreferences';
 
 type UseSharedConversationActionsArgs = {
   activeConversation: Conversation | null;
@@ -46,6 +54,10 @@ export function useSharedConversationActions({
   const [importFolderId, setImportFolderId] = useState('');
   const [importChatUrl, setImportChatUrl] = useState('');
   const [importProjectUrl, setImportProjectUrl] = useState('');
+  const [sharedImportPreferredStrategy, setSharedImportPreferredStrategy] =
+    useState<SharedConversationImportStrategyPreference>(() =>
+      loadSharedConversationImportPreferences().preferredStrategy,
+    );
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [isImportingSharedConversation, setIsImportingSharedConversation] = useState(false);
   const [importError, setImportError] = useState('');
@@ -56,7 +68,7 @@ export function useSharedConversationActions({
 
   const formatRefreshErrorMessage = (error: unknown) => {
     if (!(error instanceof Error)) {
-      return '공유 대화를 새로고침하지 못했습니다.';
+      return '대화를 새로고침하지 못했습니다.';
     }
 
     const decodedError = decodeSharedConversationRefreshError(error.message);
@@ -71,7 +83,7 @@ export function useSharedConversationActions({
       case 'share_update_button_not_found':
         return `${decodedError.message} 새로고침 설정에서 원본 ChatGPT 대화 URL이 맞는지도 확인해 주세요.${decodedError.detail ? `\n\n상세: ${decodedError.detail}` : ''}`;
       case 'clipboard_read_failed':
-        return `${decodedError.message} 실패가 반복되면 공유 링크 직접 새로고침으로 바꿔 보세요.`;
+        return `${decodedError.message} 실패가 반복되면 공유 대화 URL 직접 새로고침으로 바꿔 보세요.`;
       case 'chat_url_missing':
         return decodedError.message;
       case 'window_closed':
@@ -92,23 +104,72 @@ export function useSharedConversationActions({
   }, [isImportModalOpen]);
 
   useEffect(() => {
+    if (!isImportModalOpen || importFolderId) {
+      return;
+    }
+
+    setImportFolderId(WORKSPACE_ROOT_VALUE);
+  }, [importFolderId, isImportModalOpen]);
+
+  useEffect(() => {
+    saveSharedConversationImportPreferences({
+      preferredStrategy: sharedImportPreferredStrategy,
+    });
+  }, [sharedImportPreferredStrategy]);
+
+  useEffect(() => {
+    const hasShareUrl = shareUrl.trim().length > 0;
+    const hasChatUrl = importChatUrl.trim().length > 0;
+
+    if (hasChatUrl && !hasShareUrl && sharedImportPreferredStrategy === 'share-url-first') {
+      setSharedImportPreferredStrategy('chat-url-first');
+      return;
+    }
+
+    if (hasShareUrl && !hasChatUrl && sharedImportPreferredStrategy === 'chat-url-first') {
+      setSharedImportPreferredStrategy('share-url-first');
+    }
+  }, [importChatUrl, shareUrl, sharedImportPreferredStrategy]);
+
+  useEffect(() => {
     setRefreshError('');
   }, [activeConversation?.id]);
 
   const handleImportSharedConversation = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const normalizedUrl = shareUrl.trim();
+    const normalizedChatUrl = normalizeChatUrl(importChatUrl) ?? importChatUrl.trim();
+    const targetFolderId = parseFolderSelectValue(importFolderId);
     if (isImportingSharedConversation) return;
-    if (!normalizedUrl) return setImportError('공유 URL을 입력해 주세요.');
+    if (sharedImportPreferredStrategy === 'chat-url-first' && !normalizedChatUrl) {
+      return setImportError('원본 ChatGPT 대화 URL을 입력해 주세요.');
+    }
+    if (sharedImportPreferredStrategy === 'share-url-first' && !normalizedUrl) {
+      return setImportError('공유 대화 URL을 입력해 주세요.');
+    }
     if (!importFolderId) return setImportError('대화를 넣을 폴더를 선택해 주세요.');
-    if (!findFolderById(workspaceTree, importFolderId)) return setImportError('선택한 폴더를 찾을 수 없습니다.');
+    if (targetFolderId && !findFolderById(workspaceTree, targetFolderId)) {
+      return setImportError('선택한 폴더를 찾을 수 없습니다.');
+    }
 
     setImportError('');
     setIsImportingSharedConversation(true);
     try {
-      const cachedConversation = conversations.find(
-        (conversation) => conversation.isSharedImport && conversation.sourceUrl === normalizedUrl,
-      );
+      const cachedConversation = conversations.find((conversation) => {
+        if (!conversation.isSharedImport) {
+          return false;
+        }
+
+        if (normalizedUrl && conversation.sourceUrl === normalizedUrl) {
+          return true;
+        }
+
+        if (normalizedChatUrl && conversation.refreshRequest?.chatUrl === normalizedChatUrl) {
+          return true;
+        }
+
+        return normalizedChatUrl !== '' && conversation.sourceUrl === normalizedChatUrl;
+      });
 
       if (cachedConversation) {
         if (importChatUrl.trim() || importProjectUrl.trim()) {
@@ -135,29 +196,106 @@ export function useSharedConversationActions({
         }
         setWorkspaceTree((currentTree) => {
           const existingNodeId = findConversationNodeId(currentTree, cachedConversation.id);
-          if (!existingNodeId) return insertConversationIntoFolder(currentTree, importFolderId, cachedConversation.id);
-          if (!canDropNodeInFolder(currentTree, existingNodeId, importFolderId)) return currentTree;
-          return moveNodeInTree(currentTree, existingNodeId, importFolderId);
+          if (!existingNodeId) {
+            return insertConversationIntoFolder(
+              currentTree,
+              targetFolderId,
+              cachedConversation.id,
+            );
+          }
+          if (!canDropNodeInFolder(currentTree, existingNodeId, targetFolderId)) {
+            return currentTree;
+          }
+          return moveNodeInTree(currentTree, existingNodeId, targetFolderId);
         });
-        setExpandedFolderState((current) => ({ ...current, [importFolderId]: true }));
+        if (targetFolderId) {
+          setExpandedFolderState((current) => ({ ...current, [targetFolderId]: true }));
+        }
         setActiveConversationId(cachedConversation.id);
         setIsImportModalOpen(false);
         return;
       }
 
-      const importedConversation = normalizeImportedConversation(
-        await window.electronAPI?.fetchSharedConversation(normalizedUrl),
-      );
-      if (!importedConversation) throw new Error('공유 대화를 불러오는 기능을 사용할 수 없습니다.');
+      const importDirectChatConversation = async () =>
+        normalizeImportedConversation(
+          await window.electronAPI?.importChatGptConversation({
+            chatUrl: normalizedChatUrl,
+            conversationTitle: '',
+            helperWindowMode: 'background',
+            mode: 'direct-chat-page',
+            projectUrl: importProjectUrl.trim() || undefined,
+            shareUrl: normalizedChatUrl,
+          }),
+        );
+
+      const importSharedConversation = async () =>
+        normalizeImportedConversation(
+          await window.electronAPI?.fetchSharedConversation(normalizedUrl),
+        );
+
+      const attempts =
+        sharedImportPreferredStrategy === 'chat-url-first'
+          ? [
+              async () => {
+                if (!normalizedChatUrl) {
+                  throw new Error('원본 ChatGPT 대화 URL을 입력해 주세요.');
+                }
+                return importDirectChatConversation();
+              },
+              async () => {
+                if (!normalizedUrl) {
+                  throw new Error('공유 대화 URL을 입력해 주세요.');
+                }
+                return importSharedConversation();
+              },
+            ]
+          : [
+              async () => {
+                if (!normalizedUrl) {
+                  throw new Error('공유 대화 URL을 입력해 주세요.');
+                }
+                return importSharedConversation();
+              },
+              async () => {
+                if (!normalizedChatUrl) {
+                  throw new Error('원본 ChatGPT 대화 URL을 입력해 주세요.');
+                }
+                return importDirectChatConversation();
+              },
+            ];
+
+      let importedConversation: ReturnType<typeof normalizeImportedConversation> | null = null;
+      let lastImportError: unknown = null;
+
+      for (const attempt of attempts) {
+        try {
+          importedConversation = await attempt();
+          if (importedConversation) {
+            break;
+          }
+        } catch (error) {
+          lastImportError = error;
+        }
+      }
+
+      if (!importedConversation && lastImportError) {
+        throw lastImportError;
+      }
+
+      if (!importedConversation) throw new Error('대화를 불러오는 기능을 사용할 수 없습니다.');
       if (importedConversation.messages.length === 0) throw new Error('공유 페이지에서 대화 내용을 찾지 못했습니다.');
 
       const conversationId = `shared-${Date.now()}`;
       const nextRefreshRequest = buildRefreshRequest(
-        importedConversation.sourceUrl || normalizedUrl,
+        importedConversation.sourceUrl || normalizedUrl || normalizedChatUrl,
         importedConversation.title,
         importChatUrl,
         importProjectUrl,
-        importChatUrl.trim() ? 'chatgpt-share-flow' : 'direct-share-page',
+        sharedImportPreferredStrategy === 'chat-url-first'
+          ? 'direct-chat-page'
+          : importChatUrl.trim()
+            ? 'chatgpt-share-flow'
+            : 'direct-share-page',
       );
       setConversations((current) => [
         buildConversationFromImport(conversationId, {
@@ -166,12 +304,16 @@ export function useSharedConversationActions({
         }),
         ...current,
       ]);
-      setWorkspaceTree((currentTree) => insertConversationIntoFolder(currentTree, importFolderId, conversationId));
-      setExpandedFolderState((current) => ({ ...current, [importFolderId]: true }));
+      setWorkspaceTree((currentTree) =>
+        insertConversationIntoFolder(currentTree, targetFolderId, conversationId),
+      );
+      if (targetFolderId) {
+        setExpandedFolderState((current) => ({ ...current, [targetFolderId]: true }));
+      }
       setActiveConversationId(conversationId);
       setIsImportModalOpen(false);
     } catch (error) {
-      setImportError(error instanceof Error ? error.message : '공유 대화를 불러오지 못했습니다.');
+      setImportError(error instanceof Error ? error.message : '대화를 불러오지 못했습니다.');
     } finally {
       setIsImportingSharedConversation(false);
     }
@@ -206,7 +348,7 @@ export function useSharedConversationActions({
           nextRefreshRequest,
         ),
       );
-      if (!importedConversation) throw new Error('공유 대화를 새로고침할 수 없습니다.');
+      if (!importedConversation) throw new Error('대화를 새로고침할 수 없습니다.');
       if (importedConversation.messages.length === 0) throw new Error('공유 페이지에서 최신 대화 내용을 찾지 못했습니다.');
 
       messageHeightCacheRef.current[activeConversation.id] = {};
@@ -295,6 +437,7 @@ export function useSharedConversationActions({
     refreshError,
     refreshConfigState,
     refreshingConversationId,
+    setSharedImportPreferredStrategy,
     setImportChatUrl,
     setImportFolderId,
     setIsImportModalOpen,
@@ -302,5 +445,6 @@ export function useSharedConversationActions({
     setRefreshConfigState,
     setShareUrl,
     shareUrl,
+    sharedImportPreferredStrategy,
   };
 }

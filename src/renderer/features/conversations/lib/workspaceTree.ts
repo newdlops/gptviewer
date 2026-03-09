@@ -2,11 +2,30 @@ import type {
   WorkspaceFolderNode,
   WorkspaceFolderSortMode,
   WorkspaceFolderSource,
+  WorkspaceNodeMeta,
   WorkspaceNode,
 } from '../../../types/chat';
 
 export const SHARED_CONVERSATIONS_FOLDER_ID = 'workspace-root-imports';
 export const WORKSPACE_ROOT_VALUE = '__workspace-root__';
+
+const createWorkspaceNodeMeta = (
+  timestamp = new Date().toISOString(),
+): WorkspaceNodeMeta => ({
+  createdAt: timestamp,
+  updatedAt: timestamp,
+});
+
+const touchWorkspaceNode = (
+  node: WorkspaceNode,
+  timestamp = new Date().toISOString(),
+): WorkspaceNode => ({
+  ...node,
+  meta: {
+    ...node.meta,
+    updatedAt: timestamp,
+  },
+});
 
 export const collectFolderIds = (nodes: WorkspaceNode[]): string[] =>
   nodes.flatMap((node) =>
@@ -25,20 +44,35 @@ export const buildExpandedFolderState = (
 
 export const insertConversationIntoFolder = (
   nodes: WorkspaceNode[],
-  folderId: string,
+  folderId: string | null,
   conversationId: string,
-): WorkspaceNode[] =>
-  nodes.map((node) => {
+): WorkspaceNode[] => {
+  const timestamp = new Date().toISOString();
+
+  if (!folderId) {
+    return [
+      {
+        id: `workspace-conversation-${conversationId}`,
+        meta: createWorkspaceNodeMeta(timestamp),
+        type: 'conversation',
+        conversationId,
+      },
+      ...nodes,
+    ];
+  }
+
+  return nodes.map((node) => {
     if (node.type !== 'folder') {
       return node;
     }
 
     if (node.id === folderId) {
       return {
-        ...node,
+        ...touchWorkspaceNode(node, timestamp),
         children: [
           {
             id: `workspace-conversation-${conversationId}`,
+            meta: createWorkspaceNodeMeta(timestamp),
             type: 'conversation',
             conversationId,
           },
@@ -52,6 +86,7 @@ export const insertConversationIntoFolder = (
       children: insertConversationIntoFolder(node.children, folderId, conversationId),
     };
   });
+};
 
 export const findFirstConversationId = (
   nodes: WorkspaceNode[],
@@ -82,8 +117,11 @@ const insertNodeIntoFolder = (
   folderId: string | null,
   nodeToInsert: WorkspaceNode,
 ): WorkspaceNode[] => {
+  const timestamp = new Date().toISOString();
+  const nextNodeToInsert = touchWorkspaceNode(nodeToInsert, timestamp);
+
   if (!folderId) {
-    return [nodeToInsert, ...nodes];
+    return [nextNodeToInsert, ...nodes];
   }
 
   return nodes.map((node) => {
@@ -93,8 +131,8 @@ const insertNodeIntoFolder = (
 
     if (node.id === folderId) {
       return {
-        ...node,
-        children: [nodeToInsert, ...node.children],
+        ...touchWorkspaceNode(node, timestamp),
+        children: [nextNodeToInsert, ...node.children],
       };
     }
 
@@ -117,6 +155,7 @@ export const addFolderToTree = (
   const folderId = createFolderId();
   const folderNode: WorkspaceFolderNode = {
     id: folderId,
+    meta: createWorkspaceNodeMeta(),
     name: folderName,
     type: 'folder',
     children: [],
@@ -141,7 +180,7 @@ export const renameFolderInTree = (
 
     if (node.id === folderId) {
       return {
-        ...node,
+        ...touchWorkspaceNode(node),
         name: nextName,
       };
     }
@@ -164,7 +203,7 @@ export const updateFolderSourceInTree = (
 
     if (node.id === folderId) {
       return {
-        ...node,
+        ...touchWorkspaceNode(node),
         source: nextSource,
       };
     }
@@ -178,7 +217,7 @@ export const updateFolderSourceInTree = (
 export const updateFolderSortModeInTree = (
   nodes: WorkspaceNode[],
   folderId: string,
-  nextSortMode: WorkspaceFolderSortMode,
+  nextSortMode?: WorkspaceFolderSortMode,
 ): WorkspaceNode[] =>
   nodes.map((node) => {
     if (node.type !== 'folder') {
@@ -187,7 +226,7 @@ export const updateFolderSortModeInTree = (
 
     if (node.id === folderId) {
       return {
-        ...node,
+        ...touchWorkspaceNode(node),
         sortMode: nextSortMode,
       };
     }
@@ -476,6 +515,8 @@ const insertNodeRelativeToTarget = (
   nodeToInsert: WorkspaceNode,
   position: NodeInsertPosition,
 ): WorkspaceNode[] => {
+  const timestamp = new Date().toISOString();
+  const nextNodeToInsert = touchWorkspaceNode(nodeToInsert, timestamp);
   const targetNodeIndex = nodes.findIndex((node) => node.id === targetNodeId);
 
   if (targetNodeIndex >= 0) {
@@ -484,7 +525,7 @@ const insertNodeRelativeToTarget = (
 
     return [
       ...nodes.slice(0, insertIndex),
-      nodeToInsert,
+      nextNodeToInsert,
       ...nodes.slice(insertIndex),
     ];
   }

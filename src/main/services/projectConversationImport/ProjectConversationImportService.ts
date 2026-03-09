@@ -2,10 +2,15 @@ import type {
   ProjectConversationCollectionResult,
   ProjectConversationImportProgress,
 } from '../../../shared/import/projectConversationImport';
-import { CHATGPT_CHALLENGE_TEXT_MARKERS, CHATGPT_LOGIN_TEXT_MARKERS, CHATGPT_LOGIN_URL_PATTERNS, CHATGPT_PROJECT_CHAT_LIST_SELECTORS } from '../sharedConversationRefresh/chatgpt/ChatGptDomSelectors';
+import { CHATGPT_PROJECT_CHAT_LIST_SELECTORS } from '../sharedConversationRefresh/chatgpt/ChatGptDomSelectors';
 import { ChatGptAutomationView } from '../sharedConversationRefresh/chatgpt/ChatGptAutomationView';
+import {
+  buildLoginRequiredDetail,
+  ensureLoginAttentionIfNeeded,
+  runWithLoginResume,
+} from '../sharedConversationRefresh/chatgpt/chatGptLoginState';
+import { SharedConversationRefreshError } from '../sharedConversationRefresh/SharedConversationRefreshError';
 import { waitForConversationListReady } from '../sharedConversationRefresh/chatgpt/chatGptConversationLoadHelpers';
-import { includesMarker } from '../sharedConversationRefresh/chatgpt/chatGptRefreshHelpers';
 import {
   buildCollectProjectConversationListSnapshotScript,
   buildScrollProjectConversationListScript,
@@ -24,19 +29,6 @@ const PROJECT_LIST_SETTLE_IDLE_MS = 2_000;
 const PROJECT_LIST_SETTLE_TIMEOUT_MS = 12_000;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-const isLoginLikeSnapshot = (
-  snapshot: Awaited<ReturnType<ChatGptAutomationView['getPageSnapshot']>>,
-) => {
-  const isLoginUrl = CHATGPT_LOGIN_URL_PATTERNS.some((pattern) =>
-    pattern.test(snapshot.currentUrl),
-  );
-  return (
-    isLoginUrl ||
-    includesMarker(snapshot.bodyText, CHATGPT_LOGIN_TEXT_MARKERS) ||
-    includesMarker(snapshot.bodyText, CHATGPT_CHALLENGE_TEXT_MARKERS)
-  );
-};
 
 const normalizeProjectUrl = (rawUrl: string) => {
   const trimmedUrl = rawUrl.trim();
@@ -76,16 +68,33 @@ export class ProjectConversationImportService {
     projectUrl: string,
     onProgress?: (progress: ProjectConversationImportProgress) => void,
   ): Promise<ProjectConversationListSnapshot> {
-    const automationView = await ChatGptAutomationView.acquire('background');
-    try {
+    return runWithLoginResume({
+      initialMode: 'background',
+      runAttempt: async (automationView) =>
+        this.collectProjectConversationsWithView(
+          projectUrl,
+          automationView,
+          onProgress,
+        ),
+    });
+  }
+
+  private async collectProjectConversationsWithView(
+    projectUrl: string,
+    automationView: ChatGptAutomationView,
+    onProgress?: (progress: ProjectConversationImportProgress) => void,
+  ): Promise<ProjectConversationListSnapshot> {
       await automationView.load(projectUrl);
       await automationView.execute<boolean>(
         buildInstallProjectImportNetworkMonitorScript(),
       );
-      const firstSnapshot = await automationView.getPageSnapshot();
-      if (isLoginLikeSnapshot(firstSnapshot)) {
-        await automationView.presentForAttention();
-        throw new Error('ChatGPT 로그인 또는 보안 확인이 필요합니다. 보조 창에서 먼저 마친 뒤 다시 시도해 주세요.');
+      const loginSnapshot = await ensureLoginAttentionIfNeeded(automationView);
+      if (loginSnapshot) {
+        throw new SharedConversationRefreshError(
+          'login_required',
+          'ChatGPT 로그인 또는 보안 확인이 필요합니다. 보조 창에서 먼저 마친 뒤 다시 시도해 주세요.',
+          buildLoginRequiredDetail(loginSnapshot),
+        );
       }
 
       const isListReady = await waitForConversationListReady(
@@ -95,6 +104,14 @@ export class ProjectConversationImportService {
         120,
       );
       if (!isListReady) {
+        const delayedLoginSnapshot = await ensureLoginAttentionIfNeeded(automationView);
+        if (delayedLoginSnapshot) {
+          throw new SharedConversationRefreshError(
+            'login_required',
+            'ChatGPT 로그인 또는 보안 확인이 필요합니다. 보조 창에서 먼저 마친 뒤 다시 시도해 주세요.',
+            buildLoginRequiredDetail(delayedLoginSnapshot),
+          );
+        }
         throw new Error('프로젝트의 채팅 목록을 찾지 못했습니다.');
       }
 
@@ -244,9 +261,6 @@ export class ProjectConversationImportService {
         scrollTop: finalSnapshot?.scrollTop ?? 0,
         projectTitle,
       };
-    } finally {
-      await automationView.close();
-    }
   }
 
   async collectProject(

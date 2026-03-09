@@ -24,7 +24,7 @@ export function SharedConversationRefreshConfigModal({
   return (
     <Modal
       ariaLabelledBy="shared-chat-refresh-config-modal-title"
-      eyebrow="공유 대화 새로고침"
+      eyebrow="대화 새로고침"
       isOpen={!!refreshConfigState}
       onClose={onClose}
       title="GPT 새로고침 설정"
@@ -54,7 +54,7 @@ export function SharedConversationRefreshConfigModal({
             )
           }
         >
-          <option value="direct-share-page">공유 링크 직접 새로고침</option>
+          <option value="direct-share-page">공유 대화 URL 직접 새로고침</option>
           <option value="direct-chat-page">원본 링크 직접 새로고침</option>
           <option value="chatgpt-share-flow">GPT 웹앱 자동 새로고침</option>
         </select>
@@ -115,7 +115,7 @@ export function SharedConversationRefreshConfigModal({
           자동 새로고침은 보조 ChatGPT 창을 열어 <code>Share</code> 모달과 <code>Update and Copy Link</code> 흐름을 시도합니다.
         </p>
         <p className="modal__hint">
-          원본 링크 직접 새로고침은 공유 링크 단계를 건너뛰고 현재 ChatGPT 대화 DOM을 바로 가져옵니다.
+          원본 링크 직접 새로고침은 공유 대화 URL 단계를 건너뛰고 현재 ChatGPT 대화 DOM을 바로 가져옵니다.
         </p>
         <p className="modal__hint">
           프로젝트 대화라면 먼저 프로젝트를 연 뒤 해당 대화의 더보기 메뉴에서 공유하기를 시도합니다.

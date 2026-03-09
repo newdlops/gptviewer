@@ -105,6 +105,11 @@ export function ConversationViewer({
                     <a href={activeConversation.sourceUrl} target="_blank" rel="noreferrer">브라우저에서 열기</a>
                   </div>
                 ) : null}
+                {activeConversation.importWarning ? (
+                  <p className="stream-intro__warning" role="status">
+                    {activeConversation.importWarning.message}
+                  </p>
+                ) : null}
                 {refreshError ? <p className="stream-intro__error" role="alert">{refreshError}</p> : null}
               </div>
 
@@ -134,7 +139,7 @@ export function ConversationViewer({
           ) : (
             <div className="viewer-empty">
               <h3>대화가 없습니다</h3>
-              <p>왼쪽에서 새 폴더를 만들거나 공유 대화를 불러오세요.</p>
+              <p>왼쪽에서 새 폴더를 만들거나 대화를 불러오세요.</p>
             </div>
           )}
         </section>

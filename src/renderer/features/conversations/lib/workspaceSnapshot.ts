@@ -2,13 +2,17 @@ import {
   WORKSPACE_SNAPSHOT_SCHEMA_VERSION,
   type WorkspaceSnapshot,
 } from '../../../../shared/sync/workspaceSnapshot';
-import type { SharedConversationRefreshRequest } from '../../../../shared/refresh/sharedConversationRefresh';
+import type {
+  SharedConversationImportWarning,
+  SharedConversationRefreshRequest,
+} from '../../../../shared/refresh/sharedConversationRefresh';
 import type {
   Conversation,
   Message,
   MessageSource,
   WorkspaceFolderSource,
   WorkspaceFolderSortMode,
+  WorkspaceNodeMeta,
   WorkspaceNode,
 } from '../../../types/chat';
 
@@ -147,6 +151,33 @@ const normalizeConversation = (value: unknown): Conversation | null => {
     };
   };
 
+  const normalizeImportWarning = (
+    warningValue: unknown,
+  ): SharedConversationImportWarning | undefined => {
+    if (!warningValue || typeof warningValue !== 'object') {
+      return undefined;
+    }
+
+    const warningRecord = warningValue as Record<string, unknown>;
+    const code =
+      warningRecord.code === 'shared-deep-research-partial'
+        ? warningRecord.code
+        : null;
+    const message =
+      typeof warningRecord.message === 'string' && warningRecord.message.trim()
+        ? warningRecord.message.trim()
+        : '';
+
+    if (!code || !message) {
+      return undefined;
+    }
+
+    return {
+      code,
+      message,
+    };
+  };
+
   return {
     fetchedAt:
       typeof record.fetchedAt === 'string' && record.fetchedAt.trim()
@@ -154,6 +185,7 @@ const normalizeConversation = (value: unknown): Conversation | null => {
         : undefined,
     id,
     importOrigin: record.importOrigin === 'chat-url' ? 'chat-url' : undefined,
+    importWarning: normalizeImportWarning(record.importWarning),
     isSharedImport: record.isSharedImport === true,
     messages,
     projectSyncStatus:
@@ -171,7 +203,45 @@ const normalizeConversation = (value: unknown): Conversation | null => {
   };
 };
 
-const normalizeWorkspaceNode = (value: unknown): WorkspaceNode | null => {
+const buildFallbackWorkspaceNodeMeta = (
+  orderIndex: number,
+): WorkspaceNodeMeta => {
+  const timestamp = new Date(Date.now() - orderIndex * 1000).toISOString();
+
+  return {
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+};
+
+const normalizeWorkspaceNodeMeta = (
+  value: unknown,
+  fallbackMeta: WorkspaceNodeMeta,
+): WorkspaceNodeMeta => {
+  if (!value || typeof value !== 'object') {
+    return fallbackMeta;
+  }
+
+  const record = value as Record<string, unknown>;
+  const createdAt =
+    typeof record.createdAt === 'string' && record.createdAt.trim()
+      ? record.createdAt.trim()
+      : fallbackMeta.createdAt;
+  const updatedAt =
+    typeof record.updatedAt === 'string' && record.updatedAt.trim()
+      ? record.updatedAt.trim()
+      : createdAt;
+
+  return {
+    createdAt,
+    updatedAt,
+  };
+};
+
+const normalizeWorkspaceNode = (
+  value: unknown,
+  orderState: { index: number },
+): WorkspaceNode | null => {
   if (!value || typeof value !== 'object') {
     return null;
   }
@@ -184,6 +254,10 @@ const normalizeWorkspaceNode = (value: unknown): WorkspaceNode | null => {
     return null;
   }
 
+  const fallbackMeta = buildFallbackWorkspaceNodeMeta(orderState.index);
+  orderState.index += 1;
+  const meta = normalizeWorkspaceNodeMeta(record.meta, fallbackMeta);
+
   if (type === 'conversation') {
     const conversationId =
       typeof record.conversationId === 'string' ? record.conversationId.trim() : '';
@@ -195,6 +269,7 @@ const normalizeWorkspaceNode = (value: unknown): WorkspaceNode | null => {
     return {
       conversationId,
       id,
+      meta,
       type,
     };
   }
@@ -223,7 +298,7 @@ const normalizeWorkspaceNode = (value: unknown): WorkspaceNode | null => {
       : undefined;
   const children = Array.isArray(record.children)
     ? record.children
-        .map((childNode) => normalizeWorkspaceNode(childNode))
+        .map((childNode) => normalizeWorkspaceNode(childNode, orderState))
         .filter((childNode): childNode is WorkspaceNode => !!childNode)
     : [];
 
@@ -234,6 +309,7 @@ const normalizeWorkspaceNode = (value: unknown): WorkspaceNode | null => {
   return {
     children,
     id,
+    meta,
     name,
     source,
     sortMode,
@@ -299,9 +375,10 @@ export const normalizeWorkspaceSnapshot = (
         .map((conversation) => normalizeConversation(conversation))
         .filter((conversation): conversation is Conversation => !!conversation)
     : [];
+  const workspaceNodeOrderState = { index: 0 };
   const workspaceTree = Array.isArray(record.workspaceTree)
     ? record.workspaceTree
-        .map((node) => normalizeWorkspaceNode(node))
+        .map((node) => normalizeWorkspaceNode(node, workspaceNodeOrderState))
         .filter((node): node is WorkspaceNode => !!node)
     : [];
   const expandedFolderState = normalizeExpandedFolderState(

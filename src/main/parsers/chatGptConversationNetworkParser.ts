@@ -12,11 +12,13 @@ const INLINE_CITATION_TOKEN_PATTERN =
 type ConversationMappingNode = {
   message?: {
     author?: { role?: string };
+    channel?: string | null;
     content?: {
       content_type?: string;
       parts?: unknown[];
     };
     metadata?: Record<string, unknown>;
+    recipient?: string | null;
     status?: string;
   };
   parent?: string | null;
@@ -40,6 +42,23 @@ type RecordConversationCandidate = {
   score: number;
 };
 
+type ReportMessageCandidate = {
+  reportMessage: Record<string, unknown>;
+  title: string | null;
+};
+
+type MappingNodeDescriptor = {
+  isDeepResearchPlaceholder: boolean;
+  renderedMessage: SharedConversationMessage | null;
+  reportAssistantMessages: SharedConversationMessage[];
+};
+
+const NON_IMPORTABLE_CONTENT_TYPES = new Set([
+  'model_editable_context',
+  'reasoning_recap',
+  'thoughts',
+]);
+
 const MERMAID_SOURCE_PATTERN =
   /(^|\n)\s*(flowchart|graph|sequenceDiagram|classDiagram|stateDiagram|erDiagram|journey|gantt|pie|gitGraph|mindmap|timeline|quadrantChart|xychart-beta|xychart|C4Context|C4Container|C4Component|C4Dynamic|C4Deployment|requirementDiagram|block-beta|architecture-beta)\b|-->|\bsubgraph\b/;
 const LANGUAGE_FENCE_PATTERN = /```([\w#+.-]+)?\n[\s\S]*?```/g;
@@ -49,6 +68,18 @@ const MERMAID_LOADING_TEXT_PATTERN =
   /^(?:mermaid\s*)?(?:다이어그램\s*)?불러오는 중(?:\.{3}|…)?$/i;
 const HTTP_HEADER_CODE_PATTERN =
   /^https?:\/\/|^httphttp\/1\.[01]\s+\d{3}|^http\/1\.[01]\s+\d{3}/i;
+const IMAGE_CONTENT_HINT_PATTERN = /(image|img|photo|picture|thumbnail|preview|avatar|asset_pointer)/i;
+const IMAGE_CONTENT_TYPE_PATTERN =
+  /(image|image_asset_pointer|multimodal_image|input_image|output_image)/i;
+const IMAGE_MIME_TYPE_PATTERN = /^image\//i;
+const IMAGE_URL_PATTERN =
+  /^(data:image\/[a-z0-9.+-]+;base64,|https?:\/\/.+\.(?:png|jpe?g|gif|webp|avif|bmp|svg)(?:[?#].*)?$|https?:\/\/(?:[^/?#]+\.)?oaiusercontent\.com\/.+)/i;
+const FILE_SERVICE_POINTER_PATTERN = /^file-service:\/\/(.+)/i;
+const SEDIMENT_POINTER_PATTERN = /^sediment:\/\/(file_[a-z0-9]+)/i;
+const WIDGET_STATE_MARKER = 'The latest state of the widget is:';
+const DEEP_RESEARCH_APP_PATH_PATTERN = /^\/Deep Research App\//i;
+const DEEP_RESEARCH_CONNECTOR_PATTERN =
+  /implicit_link::connector_openai_deep_research|connector_openai_deep_research/i;
 
 const decodeRscPayload = (value: string): string => JSON.parse(`"${value}"`);
 
@@ -58,6 +89,49 @@ const sanitizeConversationTitle = (title: string): string =>
     .replace(/\s*[|-]\s*ChatGPT$/i, '')
     .replace(/\s+[|·-]\s+OpenAI$/i, '')
     .trim() || 'ChatGPT 대화';
+
+const extractHeadingTitle = (text: string): string | null => {
+  const headingMatch = text.match(/^#\s+(.+)$/m);
+  if (headingMatch?.[1]) {
+    return headingMatch[1].trim();
+  }
+
+  return null;
+};
+
+const tryParseJsonRecord = (value: string): Record<string, unknown> | null => {
+  const trimmedValue = value.trim();
+  if (!trimmedValue.startsWith('{') || !trimmedValue.endsWith('}')) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(trimmedValue) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+};
+
+const isDeepResearchSteerPayloadText = (value: string): boolean => {
+  const parsedRecord = tryParseJsonRecord(value);
+  if (!parsedRecord) {
+    return false;
+  }
+
+  const path = parsedRecord.path;
+  const args = parsedRecord.args;
+
+  return (
+    typeof path === 'string' &&
+    DEEP_RESEARCH_APP_PATH_PATTERN.test(path) &&
+    DEEP_RESEARCH_CONNECTOR_PATTERN.test(path) &&
+    typeof args === 'object' &&
+    !!args
+  );
+};
 
 const normalizeMessageText = (value: string): string =>
   value
@@ -86,6 +160,12 @@ const normalizeMessageText = (value: string): string =>
 
 const normalizeCodeLanguage = (value: string): string =>
   value.trim().toLowerCase().replace(/^language[-:_]?/i, '');
+
+const escapeHtmlEntities = (value: string): string =>
+  value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 
 const inferObjectLanguage = (record: Record<string, unknown>): string => {
   const directCandidates = [
@@ -164,7 +244,11 @@ const shouldRenderAsCodeBlock = (
 const wrapCodeFence = (value: string, language: string): string => {
   const normalizedValue = value.trim();
   const normalizedLanguage = normalizeCodeLanguage(language);
-  return `\`\`\`${normalizedLanguage}\n${normalizedValue}\n\`\`\``;
+  const escapedValue =
+    normalizedLanguage === 'html'
+      ? escapeHtmlEntities(normalizedValue)
+      : normalizedValue;
+  return `\`\`\`${normalizedLanguage}\n${escapedValue}\n\`\`\``;
 };
 
 const collectRecordStrings = (
@@ -210,6 +294,129 @@ const collectStringLeaves = (
   );
 };
 
+const isLikelyImageKey = (key: string): boolean =>
+  IMAGE_CONTENT_HINT_PATTERN.test(key);
+
+const normalizeRenderableImageUrl = (value: string): string => {
+  const trimmedValue = value.trim();
+  if (!trimmedValue) {
+    return '';
+  }
+
+  if (trimmedValue.startsWith('//')) {
+    return `https:${trimmedValue}`;
+  }
+
+  return trimmedValue;
+};
+
+const isRenderableImageUrl = (value: string): boolean =>
+  IMAGE_URL_PATTERN.test(normalizeRenderableImageUrl(value));
+
+const isLikelyImageContext = (
+  record: Record<string, unknown>,
+  parentContext: boolean,
+): boolean => {
+  if (parentContext) {
+    return true;
+  }
+
+  const contentType = String(record.content_type ?? record.type ?? record.kind ?? '');
+  if (IMAGE_CONTENT_TYPE_PATTERN.test(contentType)) {
+    return true;
+  }
+
+  const mimeTypeCandidates = [
+    record.mime_type,
+    record.mimeType,
+    record.file_type,
+    record.fileType,
+  ];
+
+  if (
+    mimeTypeCandidates.some(
+      (candidate) =>
+        typeof candidate === 'string' &&
+        IMAGE_MIME_TYPE_PATTERN.test(candidate.trim().toLowerCase()),
+    )
+  ) {
+    return true;
+  }
+
+  return Object.keys(record).some((key) => isLikelyImageKey(key));
+};
+
+const collectImageParts = (
+  value: unknown,
+  parentContext = false,
+  visited = new WeakSet<object>(),
+): string[] => {
+  if (!value) {
+    return [];
+  }
+
+  if (typeof value === 'string') {
+    const normalizedValue = normalizeRenderableImageUrl(value);
+    if (isRenderableImageUrl(normalizedValue)) {
+      return [`![image](${normalizedValue})`];
+    }
+
+    const sedimentPointerMatch = normalizedValue.match(SEDIMENT_POINTER_PATTERN);
+    if (sedimentPointerMatch?.[1]) {
+      return [`![image](sediment://${sedimentPointerMatch[1]})`];
+    }
+
+    const pointerMatch = normalizedValue.match(FILE_SERVICE_POINTER_PATTERN);
+    if (pointerMatch?.[1]) {
+      return [`[이미지 첨부: ${pointerMatch[1]}]`];
+    }
+
+    return [];
+  }
+
+  if (Array.isArray(value)) {
+    return value.flatMap((entry) => collectImageParts(entry, parentContext, visited));
+  }
+
+  if (typeof value !== 'object') {
+    return [];
+  }
+
+  if (visited.has(value)) {
+    return [];
+  }
+  visited.add(value);
+
+  const record = value as Record<string, unknown>;
+  const imageContext = isLikelyImageContext(record, parentContext);
+  const imageParts: string[] = [];
+
+  Object.entries(record).forEach(([key, entry]) => {
+    if (typeof entry === 'string') {
+      const normalizedEntry = normalizeRenderableImageUrl(entry);
+      if (isRenderableImageUrl(normalizedEntry) && (imageContext || isLikelyImageKey(key))) {
+        imageParts.push(`![image](${normalizedEntry})`);
+        return;
+      }
+
+      const pointerMatch = normalizedEntry.match(FILE_SERVICE_POINTER_PATTERN);
+      if (
+        pointerMatch?.[1] &&
+        (imageContext || isLikelyImageKey(key) || key === 'asset_pointer')
+      ) {
+        imageParts.push(`[이미지 첨부: ${pointerMatch[1]}]`);
+      }
+      return;
+    }
+
+    imageParts.push(
+      ...collectImageParts(entry, imageContext || isLikelyImageKey(key), visited),
+    );
+  });
+
+  return imageParts;
+};
+
 const chooseBestCodeCandidate = (
   candidates: string[],
   language: string,
@@ -243,7 +450,11 @@ const chooseBestCodeCandidate = (
 
 const renderConversationPart = (value: unknown): string[] => {
   if (typeof value === 'string') {
-    return value.trim() ? [value] : [];
+    if (!value.trim() || isDeepResearchSteerPayloadText(value)) {
+      return [];
+    }
+
+    return [value];
   }
 
   if (Array.isArray(value)) {
@@ -284,6 +495,11 @@ const renderConversationPart = (value: unknown): string[] => {
     return [wrapCodeFence(codeCandidate, language || 'text')];
   }
 
+  const imageParts = collectImageParts(record);
+  if (imageParts.length > 0) {
+    return [...new Set(imageParts)];
+  }
+
   const nestedParts = [
     ...renderConversationPart(record.text),
     ...renderConversationPart(record.content),
@@ -319,12 +535,33 @@ const extractLargestRscPayload = (html: string): string | null => {
   );
 };
 
-const buildConversationFromMapping = (
+const containsDeepResearchPayloadText = (value: unknown): boolean => {
+  if (typeof value === 'string') {
+    return (
+      isDeepResearchSteerPayloadText(value) ||
+      isWidgetStatePayloadText(value) ||
+      value.includes(WIDGET_STATE_MARKER)
+    );
+  }
+
+  if (Array.isArray(value)) {
+    return value.some((entry) => containsDeepResearchPayloadText(entry));
+  }
+
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  return Object.values(value as Record<string, unknown>).some((entry) =>
+    containsDeepResearchPayloadText(entry),
+  );
+};
+
+const getOrderedMappingNodes = (
   conversation: MappingConversation,
-  fallbackUrl: string,
-): ConversationCandidate | null => {
+): ConversationMappingNode[] => {
   if (!conversation.mapping || !conversation.current_node) {
-    return null;
+    return [];
   }
 
   const orderedNodes: ConversationMappingNode[] = [];
@@ -342,45 +579,469 @@ const buildConversationFromMapping = (
   }
 
   orderedNodes.reverse();
+  return orderedNodes;
+};
 
-  const messages = orderedNodes
-    .map((node) => {
-      const message = node.message;
-      const role = message?.author?.role;
-      const contentType = message?.content?.content_type;
-      const text = normalizeMessageText(
-        renderConversationPart(message?.content).join('\n\n'),
-      );
-      const metadata = message?.metadata ?? {};
-
-      if (
-        (role !== 'assistant' && role !== 'user') ||
-        (contentType && contentType !== 'text') ||
-        (message?.status && message.status !== 'finished_successfully') ||
-        !text ||
-        metadata.is_visually_hidden_from_conversation === true ||
-        metadata.is_redacted === true
-      ) {
-        return null;
+const buildReportAssistantMessages = (
+  payload: unknown,
+  fallbackUrl: string,
+  seenFingerprints: Set<string>,
+): SharedConversationMessage[] =>
+  buildReportMessageConversations(payload, fallbackUrl)
+    .map((conversation) => getReportAssistantMessage(conversation))
+    .filter((message): message is SharedConversationMessage => !!message)
+    .filter((message) => {
+      const fingerprint = message.text.trim();
+      if (!fingerprint || seenFingerprints.has(fingerprint)) {
+        return false;
       }
 
-      return {
-        role,
-        sources: [],
-        text,
-      } as SharedConversationMessage;
+      seenFingerprints.add(fingerprint);
+      return true;
     })
-    .filter((message): message is SharedConversationMessage => !!message);
+    .map((message) => ({
+      ...message,
+      sources: [...message.sources],
+    }));
+
+const buildRenderedMappingMessage = (
+  node: ConversationMappingNode,
+): SharedConversationMessage | null => {
+  const message = node.message;
+  const rawRole = message?.author?.role;
+  const contentType = message?.content?.content_type;
+  const contentParts = renderConversationPart(message?.content);
+  const metadataImageParts = collectImageParts(message?.metadata ?? {});
+  const hasImagePayload =
+    collectImageParts(message?.content).length > 0 || metadataImageParts.length > 0;
+  const role = rawRole === 'tool' && hasImagePayload ? 'assistant' : rawRole;
+  const text = normalizeMessageText([...contentParts, ...metadataImageParts].join('\n\n'));
+  const metadata = message?.metadata ?? {};
+  const channel =
+    typeof message?.channel === 'string' ? message.channel.toLowerCase() : null;
+  const recipient =
+    typeof message?.recipient === 'string' ? message.recipient.toLowerCase() : null;
+  const isInternalChannel = channel === 'commentary';
+  const isNonPublicRecipient =
+    typeof recipient === 'string' &&
+    recipient.length > 0 &&
+    recipient !== 'all' &&
+    recipient !== 'assistant' &&
+    recipient !== 'user';
+  const shouldBypassVisibilityFilter = hasImagePayload;
+
+  if (
+    (!shouldBypassVisibilityFilter && isInternalChannel) ||
+    (!shouldBypassVisibilityFilter && isNonPublicRecipient) ||
+    (role !== 'assistant' && role !== 'user') ||
+    (contentType && NON_IMPORTABLE_CONTENT_TYPES.has(contentType)) ||
+    (message?.status && message.status !== 'finished_successfully') ||
+    !text ||
+    metadata.is_visually_hidden_from_conversation === true ||
+    metadata.is_redacted === true ||
+    metadata.reasoning_status === 'is_reasoning'
+  ) {
+    return null;
+  }
+
+  return {
+    role,
+    sources: [],
+    text,
+  };
+};
+
+const buildMappingNodeDescriptors = (
+  conversation: MappingConversation,
+  fallbackUrl: string,
+): MappingNodeDescriptor[] => {
+  const seenReportFingerprints = new Set<string>();
+
+  return getOrderedMappingNodes(conversation).map((node) => {
+    const message = node.message;
+
+    return {
+      isDeepResearchPlaceholder:
+        message?.author?.role === 'assistant' &&
+        containsDeepResearchPayloadText(message?.content),
+      renderedMessage: buildRenderedMappingMessage(node),
+      reportAssistantMessages: buildReportAssistantMessages(
+        {
+          content: message?.content,
+          metadata: message?.metadata,
+        },
+        fallbackUrl,
+        seenReportFingerprints,
+      ),
+    };
+  });
+};
+
+const buildConversationFromMapping = (
+  conversation: MappingConversation,
+  fallbackUrl: string,
+  reportMessageConversations: ConversationCandidate[],
+): ConversationCandidate | null => {
+  const descriptors = buildMappingNodeDescriptors(conversation, fallbackUrl);
+  if (descriptors.length === 0) {
+    return null;
+  }
+
+  const placeholderIndices = descriptors
+    .map((descriptor, index) =>
+      descriptor.isDeepResearchPlaceholder ? index : -1,
+    )
+    .filter((index) => index >= 0);
+  const remainingPlaceholderIndices = [...placeholderIndices];
+  const assignedReportsByPlaceholder = new Map<number, SharedConversationMessage[]>();
+  const extraReportsByNode = new Map<number, SharedConversationMessage[]>();
+
+  descriptors.forEach((descriptor, descriptorIndex) => {
+    descriptor.reportAssistantMessages.forEach((reportAssistantMessage) => {
+      let placeholderListIndex = -1;
+
+      for (
+        let index = remainingPlaceholderIndices.length - 1;
+        index >= 0;
+        index -= 1
+      ) {
+        if (remainingPlaceholderIndices[index] <= descriptorIndex) {
+          placeholderListIndex = index;
+          break;
+        }
+      }
+
+      if (placeholderListIndex < 0 && remainingPlaceholderIndices.length > 0) {
+        placeholderListIndex = 0;
+      }
+
+      if (placeholderListIndex >= 0) {
+        const placeholderIndex = remainingPlaceholderIndices.splice(
+          placeholderListIndex,
+          1,
+        )[0];
+        const assignedReports = assignedReportsByPlaceholder.get(placeholderIndex) ?? [];
+        assignedReports.push(reportAssistantMessage);
+        assignedReportsByPlaceholder.set(placeholderIndex, assignedReports);
+        return;
+      }
+
+      const extraReports = extraReportsByNode.get(descriptorIndex) ?? [];
+      extraReports.push(reportAssistantMessage);
+      extraReportsByNode.set(descriptorIndex, extraReports);
+    });
+  });
+
+  const seenRenderedReportFingerprints = new Set<string>();
+  const remainingGlobalReports = reportMessageConversations
+    .map((conversationCandidate) => getReportAssistantMessage(conversationCandidate))
+    .filter((message): message is SharedConversationMessage => !!message)
+    .filter((message) => {
+      const fingerprint = message.text.trim();
+      if (!fingerprint || seenRenderedReportFingerprints.has(fingerprint)) {
+        return false;
+      }
+
+      seenRenderedReportFingerprints.add(fingerprint);
+      return true;
+    })
+    .filter((message) => {
+      const fingerprint = message.text.trim();
+      const isAlreadyAssigned = [...assignedReportsByPlaceholder.values()]
+        .flat()
+        .concat([...extraReportsByNode.values()].flat())
+        .some((assignedMessage) => assignedMessage.text.trim() === fingerprint);
+      return !isAlreadyAssigned;
+    })
+    .map((message) => ({
+      ...message,
+      sources: [...message.sources],
+    }));
+
+  remainingGlobalReports.forEach((reportAssistantMessage) => {
+    if (remainingPlaceholderIndices.length > 0) {
+      const placeholderIndex = remainingPlaceholderIndices.shift();
+      if (placeholderIndex == null) {
+        return;
+      }
+      const assignedReports = assignedReportsByPlaceholder.get(placeholderIndex) ?? [];
+      assignedReports.push(reportAssistantMessage);
+      assignedReportsByPlaceholder.set(placeholderIndex, assignedReports);
+      return;
+    }
+
+    const trailingReports =
+      extraReportsByNode.get(descriptors.length - 1) ?? [];
+    trailingReports.push(reportAssistantMessage);
+    extraReportsByNode.set(descriptors.length - 1, trailingReports);
+  });
+
+  const messages: SharedConversationMessage[] = [];
+  descriptors.forEach((descriptor, descriptorIndex) => {
+    const assignedReports = assignedReportsByPlaceholder.get(descriptorIndex) ?? [];
+    const extraReports = extraReportsByNode.get(descriptorIndex) ?? [];
+
+    if (descriptor.isDeepResearchPlaceholder) {
+      if (assignedReports.length > 0) {
+        messages.push(...assignedReports);
+      }
+      return;
+    }
+
+    if (descriptor.renderedMessage) {
+      messages.push(descriptor.renderedMessage);
+    }
+
+    if (extraReports.length > 0) {
+      messages.push(...extraReports);
+    }
+  });
 
   if (messages.length === 0) {
     return null;
   }
 
+  const bestReportConversation =
+    [...reportMessageConversations].sort(
+      (left, right) => scoreConversation(right) - scoreConversation(left),
+    )[0] ?? null;
+
   return {
     messages,
     sourceUrl: fallbackUrl,
-    summary: messages[0].text.replace(/\n/g, ' ').slice(0, 80),
+    summary:
+      bestReportConversation &&
+      bestReportConversation.summary.length > messages[0].text.length
+        ? bestReportConversation.summary
+        : messages[0].text.replace(/\n/g, ' ').slice(0, 80),
     title: sanitizeConversationTitle(conversation.title ?? 'ChatGPT 대화'),
+  };
+};
+
+const extractEmbeddedWidgetState = (value: string): unknown | null => {
+  const markerIndex = value.indexOf(WIDGET_STATE_MARKER);
+  if (markerIndex < 0) {
+    return null;
+  }
+
+  const objectStartIndex = value.indexOf('{', markerIndex + WIDGET_STATE_MARKER.length);
+  if (objectStartIndex < 0) {
+    return null;
+  }
+
+  let depth = 0;
+  let inString = false;
+  let isEscaped = false;
+
+  for (let index = objectStartIndex; index < value.length; index += 1) {
+    const character = value[index];
+
+    if (inString) {
+      if (isEscaped) {
+        isEscaped = false;
+      } else if (character === '\\') {
+        isEscaped = true;
+      } else if (character === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (character === '"') {
+      inString = true;
+      continue;
+    }
+
+    if (character === '{') {
+      depth += 1;
+      continue;
+    }
+
+    if (character === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        try {
+          return JSON.parse(value.slice(objectStartIndex, index + 1)) as unknown;
+        } catch {
+          return null;
+        }
+      }
+    }
+  }
+
+  return null;
+};
+
+const extractWidgetStatePayload = (
+  value: unknown,
+  depth = 0,
+): Record<string, unknown> | null => {
+  if (depth > 8 || value == null) {
+    return null;
+  }
+
+  if (typeof value === 'string') {
+    const embeddedWidgetState = extractEmbeddedWidgetState(value);
+    if (embeddedWidgetState) {
+      return extractWidgetStatePayload(embeddedWidgetState, depth + 1);
+    }
+
+    const parsedRecord = tryParseJsonRecord(value);
+    if (!parsedRecord) {
+      return null;
+    }
+
+    return extractWidgetStatePayload(parsedRecord, depth + 1);
+  }
+
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const nestedPayload = extractWidgetStatePayload(entry, depth + 1);
+      if (nestedPayload) {
+        return nestedPayload;
+      }
+    }
+
+    return null;
+  }
+
+  if (typeof value !== 'object') {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  if (record.report_message && typeof record.report_message === 'object') {
+    return record;
+  }
+
+  for (const key of ['widget_state', 'venus_widget_state']) {
+    if (!(key in record)) {
+      continue;
+    }
+
+    const nestedPayload = extractWidgetStatePayload(record[key], depth + 1);
+    if (nestedPayload) {
+      return nestedPayload;
+    }
+  }
+
+  return null;
+};
+
+const isWidgetStatePayloadText = (value: string): boolean =>
+  !!extractWidgetStatePayload(value);
+
+const buildConversationFromReportMessage = (
+  reportMessage: Record<string, unknown>,
+  fallbackUrl: string,
+  title: string | null,
+): ConversationCandidate | null => {
+  const author = reportMessage.author;
+  const authorRole =
+    author && typeof author === 'object'
+      ? (author as { role?: unknown }).role
+      : undefined;
+  const content = reportMessage.content;
+  const contentType =
+    content && typeof content === 'object'
+      ? (content as { content_type?: unknown }).content_type
+      : undefined;
+  const parts =
+    content && typeof content === 'object'
+      ? renderConversationPart((content as { parts?: unknown }).parts ?? content)
+      : [];
+  const text = normalizeMessageText(parts.join('\n\n'));
+  const normalizedTitle = sanitizeConversationTitle(
+    extractHeadingTitle(text) ?? title ?? 'Deep Research 결과',
+  );
+
+  if (authorRole !== 'assistant' || contentType !== 'text' || !text) {
+    return null;
+  }
+
+  return {
+    messages: [
+      {
+        role: 'assistant',
+        sources: [],
+        text,
+      },
+    ],
+    sourceUrl: fallbackUrl,
+    summary: text.replace(/\n/g, ' ').slice(0, 80),
+    title: normalizedTitle,
+  };
+};
+
+const getReportAssistantMessage = (
+  conversation: ConversationCandidate,
+): SharedConversationMessage | null =>
+  [...conversation.messages]
+    .reverse()
+    .find(
+      (message) => message.role === 'assistant' && message.text.trim().length > 0,
+    ) ?? null;
+
+const buildReportMessageConversations = (
+  payload: unknown,
+  fallbackUrl: string,
+): ConversationCandidate[] => {
+  const seenFingerprints = new Set<string>();
+
+  return collectReportMessageCandidates(payload)
+    .map((candidate) =>
+      buildConversationFromReportMessage(
+        candidate.reportMessage,
+        fallbackUrl,
+        candidate.title,
+      ),
+    )
+    .filter((candidate): candidate is ConversationCandidate => !!candidate)
+    .filter((candidate) => {
+      const reportAssistantMessage = getReportAssistantMessage(candidate);
+      if (!reportAssistantMessage) {
+        return false;
+      }
+
+      const fingerprint = `${candidate.title}\u0000${reportAssistantMessage.text.trim()}`;
+      if (seenFingerprints.has(fingerprint)) {
+        return false;
+      }
+
+      seenFingerprints.add(fingerprint);
+      return true;
+    });
+};
+
+const buildConversationFromReportMessages = (
+  reportMessageConversations: ConversationCandidate[],
+  fallbackUrl: string,
+): ConversationCandidate | null => {
+  const reportAssistantMessages = reportMessageConversations
+    .map((conversation) => getReportAssistantMessage(conversation))
+    .filter((message): message is SharedConversationMessage => !!message);
+
+  if (reportAssistantMessages.length === 0) {
+    return null;
+  }
+
+  const bestConversation =
+    [...reportMessageConversations].sort(
+      (left, right) => scoreConversation(right) - scoreConversation(left),
+    )[0] ?? null;
+
+  return {
+    messages: reportAssistantMessages.map((message) => ({
+      ...message,
+      sources: [...message.sources],
+    })),
+    sourceUrl: fallbackUrl,
+    summary:
+      bestConversation?.summary ??
+      reportAssistantMessages[0].text.replace(/\n/g, ' ').slice(0, 80),
+    title:
+      bestConversation?.title ??
+      sanitizeConversationTitle('Deep Research 결과'),
   };
 };
 
@@ -418,16 +1079,104 @@ const findConversationRoot = (value: unknown): MappingConversation | null => {
   return null;
 };
 
+const collectReportMessageCandidates = (payload: unknown): ReportMessageCandidate[] => {
+  const queue: Array<{ value: unknown; title: string | null }> = [
+    { value: payload, title: null },
+  ];
+  const visited = new WeakSet<object>();
+  const widgetStateFingerprints = new Set<string>();
+  const reportMessageFingerprints = new Set<string>();
+  const candidates: ReportMessageCandidate[] = [];
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (!current) {
+      continue;
+    }
+
+    const { value, title } = current;
+    if (typeof value === 'string') {
+      const widgetStatePayload = extractWidgetStatePayload(value);
+      if (widgetStatePayload) {
+        const fingerprint = JSON.stringify(widgetStatePayload);
+        if (!widgetStateFingerprints.has(fingerprint)) {
+          widgetStateFingerprints.add(fingerprint);
+          queue.push({ value: widgetStatePayload, title });
+        }
+      }
+      continue;
+    }
+
+    if (!value || typeof value !== 'object') {
+      continue;
+    }
+
+    if (visited.has(value)) {
+      continue;
+    }
+    visited.add(value);
+
+    const record = value as Record<string, unknown>;
+    const plan = record.plan;
+    const nextTitle =
+      typeof record.title === 'string'
+        ? record.title
+        : plan &&
+            typeof plan === 'object' &&
+            typeof (plan as { title?: unknown }).title === 'string'
+          ? ((plan as { title?: string }).title ?? null)
+          : title;
+
+    if (record.report_message && typeof record.report_message === 'object') {
+      const fingerprint = JSON.stringify(record.report_message);
+      if (!reportMessageFingerprints.has(fingerprint)) {
+        reportMessageFingerprints.add(fingerprint);
+        candidates.push({
+          reportMessage: record.report_message as Record<string, unknown>,
+          title: nextTitle,
+        });
+      }
+    }
+
+    Object.values(record).forEach((entry) => {
+      if (entry && (typeof entry === 'object' || typeof entry === 'string')) {
+        queue.push({ value: entry, title: nextTitle });
+      }
+    });
+  }
+
+  return candidates;
+};
+
 export const parseChatGptConversationJsonPayload = (
   payload: unknown,
   fallbackUrl: string,
 ): ConversationCandidate | null => {
-  const conversationRoot = findConversationRoot(payload);
-  if (!conversationRoot) {
-    return null;
+  const reportMessageConversations = buildReportMessageConversations(
+    payload,
+    fallbackUrl,
+  );
+  const mappingConversation = (() => {
+    const conversationRoot = findConversationRoot(payload);
+    if (!conversationRoot) {
+      return null;
+    }
+
+    return buildConversationFromMapping(
+      conversationRoot,
+      fallbackUrl,
+      reportMessageConversations,
+    );
+  })();
+
+  if (mappingConversation) {
+    return mappingConversation;
   }
 
-  return buildConversationFromMapping(conversationRoot, fallbackUrl);
+  return (
+    buildConversationFromReportMessages(reportMessageConversations, fallbackUrl) ??
+    mappingConversation
+  );
 };
 
 const parseJsonConversationBody = (
@@ -453,6 +1202,51 @@ const parseJsonConversationBody = (
   }
 
   return null;
+};
+
+const parseWidgetStateConversationBody = (
+  text: string,
+  fallbackUrl: string,
+): ConversationCandidate | null => {
+  const widgetStatePayload = extractWidgetStatePayload(text);
+  if (!widgetStatePayload) {
+    return null;
+  }
+
+  const parsedConversation = parseChatGptConversationJsonPayload(
+    widgetStatePayload,
+    fallbackUrl,
+  );
+  if (parsedConversation) {
+    return parsedConversation;
+  }
+
+  return buildConversationFromReportMessages(
+    buildReportMessageConversations(widgetStatePayload, fallbackUrl),
+    fallbackUrl,
+  );
+};
+
+export const parseChatGptConversationBodyText = (
+  text: string,
+  fallbackUrl: string,
+): ConversationCandidate | null => {
+  const jsonConversation = parseJsonConversationBody(text, fallbackUrl);
+  if (jsonConversation) {
+    return jsonConversation;
+  }
+
+  const widgetConversation = parseWidgetStateConversationBody(text, fallbackUrl);
+  if (widgetConversation) {
+    return widgetConversation;
+  }
+
+  const rscConversation = parseRscConversationBody(text, fallbackUrl);
+  if (rscConversation) {
+    return rscConversation;
+  }
+
+  return parseHtmlConversationBody(text, fallbackUrl);
 };
 
 const parseRscConversationBody = (
@@ -535,7 +1329,15 @@ const parseRscConversationBody = (
     };
 
     const conversation = resolveValue(rootObject) as MappingConversation;
-    return buildConversationFromMapping(conversation, fallbackUrl);
+    const reportMessageConversations = buildReportMessageConversations(
+      conversation,
+      fallbackUrl,
+    );
+    return buildConversationFromMapping(
+      conversation,
+      fallbackUrl,
+      reportMessageConversations,
+    );
   } catch {
     return null;
   }

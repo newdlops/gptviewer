@@ -57,6 +57,7 @@ type WorkspaceTreeProps = {
   onRenameConversation: (conversationId: string) => void;
   onRenameFolder: (folderId: string) => void;
   onSyncProjectFolder: (folderId: string, projectUrl: string) => void;
+  rootSortMode: WorkspaceFolderSortMode;
   tree: WorkspaceNode[];
 };
 
@@ -101,6 +102,7 @@ type WorkspaceTreeNodeProps = {
     payload: PointerDragPayload,
   ) => void;
   suppressedClickNodeId: string | null;
+  inheritedSortMode: WorkspaceFolderSortMode;
   depth: number;
 };
 
@@ -218,7 +220,7 @@ function ProjectActionIcon() {
 function SortActionIcon({
   sortMode,
 }: {
-  sortMode: WorkspaceFolderSortMode;
+  sortMode?: WorkspaceFolderSortMode;
 }) {
   if (sortMode === 'asc') {
     return (
@@ -279,18 +281,27 @@ const getWorkspaceNodeDisplayTitle = (
   return conversationLookup.get(node.conversationId)?.title ?? '';
 };
 
+const getWorkspaceNodeTypePriority = (node: WorkspaceNode): number =>
+  node.type === 'folder' ? 0 : 1;
+
+const getWorkspaceNodeCreatedAt = (node: WorkspaceNode): number => {
+  const timestamp = Date.parse(node.meta.createdAt);
+
+  return Number.isNaN(timestamp) ? 0 : timestamp;
+};
+
 const getFolderSortToggleTooltip = (
-  sortMode: WorkspaceFolderSortMode,
+  sortMode?: WorkspaceFolderSortMode,
 ): string => {
-  if (sortMode === 'asc') {
-    return '제목 내림차순 정렬';
-  }
-
   if (sortMode === 'desc') {
-    return '정렬 해제';
+    return '로컬 정렬: 이름 오름차순으로 변경';
   }
 
-  return '제목 오름차순 정렬';
+  if (sortMode === 'asc') {
+    return '로컬 정렬: 상위/전역 정렬 상속으로 변경';
+  }
+
+  return '로컬 정렬: 이름 내림차순으로 설정';
 };
 
 const getSortedWorkspaceChildren = (
@@ -298,13 +309,28 @@ const getSortedWorkspaceChildren = (
   conversationLookup: Map<string, Conversation>,
   sortMode: WorkspaceFolderSortMode,
 ): WorkspaceNode[] => {
-  if (sortMode === 'none') {
-    return nodes;
-  }
-
-  const direction = sortMode === 'asc' ? 1 : -1;
-
   return [...nodes].sort((leftNode, rightNode) => {
+    const typeComparison =
+      getWorkspaceNodeTypePriority(leftNode) -
+      getWorkspaceNodeTypePriority(rightNode);
+
+    if (typeComparison !== 0) {
+      return typeComparison;
+    }
+
+    if (sortMode === 'none') {
+      const createdAtComparison =
+        getWorkspaceNodeCreatedAt(rightNode) - getWorkspaceNodeCreatedAt(leftNode);
+
+      if (createdAtComparison !== 0) {
+        return createdAtComparison;
+      }
+
+      return treeNodeTitleCollator.compare(leftNode.id, rightNode.id);
+    }
+
+    const direction = sortMode === 'asc' ? 1 : -1;
+
     const titleComparison =
       treeNodeTitleCollator.compare(
         getWorkspaceNodeDisplayTitle(leftNode, conversationLookup),
@@ -504,6 +530,7 @@ function WorkspaceFolderBranch({
   draggedNodeId,
   dropTargetState,
   expandedFolderState,
+  inheritedSortMode,
   isCollapsed,
   node,
   onConversationSelect,
@@ -526,6 +553,7 @@ function WorkspaceFolderBranch({
   draggedNodeId: string | null;
   dropTargetState: DropTargetState | undefined;
   expandedFolderState: Record<string, boolean>;
+  inheritedSortMode: WorkspaceFolderSortMode;
   isCollapsed: boolean;
   node: WorkspaceFolderNode;
   onConversationSelect: (conversationId: string) => void;
@@ -558,11 +586,15 @@ function WorkspaceFolderBranch({
     dropTargetState.targetNodeId === node.id &&
     dropTargetState.position === 'after';
   const isProjectFolder = node.source?.kind === 'project';
-  const sortMode = node.sortMode ?? 'none';
+  const sortMode =
+    node.sortMode === 'asc' || node.sortMode === 'desc'
+      ? node.sortMode
+      : undefined;
+  const effectiveSortMode = sortMode ?? inheritedSortMode;
   const sortedChildren = getSortedWorkspaceChildren(
     node.children,
     conversationLookup,
-    sortMode,
+    effectiveSortMode,
   );
   const handleFolderKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === 'Enter' || event.key === ' ') {
@@ -651,7 +683,7 @@ function WorkspaceFolderBranch({
               </button>
             ) : null}
             <button
-              className={`workspace-tree__folder-action${sortMode !== 'none' ? ' workspace-tree__folder-action--active' : ''}`}
+              className={`workspace-tree__folder-action${sortMode ? ' workspace-tree__folder-action--active' : ''}`}
               type="button"
               onClick={() => onFolderSortToggle(node.id)}
               aria-label={`${node.name} ${getFolderSortToggleTooltip(sortMode)}`}
@@ -734,6 +766,7 @@ function WorkspaceFolderBranch({
               onSyncProjectFolder={onSyncProjectFolder}
               onNodePointerDown={onNodePointerDown}
               suppressedClickNodeId={suppressedClickNodeId}
+              inheritedSortMode={effectiveSortMode}
             />
           ))}
         </div>
@@ -749,6 +782,7 @@ function WorkspaceTreeNode({
   draggedNodeId,
   dropTargetState,
   expandedFolderState,
+  inheritedSortMode,
   isCollapsed,
   node,
   onConversationSelect,
@@ -792,6 +826,7 @@ function WorkspaceTreeNode({
       draggedNodeId={draggedNodeId}
       dropTargetState={dropTargetState}
       expandedFolderState={expandedFolderState}
+      inheritedSortMode={inheritedSortMode}
       isCollapsed={isCollapsed}
       node={node}
       onConversationSelect={onConversationSelect}
@@ -830,6 +865,7 @@ export function WorkspaceTree({
   onProjectFolder,
   onRenameConversation,
   onRenameFolder,
+  rootSortMode,
   onSyncProjectFolder,
   tree,
 }: WorkspaceTreeProps) {
@@ -847,6 +883,11 @@ export function WorkspaceTree({
     string | null
   >(null);
   const dropTargetStateRef = useRef<DropTargetState | undefined>(undefined);
+  const sortedRootNodes = getSortedWorkspaceChildren(
+    tree,
+    conversationLookup,
+    rootSortMode,
+  );
 
   useEffect(() => {
     dropTargetStateRef.current = dropTargetState;
@@ -993,7 +1034,7 @@ export function WorkspaceTree({
       >
         {isCollapsed ? '루트' : '작업 공간 루트로 이동'}
       </div>
-      {tree.map((node) => (
+      {sortedRootNodes.map((node) => (
         <WorkspaceTreeNode
           key={node.id}
           activeConversationId={activeConversationId}
@@ -1002,6 +1043,7 @@ export function WorkspaceTree({
           draggedNodeId={draggedNodeId}
           dropTargetState={dropTargetState}
           expandedFolderState={expandedFolderState}
+          inheritedSortMode={rootSortMode}
           isCollapsed={isCollapsed}
           node={node}
           onConversationSelect={onConversationSelect}

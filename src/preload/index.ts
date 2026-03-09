@@ -16,6 +16,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('project-conversation:collect', request),
   cleanupChatGptAutomationBackgroundPool: () =>
     ipcRenderer.invoke('chatgpt-automation:cleanup-background-pool'),
+  resetChatGptAutomationSessionState: () =>
+    ipcRenderer.invoke('chatgpt-automation:reset-session-state'),
   onProjectConversationImportProgress: (
     listener: (progress: ProjectConversationImportProgress) => void,
   ) => {

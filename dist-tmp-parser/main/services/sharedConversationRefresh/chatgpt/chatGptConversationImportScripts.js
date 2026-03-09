@@ -1,58 +1,8 @@
-type ExtractedConversationHtmlBlock = {
-  deepResearchIframeSrc?: string;
-  html: string;
-  role: 'assistant' | 'user';
-};
-
-type ExtractedConversationHtmlSnapshot = {
-  blocks: ExtractedConversationHtmlBlock[];
-  conversationHtml: string;
-  currentUrl: string;
-  title: string;
-};
-
-type ExtractedStandaloneHtmlSnapshot = {
-  allIframeCount?: number;
-  currentUrl: string;
-  html: string;
-  htmlPreview?: string;
-  iframeCount?: number;
-  iframeSrcs?: string[];
-  maxIframeDepth?: number;
-  title: string;
-};
-
-type ExtractedConversationHtmlReadiness = {
-  conversationHtmlLength: number;
-  hasLoadingIndicator: boolean;
-  hasMain: boolean;
-  messageCount: number;
-  readyState: string;
-};
-
-type FetchedConversationJsonPayload = {
-  bodyText: string;
-  ok: boolean;
-  status: number;
-  url: string;
-};
-
-type FetchedConversationAssetPayload = {
-  contentType?: string;
-  dataUrl?: string;
-  error?: string;
-  fileId: string;
-  ok: boolean;
-  status: number;
-  url?: string;
-};
-
-type ReplayRequestHeaders = Record<string, string>;
-
-const MERMAID_LOADING_TEXT_PATTERN_SOURCE =
-  '^(?:mermaid\\\\s*)?(?:다이어그램\\\\s*)?불러오는 중(?:\\\\.{3}|…)?$';
-
-export const buildPrepareConversationHtmlSnapshotScript = () => `
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.buildExtractStandaloneHtmlSnapshotScript = exports.buildActivateDeepResearchEmbedsScript = exports.buildExtractConversationHtmlSnapshotScript = exports.buildFetchConversationAssetDataUrlScript = exports.buildFetchConversationJsonScript = exports.buildInspectConversationHtmlReadinessScript = exports.buildPrepareConversationHtmlSnapshotScript = void 0;
+const MERMAID_LOADING_TEXT_PATTERN_SOURCE = '^(?:mermaid\\\\s*)?(?:다이어그램\\\\s*)?불러오는 중(?:\\\\.{3}|…)?$';
+const buildPrepareConversationHtmlSnapshotScript = () => `
 (() => {
   const isVisible = (element) => (
     element instanceof HTMLElement &&
@@ -106,8 +56,8 @@ export const buildPrepareConversationHtmlSnapshotScript = () => `
   return { clicked };
 })()
 `;
-
-export const buildInspectConversationHtmlReadinessScript = () => `
+exports.buildPrepareConversationHtmlSnapshotScript = buildPrepareConversationHtmlSnapshotScript;
+const buildInspectConversationHtmlReadinessScript = () => `
 (() => {
   const isVisible = (element) => (
     element instanceof HTMLElement &&
@@ -140,11 +90,8 @@ export const buildInspectConversationHtmlReadinessScript = () => `
   };
 })()
 `;
-
-export const buildFetchConversationJsonScript = (
-  conversationId: string,
-  replayHeaders: ReplayRequestHeaders = {},
-) => `
+exports.buildInspectConversationHtmlReadinessScript = buildInspectConversationHtmlReadinessScript;
+const buildFetchConversationJsonScript = (conversationId, replayHeaders = {}) => `
 (async () => {
   const replayHeaders = ${JSON.stringify(replayHeaders)};
   const headers = {
@@ -171,11 +118,8 @@ export const buildFetchConversationJsonScript = (
   };
 })()
 `;
-
-export const buildFetchConversationAssetDataUrlScript = (
-  fileId: string,
-  replayHeaders: ReplayRequestHeaders = {},
-) => `
+exports.buildFetchConversationJsonScript = buildFetchConversationJsonScript;
+const buildFetchConversationAssetDataUrlScript = (fileId, replayHeaders = {}) => `
 (async () => {
   const inputFileId = ${JSON.stringify(fileId)};
   const replayHeaders = ${JSON.stringify(replayHeaders)};
@@ -183,59 +127,8 @@ export const buildFetchConversationAssetDataUrlScript = (
     .trim()
     .replace(/^sediment:\\/\\//i, '');
 
-  const inferMimeTypeFromBytes = (bytes) => {
-    if (!bytes || bytes.length < 4) {
-      return '';
-    }
-
-    if (
-      bytes[0] === 0x89 &&
-      bytes[1] === 0x50 &&
-      bytes[2] === 0x4e &&
-      bytes[3] === 0x47
-    ) {
-      return 'image/png';
-    }
-
-    if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
-      return 'image/jpeg';
-    }
-
-    if (
-      bytes[0] === 0x47 &&
-      bytes[1] === 0x49 &&
-      bytes[2] === 0x46 &&
-      bytes[3] === 0x38
-    ) {
-      return 'image/gif';
-    }
-
-    if (
-      bytes.length >= 12 &&
-      bytes[0] === 0x52 &&
-      bytes[1] === 0x49 &&
-      bytes[2] === 0x46 &&
-      bytes[3] === 0x46 &&
-      bytes[8] === 0x57 &&
-      bytes[9] === 0x45 &&
-      bytes[10] === 0x42 &&
-      bytes[11] === 0x50
-    ) {
-      return 'image/webp';
-    }
-
-    return '';
-  };
-
-  const toDataUrl = async (response, preferredMimeType = '') => {
-    const buffer = await response.arrayBuffer();
-    const bytes = new Uint8Array(buffer);
-    const inferredMimeType = inferMimeTypeFromBytes(bytes);
-    const mimeType =
-      (preferredMimeType || '').toLowerCase().startsWith('image/')
-        ? preferredMimeType
-        : inferredMimeType || preferredMimeType || 'application/octet-stream';
-    const blob = new Blob([bytes], { type: mimeType });
+  const toDataUrl = async (response) => {
+    const blob = await response.blob();
     return await new Promise((resolve, reject) => {
       try {
         const reader = new FileReader();
@@ -299,20 +192,16 @@ export const buildFetchConversationAssetDataUrlScript = (
   };
 
   const defaultHeaders = {
-    ...replayHeaders,
     accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+    ...replayHeaders,
   };
 
-  const bareFileId = normalizedFileId.replace(/^file_/i, '');
-  const fileIdCandidates = [...new Set([normalizedFileId, bareFileId])];
-  const candidatePaths = fileIdCandidates.flatMap((candidateId) => [
-    '/backend-api/files/' + candidateId + '/download',
-    '/backend-api/files/' + candidateId,
-    '/backend-api/files/' + candidateId + '?download=true',
-    '/backend-api/files/' + candidateId + '/content',
-    '/backend-api/files/' + candidateId + '/download_url',
-    '/backend-api/files/' + candidateId + '/url',
-  ]);
+  const candidatePaths = [
+    '/backend-api/files/' + normalizedFileId + '/download',
+    '/backend-api/files/' + normalizedFileId,
+    '/backend-api/files/' + normalizedFileId + '?download=true',
+    '/backend-api/files/' + normalizedFileId + '/content',
+  ];
 
   for (const candidatePath of candidatePaths) {
     try {
@@ -336,16 +225,12 @@ export const buildFetchConversationAssetDataUrlScript = (
         const candidateUrls = collectCandidateUrlsFromJson(payload);
         for (const candidateUrl of candidateUrls) {
           try {
-            const targetUrl = new URL(candidateUrl, location.origin);
-            const isSameOrigin = targetUrl.origin === location.origin;
             const imageResponse = await fetch(candidateUrl, {
               cache: 'no-store',
-              credentials: isSameOrigin ? 'include' : 'omit',
-              headers: isSameOrigin ? defaultHeaders : undefined,
+              credentials: 'omit',
               method: 'GET',
-              mode: isSameOrigin ? 'same-origin' : 'cors',
+              mode: 'cors',
               redirect: 'follow',
-              referrer: location.href,
             });
             if (!imageResponse.ok) {
               continue;
@@ -354,11 +239,12 @@ export const buildFetchConversationAssetDataUrlScript = (
             const imageContentType = (
               imageResponse.headers.get('content-type') || ''
             ).toLowerCase();
-            const dataUrl = await toDataUrl(imageResponse, imageContentType);
-            if (
-              !dataUrl ||
-              !String(dataUrl).toLowerCase().startsWith('data:image/')
-            ) {
+            if (!imageContentType.startsWith('image/')) {
+              continue;
+            }
+
+            const dataUrl = await toDataUrl(imageResponse);
+            if (!dataUrl) {
               continue;
             }
 
@@ -379,29 +265,11 @@ export const buildFetchConversationAssetDataUrlScript = (
       }
 
       if (!contentType.startsWith('image/')) {
-        const dataUrl = await toDataUrl(response, contentType);
-        if (
-          !dataUrl ||
-          !String(dataUrl).toLowerCase().startsWith('data:image/')
-        ) {
-          continue;
-        }
-
-        return {
-          contentType: contentType || 'image/*',
-          dataUrl,
-          fileId: normalizedFileId,
-          ok: true,
-          status: response.status,
-          url: response.url || candidatePath,
-        };
+        continue;
       }
 
-      const dataUrl = await toDataUrl(response, contentType);
-      if (
-        !dataUrl ||
-        !String(dataUrl).toLowerCase().startsWith('data:image/')
-      ) {
+      const dataUrl = await toDataUrl(response);
+      if (!dataUrl) {
         continue;
       }
 
@@ -426,8 +294,8 @@ export const buildFetchConversationAssetDataUrlScript = (
   };
 })()
 `;
-
-export const buildExtractConversationHtmlSnapshotScript = () => `
+exports.buildFetchConversationAssetDataUrlScript = buildFetchConversationAssetDataUrlScript;
+const buildExtractConversationHtmlSnapshotScript = () => `
 (() => {
   const isVisible = (element) => (
     element instanceof HTMLElement &&
@@ -445,9 +313,7 @@ export const buildExtractConversationHtmlSnapshotScript = () => `
   const OLD_DEEP_RESEARCH_SELECTOR =
     'div.flex.max-w-full.flex-col.gap-4.grow > div';
   const isLanguageOnly = (value) => /^(mermaid|java|javascript|typescript|python|json|yaml|xml|html|sql|bash|shell|tsx|jsx|css|markdown)$/i.test(clean(value));
-  const isMermaidLoadingText = (value) => new RegExp(${JSON.stringify(
-    MERMAID_LOADING_TEXT_PATTERN_SOURCE,
-  )}, 'i').test(clean(value));
+  const isMermaidLoadingText = (value) => new RegExp(${JSON.stringify(MERMAID_LOADING_TEXT_PATTERN_SOURCE)}, 'i').test(clean(value));
 
   const escapeHtml = (value) => (value || '')
     .replace(/&/g, '&amp;')
@@ -802,8 +668,8 @@ export const buildExtractConversationHtmlSnapshotScript = () => `
   };
 })()
 `;
-
-export const buildActivateDeepResearchEmbedsScript = () => `
+exports.buildExtractConversationHtmlSnapshotScript = buildExtractConversationHtmlSnapshotScript;
+const buildActivateDeepResearchEmbedsScript = () => `
 (() => {
   const selectors = [
     'iframe[title="internal://deep-research"]',
@@ -838,8 +704,8 @@ export const buildActivateDeepResearchEmbedsScript = () => `
   return { activated };
 })()
 `;
-
-export const buildExtractStandaloneHtmlSnapshotScript = () => `
+exports.buildActivateDeepResearchEmbedsScript = buildActivateDeepResearchEmbedsScript;
+const buildExtractStandaloneHtmlSnapshotScript = () => `
 (() => {
   const clean = (value) => (value || '')
     .replace(/\\u200b/g, '')
@@ -925,12 +791,4 @@ export const buildExtractStandaloneHtmlSnapshotScript = () => `
   };
 })()
 `;
-
-export type {
-  ExtractedConversationHtmlBlock,
-  ExtractedStandaloneHtmlSnapshot,
-  FetchedConversationAssetPayload,
-  FetchedConversationJsonPayload,
-  ExtractedConversationHtmlReadiness,
-  ExtractedConversationHtmlSnapshot,
-};
+exports.buildExtractStandaloneHtmlSnapshotScript = buildExtractStandaloneHtmlSnapshotScript;

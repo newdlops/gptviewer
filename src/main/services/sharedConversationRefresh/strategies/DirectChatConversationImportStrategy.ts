@@ -5,22 +5,26 @@ import type {
 import { parseChatGptConversationHtmlSnapshot } from '../../../parsers/chatGptConversationHtmlParser';
 import {
   buildChatGptConversationNetworkDiagnostics,
+  parseChatGptConversationBodyText,
   parseChatGptConversationJsonPayload,
   parseChatGptConversationNetworkRecords,
 } from '../../../parsers/chatGptConversationNetworkParser';
 import { ChatGptAutomationView } from '../chatgpt/ChatGptAutomationView';
 import {
-  CHATGPT_CHALLENGE_TEXT_MARKERS,
-  CHATGPT_LOGIN_TEXT_MARKERS,
-  CHATGPT_LOGIN_URL_PATTERNS,
-} from '../chatgpt/ChatGptDomSelectors';
+  buildLoginRequiredDetail,
+  ensureLoginAttentionIfNeeded,
+  runWithLoginResume,
+} from '../chatgpt/chatGptLoginState';
 import { waitForDirectConversationReady } from '../chatgpt/chatGptConversationLoadHelpers';
-import { includesMarker } from '../chatgpt/chatGptRefreshHelpers';
 import {
   buildExtractConversationHtmlSnapshotScript,
+  buildExtractStandaloneHtmlSnapshotScript,
+  buildFetchConversationAssetDataUrlScript,
   buildFetchConversationJsonScript,
   buildPrepareConversationHtmlSnapshotScript,
   type ExtractedConversationHtmlSnapshot,
+  type ExtractedStandaloneHtmlSnapshot,
+  type FetchedConversationAssetPayload,
   type FetchedConversationJsonPayload,
 } from '../chatgpt/chatGptConversationImportScripts';
 import { SharedConversationRefreshError } from '../SharedConversationRefreshError';
@@ -29,6 +33,13 @@ const FALLBACK_TITLE_SUFFIX_PATTERN = /\s*[-|]\s*ChatGPT.*$/i;
 const NETWORK_MONITOR_ATTACH_GRACE_MS = 1_500;
 const BACKEND_HEADERS_CAPTURE_TIMEOUT_MS = 4_000;
 const BACKEND_HEADERS_CAPTURE_POLL_MS = 120;
+const WIDGET_STATE_MARKER = 'The latest state of the widget is:';
+const SEDIMENT_IMAGE_MARKDOWN_PATTERN =
+  /!\[([^\]]*)\]\(sediment:\/\/(file_[a-z0-9]+)\)/gi;
+
+type ParsedConversationCandidate = NonNullable<
+  ReturnType<typeof parseChatGptConversationBodyText>
+>;
 
 const normalizeTitle = (title: string, fallback: string) => {
   const normalizedTitle = title.replace(FALLBACK_TITLE_SUFFIX_PATTERN, '').trim();
@@ -45,19 +56,159 @@ const countMatches = (value: string, pattern: RegExp): number => {
   return matches ? matches.length : 0;
 };
 
+const scoreParsedConversation = (conversation: ParsedConversationCandidate): number =>
+  conversation.messages.reduce((sum, message) => sum + message.text.length, 0);
+
+const extractSedimentFileIds = (
+  conversation: ParsedConversationCandidate,
+): string[] => {
+  const fileIds = new Set<string>();
+
+  conversation.messages.forEach((message) => {
+    let match = SEDIMENT_IMAGE_MARKDOWN_PATTERN.exec(message.text);
+    while (match) {
+      if (match[2]) {
+        fileIds.add(match[2]);
+      }
+      match = SEDIMENT_IMAGE_MARKDOWN_PATTERN.exec(message.text);
+    }
+    SEDIMENT_IMAGE_MARKDOWN_PATTERN.lastIndex = 0;
+  });
+
+  return [...fileIds];
+};
+
+const applyResolvedAssetDataUrls = (
+  conversation: ParsedConversationCandidate,
+  dataUrlByFileId: Map<string, string>,
+): ParsedConversationCandidate => {
+  if (dataUrlByFileId.size === 0) {
+    return conversation;
+  }
+
+  return {
+    ...conversation,
+    messages: conversation.messages.map((message) => ({
+      ...message,
+      text: message.text.replace(
+        SEDIMENT_IMAGE_MARKDOWN_PATTERN,
+        (fullMatch, altText: string, fileId: string) => {
+          const resolvedDataUrl = dataUrlByFileId.get(fileId);
+          if (!resolvedDataUrl) {
+            return fullMatch;
+          }
+
+          return `![${altText || 'image'}](${resolvedDataUrl})`;
+        },
+      ),
+    })),
+  };
+};
+
+const collectWidgetStateStrings = (
+  value: unknown,
+  results: string[],
+  visited = new WeakSet<object>(),
+  depth = 0,
+): void => {
+  if (depth > 12 || value == null) {
+    return;
+  }
+
+  if (typeof value === 'string') {
+    if (value.includes(WIDGET_STATE_MARKER)) {
+      results.push(value);
+    }
+    return;
+  }
+
+  if (Array.isArray(value)) {
+    value.forEach((entry) =>
+      collectWidgetStateStrings(entry, results, visited, depth + 1),
+    );
+    return;
+  }
+
+  if (typeof value !== 'object') {
+    return;
+  }
+
+  if (visited.has(value)) {
+    return;
+  }
+  visited.add(value);
+
+  Object.values(value as Record<string, unknown>).forEach((entry) =>
+    collectWidgetStateStrings(entry, results, visited, depth + 1),
+  );
+};
+
+const parseWidgetReportConversationFromBackendBody = (
+  bodyText: string,
+  fallbackUrl: string,
+): ParsedConversationCandidate | null => {
+  try {
+    const parsedBody = JSON.parse(bodyText) as unknown;
+    const widgetStateStrings: string[] = [];
+    collectWidgetStateStrings(parsedBody, widgetStateStrings);
+
+    const candidates = widgetStateStrings
+      .map((widgetStateText) =>
+        parseChatGptConversationBodyText(widgetStateText, fallbackUrl),
+      )
+      .filter(
+        (candidate): candidate is ParsedConversationCandidate => !!candidate,
+      );
+
+    return (
+      candidates.sort((left, right) => {
+        const scoreDiff =
+          scoreParsedConversation(right) - scoreParsedConversation(left);
+        if (scoreDiff !== 0) {
+          return scoreDiff;
+        }
+
+        return right.messages.length - left.messages.length;
+      })[0] ?? null
+    );
+  } catch {
+    return null;
+  }
+};
+
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-const isLoginLikeSnapshot = (
-  snapshot: Awaited<ReturnType<ChatGptAutomationView['getPageSnapshot']>>,
-) => {
-  const isLoginUrl = CHATGPT_LOGIN_URL_PATTERNS.some((pattern) =>
-    pattern.test(snapshot.currentUrl),
+const resolveDeepResearchIframeBlocks = async (
+  automationView: ChatGptAutomationView,
+  snapshot: ExtractedConversationHtmlSnapshot,
+): Promise<ExtractedConversationHtmlSnapshot> => {
+  const resolvedBlocks = await Promise.all(
+    snapshot.blocks.map(async (block) => {
+      if (!block.deepResearchIframeSrc) {
+        return block;
+      }
+
+      try {
+        await automationView.load(block.deepResearchIframeSrc);
+        const iframeSnapshot = await automationView.execute<ExtractedStandaloneHtmlSnapshot>(
+          buildExtractStandaloneHtmlSnapshotScript(),
+        );
+
+        const mergedHtml = [block.html, iframeSnapshot.html].filter(Boolean).join('\n');
+        return {
+          ...block,
+          html: mergedHtml,
+        };
+      } catch {
+        return block;
+      }
+    }),
   );
-  return (
-    isLoginUrl ||
-    includesMarker(snapshot.bodyText, CHATGPT_LOGIN_TEXT_MARKERS) ||
-    includesMarker(snapshot.bodyText, CHATGPT_CHALLENGE_TEXT_MARKERS)
-  );
+
+  return {
+    ...snapshot,
+    blocks: resolvedBlocks,
+  };
 };
 
 const buildConversationImportResult = (
@@ -82,6 +233,41 @@ const buildConversationImportResult = (
 });
 
 export class DirectChatConversationImportStrategy {
+  private async resolveSedimentImageAssets(
+    automationView: ChatGptAutomationView,
+    conversation: ParsedConversationCandidate,
+    replayHeaders: Record<string, string>,
+  ): Promise<ParsedConversationCandidate> {
+    const fileIds = extractSedimentFileIds(conversation);
+    if (fileIds.length === 0) {
+      return conversation;
+    }
+
+    const dataUrlByFileId = new Map<string, string>();
+    for (const fileId of fileIds) {
+      try {
+        const assetPayload = await automationView.execute<FetchedConversationAssetPayload>(
+          buildFetchConversationAssetDataUrlScript(fileId, replayHeaders),
+        );
+
+        if (assetPayload?.ok && assetPayload.dataUrl) {
+          dataUrlByFileId.set(fileId, assetPayload.dataUrl);
+        }
+      } catch {
+        // Keep unresolved pointers when asset fetch fails.
+      }
+    }
+
+    console.info(
+      `[gptviewer][direct-chat-import:image-assets] requested=${fileIds.length} resolved=${dataUrlByFileId.size} unresolved=${Math.max(
+        0,
+        fileIds.length - dataUrlByFileId.size,
+      )}`,
+    );
+
+    return applyResolvedAssetDataUrls(conversation, dataUrlByFileId);
+  }
+
   async importFromChatUrl(
     request: SharedConversationRefreshRequest,
   ): Promise<SharedConversationImport> {
@@ -92,25 +278,31 @@ export class DirectChatConversationImportStrategy {
       );
     }
 
-    const automationView = await ChatGptAutomationView.acquire(
-      request.helperWindowMode ?? 'visible',
-    );
-    const conversationId = extractConversationId(request.chatUrl);
+    return runWithLoginResume({
+      initialMode: request.helperWindowMode ?? 'visible',
+      runAttempt: async (automationView) =>
+        this.importFromChatUrlWithView(request, automationView),
+    });
+  }
 
-    try {
+  private async importFromChatUrlWithView(
+    request: SharedConversationRefreshRequest,
+    automationView: ChatGptAutomationView,
+  ): Promise<SharedConversationImport> {
+    const conversationId = extractConversationId(request.chatUrl ?? '');
+
       let diagnosticsLabel = 'initial';
       const waitForMonitorAttachment = automationView
         .enableConversationNetworkMonitoring()
         .catch((): void => undefined);
 
       await automationView.load(request.chatUrl);
-      const firstSnapshot = await automationView.getPageSnapshot();
-      if (isLoginLikeSnapshot(firstSnapshot)) {
-        await automationView.presentForAttention();
+      const loginSnapshot = await ensureLoginAttentionIfNeeded(automationView);
+      if (loginSnapshot) {
         throw new SharedConversationRefreshError(
           'login_required',
           'ChatGPT 로그인 또는 보안 확인이 필요합니다. 보조 창에서 먼저 마친 뒤 다시 시도해 주세요.',
-          firstSnapshot.currentUrl || firstSnapshot.title,
+          buildLoginRequiredDetail(loginSnapshot),
         );
       }
       await Promise.race([
@@ -149,19 +341,107 @@ export class DirectChatConversationImportStrategy {
           ).join(',') || '-'}`,
         );
 
+        if (fetchedConversationJson.status === 401) {
+          const loginSnapshot = await ensureLoginAttentionIfNeeded(automationView);
+          if (!loginSnapshot) {
+            await automationView.presentForAttention();
+          }
+          throw new SharedConversationRefreshError(
+            'login_required',
+            'ChatGPT 로그인 또는 보안 확인이 필요합니다. 보조 창에서 먼저 마친 뒤 다시 시도해 주세요.',
+            loginSnapshot
+              ? buildLoginRequiredDetail(loginSnapshot)
+              : `backend-api conversation GET returned 401 for ${request.chatUrl}`,
+          );
+        }
+
         if (!fetchedConversationJson.ok) {
           return null;
         }
 
-        try {
-          const directConversation = parseChatGptConversationJsonPayload(
-            JSON.parse(fetchedConversationJson.bodyText) as unknown,
+        const bodyHasWidgetMarker = fetchedConversationJson.bodyText.includes(
+          WIDGET_STATE_MARKER,
+        );
+        const bodyHasWidgetState =
+          fetchedConversationJson.bodyText.includes('"widget_state"') ||
+          fetchedConversationJson.bodyText.includes('"venus_widget_state"');
+        const bodyHasReportMessage = fetchedConversationJson.bodyText.includes(
+          '"report_message"',
+        );
+
+        let widgetConversation: ParsedConversationCandidate | null = null;
+
+        if (bodyHasWidgetMarker || bodyHasWidgetState || bodyHasReportMessage) {
+          console.info(
+            `[gptviewer][direct-chat-import:backend-widget-parse-attempt] ${request.chatUrl}\nbody=${fetchedConversationJson.bodyText.length} marker=${bodyHasWidgetMarker} widgetState=${bodyHasWidgetState} reportMessage=${bodyHasReportMessage}`,
+          );
+
+          widgetConversation = parseWidgetReportConversationFromBackendBody(
+            fetchedConversationJson.bodyText,
             request.chatUrl,
           );
 
-          if (!directConversation) {
+          if (widgetConversation) {
+            const widgetPreview =
+              widgetConversation.messages
+                .find((message) => message.role === 'assistant')
+                ?.text.slice(0, 120)
+                .replace(/\s+/g, ' ') ?? '';
+
             console.info(
-              `[gptviewer][direct-chat-import:backend-get-null] ${request.chatUrl}\nbodyHasMapping=${fetchedConversationJson.bodyText.includes('"mapping"')} bodyHasCurrentNode=${fetchedConversationJson.bodyText.includes('"current_node"')} bodyHasMermaid=${/```mermaid\b/i.test(
+              `[gptviewer][direct-chat-import:backend-widget-parse-success] ${request.chatUrl}\nmessages=${widgetConversation.messages.length} chars=${scoreParsedConversation(
+                widgetConversation,
+              )} preview=${widgetPreview}`,
+            );
+          }
+
+          if (!widgetConversation) {
+            console.info(
+              `[gptviewer][direct-chat-import:backend-widget-parse-null] ${request.chatUrl}\nbody=${fetchedConversationJson.bodyText.length} marker=${bodyHasWidgetMarker} widgetState=${bodyHasWidgetState} reportMessage=${bodyHasReportMessage}`,
+            );
+          }
+        }
+
+        try {
+          const directConversationCandidate =
+            parseChatGptConversationBodyText(
+              fetchedConversationJson.bodyText,
+              request.chatUrl,
+            ) ??
+            parseChatGptConversationJsonPayload(
+              JSON.parse(fetchedConversationJson.bodyText) as unknown,
+              request.chatUrl,
+            );
+          const directConversation = directConversationCandidate
+            ? await this.resolveSedimentImageAssets(
+                automationView,
+                directConversationCandidate,
+                capturedBackendHeaders,
+              )
+            : null;
+
+          if (!directConversation) {
+            if (widgetConversation) {
+              console.info(
+                `[gptviewer][direct-chat-import:backend-widget-fallback] ${request.chatUrl}\nmessages=${widgetConversation.messages.length} chars=${scoreParsedConversation(
+                  widgetConversation,
+                )}`,
+              );
+
+              return buildConversationImportResult(request, {
+                fetchedAt: new Date().toISOString(),
+                ...widgetConversation,
+              });
+            }
+
+            console.info(
+              `[gptviewer][direct-chat-import:backend-get-null] ${request.chatUrl}\nbodyHasMapping=${fetchedConversationJson.bodyText.includes('"mapping"')} bodyHasCurrentNode=${fetchedConversationJson.bodyText.includes('"current_node"')} bodyHasWidgetMarker=${fetchedConversationJson.bodyText.includes(
+                WIDGET_STATE_MARKER,
+              )} bodyHasWidgetState=${fetchedConversationJson.bodyText.includes(
+                '"widget_state"',
+              )} bodyHasReportMessage=${fetchedConversationJson.bodyText.includes(
+                '"report_message"',
+              )} bodyHasMermaid=${/```mermaid\b/i.test(
                 fetchedConversationJson.bodyText,
               )}`,
             );
@@ -230,6 +510,11 @@ export class DirectChatConversationImportStrategy {
       );
 
       if (networkConversation) {
+        networkConversation = await this.resolveSedimentImageAssets(
+          automationView,
+          networkConversation,
+          automationView.getLatestBackendApiHeaders()?.headers ?? {},
+        );
         return buildConversationImportResult(request, {
           fetchedAt: new Date().toISOString(),
           ...networkConversation,
@@ -242,8 +527,12 @@ export class DirectChatConversationImportStrategy {
       const snapshot = await automationView.execute<ExtractedConversationHtmlSnapshot>(
         buildExtractConversationHtmlSnapshotScript(),
       );
-      const parsedConversation = parseChatGptConversationHtmlSnapshot(
+      const resolvedSnapshot = await resolveDeepResearchIframeBlocks(
+        automationView,
         snapshot,
+      );
+      const parsedConversation = parseChatGptConversationHtmlSnapshot(
+        resolvedSnapshot,
         request.chatUrl,
       );
 
@@ -253,16 +542,19 @@ export class DirectChatConversationImportStrategy {
           isReady
             ? '원본 ChatGPT 대화 HTML에서 메시지를 추출하지 못했습니다.'
             : '원본 ChatGPT 대화 DOM이 충분히 구성되지 않아 내용을 추출하지 못했습니다.',
-          `${snapshot.currentUrl}\nblocks=${snapshot.blocks.length}\nhtmlLength=${snapshot.conversationHtml.length}\n${networkDiagnostics}`,
+          `${resolvedSnapshot.currentUrl}\nblocks=${resolvedSnapshot.blocks.length}\nhtmlLength=${resolvedSnapshot.conversationHtml.length}\n${networkDiagnostics}`,
         );
       }
 
+      const resolvedParsedConversation = await this.resolveSedimentImageAssets(
+        automationView,
+        parsedConversation,
+        automationView.getLatestBackendApiHeaders()?.headers ?? {},
+      );
+
       return buildConversationImportResult(request, {
         fetchedAt: new Date().toISOString(),
-        ...parsedConversation,
+        ...resolvedParsedConversation,
       });
-    } finally {
-      await automationView.close();
-    }
   }
 }
