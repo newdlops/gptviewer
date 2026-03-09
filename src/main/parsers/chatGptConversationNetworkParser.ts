@@ -13,6 +13,7 @@ type ConversationMappingNode = {
   message?: {
     author?: { role?: string };
     channel?: string | null;
+    create_time?: number | null;
     content?: {
       content_type?: string;
       parts?: unknown[];
@@ -48,6 +49,7 @@ type ReportMessageCandidate = {
 };
 
 type MappingNodeDescriptor = {
+  nodeId: string;
   isDeepResearchPlaceholder: boolean;
   renderedMessage: SharedConversationMessage | null;
   reportAssistantMessages: SharedConversationMessage[];
@@ -75,7 +77,7 @@ const IMAGE_MIME_TYPE_PATTERN = /^image\//i;
 const IMAGE_URL_PATTERN =
   /^(data:image\/[a-z0-9.+-]+;base64,|https?:\/\/.+\.(?:png|jpe?g|gif|webp|avif|bmp|svg)(?:[?#].*)?$|https?:\/\/(?:[^/?#]+\.)?oaiusercontent\.com\/.+)/i;
 const FILE_SERVICE_POINTER_PATTERN = /^file-service:\/\/(.+)/i;
-const SEDIMENT_POINTER_PATTERN = /^sediment:\/\/(file_[a-z0-9]+)/i;
+const SEDIMENT_POINTER_PATTERN = /^sediment:\/\/(file_[a-z0-9_-]+)/i;
 const WIDGET_STATE_MARKER = 'The latest state of the widget is:';
 const DEEP_RESEARCH_APP_PATH_PATTERN = /^\/Deep Research App\//i;
 const DEEP_RESEARCH_CONNECTOR_PATTERN =
@@ -399,6 +401,18 @@ const collectImageParts = (
         return;
       }
 
+      const sedimentPointerMatch = normalizedEntry.match(SEDIMENT_POINTER_PATTERN);
+      if (
+        sedimentPointerMatch?.[1] &&
+        (imageContext ||
+          isLikelyImageKey(key) ||
+          key === 'asset_pointer' ||
+          key === 'watermarked_asset_pointer')
+      ) {
+        imageParts.push(`![image](sediment://${sedimentPointerMatch[1]})`);
+        return;
+      }
+
       const pointerMatch = normalizedEntry.match(FILE_SERVICE_POINTER_PATTERN);
       if (
         pointerMatch?.[1] &&
@@ -468,6 +482,11 @@ const renderConversationPart = (value: unknown): string[] => {
   const record = value as Record<string, unknown>;
   const contentType = String(record.content_type ?? record.type ?? record.kind ?? '');
   const language = inferObjectLanguage(record);
+  const imageParts = collectImageParts(record);
+  if (imageParts.length > 0) {
+    return [...new Set(imageParts)];
+  }
+
   const primaryCodeCandidates = collectRecordStrings(record, [
     'code',
     'source',
@@ -493,11 +512,6 @@ const renderConversationPart = (value: unknown): string[] => {
   );
   if (codeCandidate) {
     return [wrapCodeFence(codeCandidate, language || 'text')];
-  }
-
-  const imageParts = collectImageParts(record);
-  if (imageParts.length > 0) {
-    return [...new Set(imageParts)];
   }
 
   const nestedParts = [
@@ -559,12 +573,12 @@ const containsDeepResearchPayloadText = (value: unknown): boolean => {
 
 const getOrderedMappingNodes = (
   conversation: MappingConversation,
-): ConversationMappingNode[] => {
+): Array<{ id: string; node: ConversationMappingNode }> => {
   if (!conversation.mapping || !conversation.current_node) {
     return [];
   }
 
-  const orderedNodes: ConversationMappingNode[] = [];
+  const orderedNodes: Array<{ id: string; node: ConversationMappingNode }> = [];
   const visitedNodeIds = new Set<string>();
   let currentNodeId: string | null = conversation.current_node;
 
@@ -574,12 +588,26 @@ const getOrderedMappingNodes = (
     conversation.mapping[currentNodeId]
   ) {
     visitedNodeIds.add(currentNodeId);
-    orderedNodes.push(conversation.mapping[currentNodeId]);
+    orderedNodes.push({
+      id: currentNodeId,
+      node: conversation.mapping[currentNodeId],
+    });
     currentNodeId = conversation.mapping[currentNodeId].parent ?? null;
   }
 
   orderedNodes.reverse();
   return orderedNodes;
+};
+
+const hasImagePayloadInNode = (node: ConversationMappingNode): boolean =>
+  collectImageParts(node.message?.content).length > 0 ||
+  collectImageParts(node.message?.metadata).length > 0;
+
+const getMessageCreateTime = (node: ConversationMappingNode): number => {
+  const createTime = node.message?.create_time;
+  return typeof createTime === 'number' && Number.isFinite(createTime)
+    ? createTime
+    : Number.POSITIVE_INFINITY;
 };
 
 const buildReportAssistantMessages = (
@@ -656,11 +684,17 @@ const buildMappingNodeDescriptors = (
   fallbackUrl: string,
 ): MappingNodeDescriptor[] => {
   const seenReportFingerprints = new Set<string>();
+  const orderedEntries = getOrderedMappingNodes(conversation);
+  const orderedNodeIdToIndex = new Map<string, number>();
+  orderedEntries.forEach((entry, index) => {
+    orderedNodeIdToIndex.set(entry.id, index);
+  });
 
-  return getOrderedMappingNodes(conversation).map((node) => {
+  const baseDescriptors = orderedEntries.map(({ id, node }) => {
     const message = node.message;
 
     return {
+      nodeId: id,
       isDeepResearchPlaceholder:
         message?.author?.role === 'assistant' &&
         containsDeepResearchPayloadText(message?.content),
@@ -675,6 +709,84 @@ const buildMappingNodeDescriptors = (
       ),
     };
   });
+
+  const mapping = conversation.mapping ?? {};
+  const detachedImageDescriptorsByAnchor = new Map<number, MappingNodeDescriptor[]>();
+  const detachedImageDescriptorsTrailing: MappingNodeDescriptor[] = [];
+
+  Object.entries(mapping).forEach(([nodeId, node]) => {
+    if (orderedNodeIdToIndex.has(nodeId) || !hasImagePayloadInNode(node)) {
+      return;
+    }
+
+    const renderedMessage = buildRenderedMappingMessage(node);
+    if (!renderedMessage) {
+      return;
+    }
+
+    const descriptor: MappingNodeDescriptor = {
+      nodeId,
+      isDeepResearchPlaceholder: false,
+      renderedMessage,
+      reportAssistantMessages: [],
+    };
+
+    let parentId = node.parent ?? null;
+    while (parentId && !orderedNodeIdToIndex.has(parentId)) {
+      parentId = mapping[parentId]?.parent ?? null;
+    }
+
+    if (parentId && orderedNodeIdToIndex.has(parentId)) {
+      const anchorIndex = orderedNodeIdToIndex.get(parentId);
+      if (anchorIndex != null) {
+        const bucket = detachedImageDescriptorsByAnchor.get(anchorIndex) ?? [];
+        bucket.push(descriptor);
+        detachedImageDescriptorsByAnchor.set(anchorIndex, bucket);
+        return;
+      }
+    }
+
+    detachedImageDescriptorsTrailing.push(descriptor);
+  });
+
+  detachedImageDescriptorsByAnchor.forEach((descriptors, anchorIndex) => {
+    descriptors.sort((left, right) => {
+      const leftNode = mapping[left.nodeId];
+      const rightNode = mapping[right.nodeId];
+      const createTimeDiff =
+        getMessageCreateTime(leftNode) - getMessageCreateTime(rightNode);
+      if (createTimeDiff !== 0) {
+        return createTimeDiff;
+      }
+      return left.nodeId.localeCompare(right.nodeId);
+    });
+    detachedImageDescriptorsByAnchor.set(anchorIndex, descriptors);
+  });
+
+  detachedImageDescriptorsTrailing.sort((left, right) => {
+    const leftNode = mapping[left.nodeId];
+    const rightNode = mapping[right.nodeId];
+    const createTimeDiff =
+      getMessageCreateTime(leftNode) - getMessageCreateTime(rightNode);
+    if (createTimeDiff !== 0) {
+      return createTimeDiff;
+    }
+    return left.nodeId.localeCompare(right.nodeId);
+  });
+
+  const mergedDescriptors: MappingNodeDescriptor[] = [];
+  baseDescriptors.forEach((descriptor, index) => {
+    mergedDescriptors.push(descriptor);
+    const anchoredDescriptors = detachedImageDescriptorsByAnchor.get(index) ?? [];
+    if (anchoredDescriptors.length > 0) {
+      mergedDescriptors.push(...anchoredDescriptors);
+    }
+  });
+  if (detachedImageDescriptorsTrailing.length > 0) {
+    mergedDescriptors.push(...detachedImageDescriptorsTrailing);
+  }
+
+  return mergedDescriptors;
 };
 
 const buildConversationFromMapping = (

@@ -175,10 +175,12 @@ export const buildFetchConversationJsonScript = (
 export const buildFetchConversationAssetDataUrlScript = (
   fileId: string,
   replayHeaders: ReplayRequestHeaders = {},
+  conversationId = '',
 ) => `
 (async () => {
   const inputFileId = ${JSON.stringify(fileId)};
   const replayHeaders = ${JSON.stringify(replayHeaders)};
+  const conversationId = ${JSON.stringify(conversationId)};
   const normalizedFileId = String(inputFileId)
     .trim()
     .replace(/^sediment:\\/\\//i, '');
@@ -224,7 +226,49 @@ export const buildFetchConversationAssetDataUrlScript = (
       return 'image/webp';
     }
 
+    if (bytes[0] === 0x42 && bytes[1] === 0x4d) {
+      return 'image/bmp';
+    }
+
+    if (
+      bytes.length >= 12 &&
+      bytes[4] === 0x66 &&
+      bytes[5] === 0x74 &&
+      bytes[6] === 0x79 &&
+      bytes[7] === 0x70
+    ) {
+      const brand = String.fromCharCode(
+        bytes[8] || 0,
+        bytes[9] || 0,
+        bytes[10] || 0,
+        bytes[11] || 0,
+      );
+      if (brand === 'avif' || brand === 'avis') {
+        return 'image/avif';
+      }
+    }
+
     return '';
+  };
+
+  const reencodeBlobToPngDataUrl = async (blob) => {
+    try {
+      const imageBitmap = await createImageBitmap(blob);
+      const canvas = document.createElement('canvas');
+      canvas.width = imageBitmap.width || 1;
+      canvas.height = imageBitmap.height || 1;
+      const context = canvas.getContext('2d');
+      if (!context) {
+        imageBitmap.close();
+        return '';
+      }
+      context.drawImage(imageBitmap, 0, 0);
+      imageBitmap.close();
+      const pngDataUrl = canvas.toDataURL('image/png');
+      return typeof pngDataUrl === 'string' ? pngDataUrl : '';
+    } catch {
+      return '';
+    }
   };
 
   const toDataUrl = async (response, preferredMimeType = '') => {
@@ -236,6 +280,12 @@ export const buildFetchConversationAssetDataUrlScript = (
         ? preferredMimeType
         : inferredMimeType || preferredMimeType || 'application/octet-stream';
     const blob = new Blob([bytes], { type: mimeType });
+    if (!String(mimeType).toLowerCase().startsWith('image/')) {
+      const reencodedPngDataUrl = await reencodeBlobToPngDataUrl(blob);
+      if (reencodedPngDataUrl) {
+        return reencodedPngDataUrl;
+      }
+    }
     return await new Promise((resolve, reject) => {
       try {
         const reader = new FileReader();
@@ -303,16 +353,164 @@ export const buildFetchConversationAssetDataUrlScript = (
     accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
   };
 
+  const isRedirectStatus = (status) =>
+    status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
+  const isLikelyRenderableImageUrl = (value) => {
+    const normalizedValue = String(value || '').trim();
+    if (!/^https?:\\/\\//i.test(normalizedValue)) {
+      return false;
+    }
+
+    return (
+      /\\.(png|jpe?g|gif|webp|avif|bmp|svg)(?:[?#].*)?$/i.test(normalizedValue) ||
+      /oaiusercontent\\.com/i.test(normalizedValue) ||
+      /\\/backend-api\\/estuary\\/content\\b/i.test(normalizedValue) ||
+      /[?&]id=file_[a-z0-9_-]+/i.test(normalizedValue) ||
+      /\\/image\\//i.test(normalizedValue) ||
+      /\\/images\\//i.test(normalizedValue)
+    );
+  };
+
+  const extractCandidateUrlsFromText = (value) => {
+    const text = String(value || '');
+    return [
+      ...new Set(
+        (
+          text.match(
+            /(https?:\\/\\/[^\\s"'<>]+|\\/\\/[^\\s"'<>]+|\\/backend-api\\/[^\\s"'<>]+)/gi,
+          ) || []
+        ).map((entry) => String(entry).trim()),
+      ),
+    ];
+  };
+
+  const fetchImageDataUrlFromUrl = async (
+    candidateUrl,
+    preferCredentials = false,
+    depth = 0,
+  ) => {
+    if (depth > 4) {
+      return null;
+    }
+
+    try {
+      const targetUrl = new URL(candidateUrl, location.origin);
+      const isSameOrigin = targetUrl.origin === location.origin;
+      const response = await fetch(targetUrl.toString(), {
+        cache: 'no-store',
+        credentials: isSameOrigin
+          ? 'include'
+          : preferCredentials
+            ? 'include'
+            : 'omit',
+        headers: isSameOrigin ? defaultHeaders : undefined,
+        method: 'GET',
+        mode: 'cors',
+        redirect: 'follow',
+        referrer: location.href,
+      });
+
+      if (!response.ok) {
+        return null;
+      }
+
+      const contentType = (response.headers.get('content-type') || '').toLowerCase();
+      if (
+        contentType.includes('application/json') ||
+        contentType.includes('text/plain')
+      ) {
+        const responseText = await response.text().catch(() => '');
+        const parsedPayload = (() => {
+          try {
+            return JSON.parse(responseText);
+          } catch {
+            return null;
+          }
+        })();
+        const nestedUrls = parsedPayload
+          ? collectCandidateUrlsFromJson(parsedPayload)
+          : extractCandidateUrlsFromText(responseText);
+
+        for (const nestedUrl of nestedUrls) {
+          if (!nestedUrl || nestedUrl === candidateUrl) {
+            continue;
+          }
+
+          const nestedResult = await fetchImageDataUrlFromUrl(
+            nestedUrl,
+            preferCredentials,
+            depth + 1,
+          );
+          if (nestedResult) {
+            return nestedResult;
+          }
+        }
+
+        return null;
+      }
+
+      const dataUrl = await toDataUrl(response, contentType);
+      if (!dataUrl || !String(dataUrl).toLowerCase().startsWith('data:image/')) {
+        return null;
+      }
+
+      return {
+        contentType,
+        dataUrl,
+        status: response.status,
+        url: response.url || targetUrl.toString(),
+      };
+    } catch {
+      return null;
+    }
+  };
+
   const bareFileId = normalizedFileId.replace(/^file_/i, '');
-  const fileIdCandidates = [...new Set([normalizedFileId, bareFileId])];
-  const candidatePaths = fileIdCandidates.flatMap((candidateId) => [
-    '/backend-api/files/' + candidateId + '/download',
-    '/backend-api/files/' + candidateId,
-    '/backend-api/files/' + candidateId + '?download=true',
-    '/backend-api/files/' + candidateId + '/content',
-    '/backend-api/files/' + candidateId + '/download_url',
-    '/backend-api/files/' + candidateId + '/url',
-  ]);
+  const hyphenFileId = normalizedFileId.replace(/^file_/, 'file-');
+  const hyphenBareFileId = bareFileId.replace(/^file_/, 'file-');
+  const fileIdCandidates = [
+    ...new Set([
+      normalizedFileId,
+      bareFileId,
+      hyphenFileId,
+      hyphenBareFileId,
+    ]),
+  ].filter(Boolean);
+  const encodedConversationId = encodeURIComponent(conversationId || '');
+  const candidatePaths = fileIdCandidates.flatMap((candidateId) => {
+    const basePaths = [
+      '/backend-api/files/' + candidateId + '/download',
+      '/backend-api/files/' + candidateId,
+      '/backend-api/files/' + candidateId + '?download=true',
+      '/backend-api/files/' + candidateId + '/content',
+      '/backend-api/files/' + candidateId + '/download_url',
+      '/backend-api/files/' + candidateId + '/url',
+      '/backend-api/files/' + candidateId + '/signed_url',
+      '/backend-api/files/' + candidateId + '/presigned_url',
+      '/backend-api/file/' + candidateId + '/download',
+    ];
+
+    if (!encodedConversationId) {
+      return basePaths;
+    }
+
+    return [
+      ...basePaths,
+      '/backend-api/files/' +
+        candidateId +
+        '/download?conversation_id=' +
+        encodedConversationId,
+      '/backend-api/files/' +
+        candidateId +
+        '?conversation_id=' +
+        encodedConversationId,
+      '/backend-api/conversation/' +
+        encodedConversationId +
+        '/files/' +
+        candidateId +
+        '/download',
+    ];
+  });
 
   for (const candidatePath of candidatePaths) {
     try {
@@ -322,12 +520,41 @@ export const buildFetchConversationAssetDataUrlScript = (
         headers: defaultHeaders,
         method: 'GET',
         mode: 'same-origin',
-        redirect: 'follow',
+        redirect: 'manual',
         referrer: location.href,
       });
 
       const contentType = (response.headers.get('content-type') || '').toLowerCase();
       if (!response.ok) {
+        if (isRedirectStatus(response.status)) {
+          const redirectLocation = response.headers.get('location') || '';
+          if (redirectLocation) {
+            const redirectedResult = await fetchImageDataUrlFromUrl(
+              redirectLocation,
+              false,
+            );
+            if (redirectedResult) {
+              return {
+                contentType: redirectedResult.contentType,
+                dataUrl: redirectedResult.dataUrl,
+                fileId: normalizedFileId,
+                ok: true,
+                status: redirectedResult.status,
+                url: redirectedResult.url,
+              };
+            }
+
+            if (isLikelyRenderableImageUrl(redirectLocation)) {
+              return {
+                contentType: 'image/*',
+                fileId: normalizedFileId,
+                ok: true,
+                status: response.status,
+                url: new URL(redirectLocation, location.origin).toString(),
+              };
+            }
+          }
+        }
         continue;
       }
 
@@ -335,44 +562,30 @@ export const buildFetchConversationAssetDataUrlScript = (
         const payload = await response.json().catch(() => null);
         const candidateUrls = collectCandidateUrlsFromJson(payload);
         for (const candidateUrl of candidateUrls) {
-          try {
-            const targetUrl = new URL(candidateUrl, location.origin);
-            const isSameOrigin = targetUrl.origin === location.origin;
-            const imageResponse = await fetch(candidateUrl, {
-              cache: 'no-store',
-              credentials: isSameOrigin ? 'include' : 'omit',
-              headers: isSameOrigin ? defaultHeaders : undefined,
-              method: 'GET',
-              mode: isSameOrigin ? 'same-origin' : 'cors',
-              redirect: 'follow',
-              referrer: location.href,
-            });
-            if (!imageResponse.ok) {
-              continue;
-            }
-
-            const imageContentType = (
-              imageResponse.headers.get('content-type') || ''
-            ).toLowerCase();
-            const dataUrl = await toDataUrl(imageResponse, imageContentType);
-            if (
-              !dataUrl ||
-              !String(dataUrl).toLowerCase().startsWith('data:image/')
-            ) {
-              continue;
-            }
-
+          const candidateResult = await fetchImageDataUrlFromUrl(candidateUrl, false);
+          if (candidateResult) {
             return {
-              contentType: imageContentType,
-              dataUrl,
+              contentType: candidateResult.contentType,
+              dataUrl: candidateResult.dataUrl,
               fileId: normalizedFileId,
               ok: true,
-              status: imageResponse.status,
-              url: candidateUrl,
+              status: candidateResult.status,
+              url: candidateResult.url,
             };
-          } catch {
-            // continue
           }
+        }
+
+        const fallbackUrl = candidateUrls.find((candidateUrl) =>
+          isLikelyRenderableImageUrl(candidateUrl),
+        );
+        if (fallbackUrl) {
+          return {
+            contentType: 'image/*',
+            fileId: normalizedFileId,
+            ok: true,
+            status: response.status,
+            url: fallbackUrl,
+          };
         }
 
         continue;
@@ -423,6 +636,202 @@ export const buildFetchConversationAssetDataUrlScript = (
     fileId: normalizedFileId,
     ok: false,
     status: 0,
+  };
+})()
+`;
+
+export const buildFetchImageDataUrlFromUrlScript = (
+  assetUrl: string,
+  replayHeaders: ReplayRequestHeaders = {},
+) => `
+(async () => {
+  const inputUrl = ${JSON.stringify(assetUrl)};
+  const replayHeaders = ${JSON.stringify(replayHeaders)};
+  const normalizeUrl = (value) => String(value || '').trim().split('\\\\/').join('/');
+  const inferMimeTypeFromBytes = (bytes) => {
+    if (!bytes || bytes.length < 4) {
+      return '';
+    }
+    if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) {
+      return 'image/png';
+    }
+    if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+      return 'image/jpeg';
+    }
+    if (bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x38) {
+      return 'image/gif';
+    }
+    if (bytes[0] === 0x42 && bytes[1] === 0x4d) {
+      return 'image/bmp';
+    }
+    if (
+      bytes.length >= 12 &&
+      bytes[0] === 0x52 &&
+      bytes[1] === 0x49 &&
+      bytes[2] === 0x46 &&
+      bytes[3] === 0x46 &&
+      bytes[8] === 0x57 &&
+      bytes[9] === 0x45 &&
+      bytes[10] === 0x42 &&
+      bytes[11] === 0x50
+    ) {
+      return 'image/webp';
+    }
+    if (
+      bytes.length >= 12 &&
+      bytes[4] === 0x66 &&
+      bytes[5] === 0x74 &&
+      bytes[6] === 0x79 &&
+      bytes[7] === 0x70
+    ) {
+      const brand = String.fromCharCode(bytes[8] || 0, bytes[9] || 0, bytes[10] || 0, bytes[11] || 0);
+      if (brand === 'avif' || brand === 'avis') {
+        return 'image/avif';
+      }
+    }
+    return '';
+  };
+  const toDataUrl = async (response, preferredMimeType = '') => {
+    const buffer = await response.arrayBuffer();
+    const bytes = new Uint8Array(buffer);
+    const inferredMimeType = inferMimeTypeFromBytes(bytes);
+    const mimeType =
+      (preferredMimeType || '').toLowerCase().startsWith('image/')
+        ? preferredMimeType
+        : inferredMimeType || preferredMimeType || 'application/octet-stream';
+    const blob = new Blob([bytes], { type: mimeType });
+    return await new Promise((resolve, reject) => {
+      try {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ''));
+        reader.onerror = () => reject(new Error('file_reader_failed'));
+        reader.readAsDataURL(blob);
+      } catch (error) {
+        reject(error);
+      }
+    });
+  };
+  const extractCandidateUrlsFromText = (value) =>
+    [...new Set((String(value || '').match(/(https?:\\/\\/[^\\s"'<>]+|\\/\\/[^\\s"'<>]+|\\/backend-api\\/[^\\s"'<>]+)/gi) || []).map((entry) => normalizeUrl(entry)))];
+  const collectCandidateUrlsFromJson = (value, visited = new WeakSet()) => {
+    if (!value) {
+      return [];
+    }
+    if (typeof value === 'string') {
+      return extractCandidateUrlsFromText(value);
+    }
+    if (Array.isArray(value)) {
+      return value.flatMap((entry) => collectCandidateUrlsFromJson(entry, visited));
+    }
+    if (typeof value !== 'object') {
+      return [];
+    }
+    if (visited.has(value)) {
+      return [];
+    }
+    visited.add(value);
+    const record = value;
+    const directUrlKeys = [
+      'download_url',
+      'downloadUrl',
+      'signed_url',
+      'signedUrl',
+      'url',
+      'asset_pointer_link',
+      'image_url',
+      'imageUrl',
+    ];
+    const directUrls = directUrlKeys
+      .map((key) => record?.[key])
+      .flatMap((entry) => (typeof entry === 'string' ? extractCandidateUrlsFromText(entry) : []));
+    const nestedUrls = Object.values(record).flatMap((entry) =>
+      collectCandidateUrlsFromJson(entry, visited),
+    );
+    return [...new Set([...directUrls, ...nestedUrls])];
+  };
+  const fetchDataUrl = async (candidateUrl, depth = 0) => {
+    if (depth > 5) {
+      return null;
+    }
+    const normalizedCandidateUrl = normalizeUrl(candidateUrl);
+    if (!normalizedCandidateUrl) {
+      return null;
+    }
+    try {
+      const targetUrl = new URL(normalizedCandidateUrl, location.origin);
+      const isSameOrigin = targetUrl.origin === location.origin;
+      const response = await fetch(targetUrl.toString(), {
+        cache: 'no-store',
+        credentials: isSameOrigin ? 'include' : 'omit',
+        headers: isSameOrigin
+          ? {
+              ...replayHeaders,
+              accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+            }
+          : undefined,
+        method: 'GET',
+        mode: 'cors',
+        redirect: 'follow',
+        referrer: location.href,
+      });
+      if (!response.ok) {
+        return null;
+      }
+      const contentType = (response.headers.get('content-type') || '').toLowerCase();
+      if (contentType.includes('application/json') || contentType.includes('text/plain')) {
+        const responseText = await response.text().catch(() => '');
+        const payload = (() => {
+          try {
+            return JSON.parse(responseText);
+          } catch {
+            return null;
+          }
+        })();
+        const nestedUrls = payload
+          ? collectCandidateUrlsFromJson(payload)
+          : extractCandidateUrlsFromText(responseText);
+        for (const nestedUrl of nestedUrls) {
+          if (!nestedUrl || nestedUrl === normalizedCandidateUrl) {
+            continue;
+          }
+          const nestedResult = await fetchDataUrl(nestedUrl, depth + 1);
+          if (nestedResult) {
+            return nestedResult;
+          }
+        }
+        return null;
+      }
+      const dataUrl = await toDataUrl(response, contentType);
+      if (!dataUrl || !String(dataUrl).toLowerCase().startsWith('data:image/')) {
+        return null;
+      }
+      return {
+        contentType,
+        dataUrl,
+        status: response.status,
+        url: response.url || targetUrl.toString(),
+      };
+    } catch {
+      return null;
+    }
+  };
+  const result = await fetchDataUrl(inputUrl, 0);
+  if (result) {
+    return {
+      contentType: result.contentType,
+      dataUrl: result.dataUrl,
+      fileId: '',
+      ok: true,
+      status: result.status,
+      url: result.url,
+    };
+  }
+  return {
+    error: 'image_data_url_fetch_failed',
+    fileId: '',
+    ok: false,
+    status: 0,
+    url: normalizeUrl(inputUrl),
   };
 })()
 `;

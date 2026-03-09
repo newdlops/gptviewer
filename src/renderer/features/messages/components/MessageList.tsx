@@ -44,7 +44,7 @@ const CODE_BLOCK_PATTERN = /```[\w+-]*\n|```/;
 const RENDERABLE_DIAGRAM_PATTERN =
   /```(?:mermaid|svg|xml|html|image\/svg\+xml)\b|<svg[\s>]/i;
 const DATA_IMAGE_URL_PATTERN = /^data:image\/[a-z0-9.+-]+;base64,/i;
-const SEDIMENT_URL_PATTERN = /^sediment:\/\/file_[a-z0-9]+/i;
+const SEDIMENT_URL_PATTERN = /^sediment:\/\/file_[a-z0-9_-]+/i;
 const SAFE_LOCAL_URL_PATTERN = /^(attachment|sandbox|file):/i;
 
 const markdownUrlTransform = (url: string, key: string): string => {

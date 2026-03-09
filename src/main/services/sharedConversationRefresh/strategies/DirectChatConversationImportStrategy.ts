@@ -18,6 +18,7 @@ import {
 import { waitForDirectConversationReady } from '../chatgpt/chatGptConversationLoadHelpers';
 import {
   buildExtractConversationHtmlSnapshotScript,
+  buildFetchImageDataUrlFromUrlScript,
   buildExtractStandaloneHtmlSnapshotScript,
   buildFetchConversationAssetDataUrlScript,
   buildFetchConversationJsonScript,
@@ -28,14 +29,25 @@ import {
   type FetchedConversationJsonPayload,
 } from '../chatgpt/chatGptConversationImportScripts';
 import { SharedConversationRefreshError } from '../SharedConversationRefreshError';
+import type { ChatGptConversationNetworkRecord } from '../chatgpt/chatGptConversationNetworkMonitor';
 
 const FALLBACK_TITLE_SUFFIX_PATTERN = /\s*[-|]\s*ChatGPT.*$/i;
 const NETWORK_MONITOR_ATTACH_GRACE_MS = 1_500;
 const BACKEND_HEADERS_CAPTURE_TIMEOUT_MS = 4_000;
 const BACKEND_HEADERS_CAPTURE_POLL_MS = 120;
 const WIDGET_STATE_MARKER = 'The latest state of the widget is:';
-const SEDIMENT_IMAGE_MARKDOWN_PATTERN =
-  /!\[([^\]]*)\]\(sediment:\/\/(file_[a-z0-9]+)\)/gi;
+const SEDIMENT_FILE_ID_PATTERN = /sediment:\/\/(file_[a-z0-9_-]+)/gi;
+const IMAGE_MARKDOWN_PATTERN = /!\[([^\]]*)\]\(([^)]+)\)/gi;
+const RENDERABLE_IMAGE_URL_PATTERN =
+  /^(data:image\/[a-z0-9.+-]+;base64,|https?:\/\/.+)/i;
+const CHATGPT_ORIGIN = 'https://chatgpt.com';
+const BACKEND_FILE_DOWNLOAD_URL_PATTERN =
+  /\/backend-api\/files\/download\/([^/?#]+)/i;
+const BACKEND_FILE_RESOURCE_URL_PATTERN =
+  /\/backend-api\/files\/([^/?#]+)\/download/i;
+const ABSOLUTE_OR_PROTOCOL_URL_PATTERN = /^https?:\/\/|^\/\//i;
+const URL_LIKE_TEXT_PATTERN =
+  /(https?:\/\/[^\s"'<>]+|\/\/[^\s"'<>]+|\/backend-api\/[^\s"'<>]+|https?:\\\/\\\/[^\s"'<>]+|\\\/backend-api\\\/[^\s"'<>]+)/gi;
 
 type ParsedConversationCandidate = NonNullable<
   ReturnType<typeof parseChatGptConversationBodyText>
@@ -65,24 +77,266 @@ const extractSedimentFileIds = (
   const fileIds = new Set<string>();
 
   conversation.messages.forEach((message) => {
-    let match = SEDIMENT_IMAGE_MARKDOWN_PATTERN.exec(message.text);
-    while (match) {
-      if (match[2]) {
-        fileIds.add(match[2]);
+    let imageMatch = IMAGE_MARKDOWN_PATTERN.exec(message.text);
+    while (imageMatch) {
+      const fileId = extractFileIdFromAssetUrl(imageMatch[2] ?? '');
+      if (fileId) {
+        fileIds.add(fileId);
       }
-      match = SEDIMENT_IMAGE_MARKDOWN_PATTERN.exec(message.text);
+      imageMatch = IMAGE_MARKDOWN_PATTERN.exec(message.text);
     }
-    SEDIMENT_IMAGE_MARKDOWN_PATTERN.lastIndex = 0;
+    IMAGE_MARKDOWN_PATTERN.lastIndex = 0;
+
+    let match = SEDIMENT_FILE_ID_PATTERN.exec(message.text);
+    while (match) {
+      if (match[1]) {
+        fileIds.add(match[1]);
+      }
+      match = SEDIMENT_FILE_ID_PATTERN.exec(message.text);
+    }
+    SEDIMENT_FILE_ID_PATTERN.lastIndex = 0;
   });
 
   return [...fileIds];
 };
 
+const normalizeFileId = (value: string): string => {
+  const normalizedValue = String(value || '')
+    .trim()
+    .replace(/^sediment:\/\//i, '')
+    .replace(/%2[fF]/g, '/');
+  if (!normalizedValue) {
+    return '';
+  }
+
+  if (/^file_[a-z0-9_-]+$/i.test(normalizedValue)) {
+    return normalizedValue.toLowerCase();
+  }
+
+  if (/^file-[a-z0-9_-]+$/i.test(normalizedValue)) {
+    return `file_${normalizedValue.slice(5).toLowerCase()}`;
+  }
+
+  if (/^[a-z0-9_-]{16,}$/i.test(normalizedValue)) {
+    return `file_${normalizedValue.toLowerCase()}`;
+  }
+
+  return '';
+};
+
+const normalizeAssetUrl = (value: string): string => {
+  const normalizedValue = String(value || '')
+    .trim()
+    .replace(/\\\//g, '/')
+    .replace(/\\u002[fF]/g, '/')
+    .replace(/\\u003[aA]/g, ':')
+    .replace(/\\u003[fF]/g, '?')
+    .replace(/\\u0026/g, '&');
+  if (!normalizedValue) {
+    return '';
+  }
+
+  if (normalizedValue.startsWith('//')) {
+    return `https:${normalizedValue}`;
+  }
+
+  if (
+    normalizedValue.startsWith('/backend-api/') ||
+    normalizedValue.startsWith('/files/')
+  ) {
+    return new URL(normalizedValue, CHATGPT_ORIGIN).toString();
+  }
+
+  return normalizedValue;
+};
+
+const extractFileIdFromAssetUrl = (value: string): string => {
+  const normalizedValue = normalizeAssetUrl(value);
+  if (!normalizedValue) {
+    return '';
+  }
+
+  const sedimentMatch = normalizedValue.match(/sediment:\/\/(file_[a-z0-9_-]+)/i);
+  if (sedimentMatch?.[1]) {
+    return normalizeFileId(sedimentMatch[1]);
+  }
+
+  const directMatch = normalizedValue.match(BACKEND_FILE_DOWNLOAD_URL_PATTERN);
+  if (directMatch?.[1]) {
+    return normalizeFileId(directMatch[1]);
+  }
+
+  const resourceMatch = normalizedValue.match(BACKEND_FILE_RESOURCE_URL_PATTERN);
+  if (resourceMatch?.[1]) {
+    return normalizeFileId(resourceMatch[1]);
+  }
+
+  return '';
+};
+
+const isLikelyRenderableImageUrl = (value: string): boolean => {
+  const normalizedValue = normalizeAssetUrl(value);
+  if (!normalizedValue || !ABSOLUTE_OR_PROTOCOL_URL_PATTERN.test(normalizedValue)) {
+    return false;
+  }
+
+  return (
+    /\.(png|jpe?g|gif|webp|avif|bmp|svg)(?:[?#].*)?$/i.test(normalizedValue) ||
+    /(?:^|[/.])(oaiusercontent\.com|openaiusercontent\.com)/i.test(normalizedValue) ||
+    /\/backend-api\/estuary\/content\b/i.test(normalizedValue) ||
+    /[?&]id=file_[a-z0-9_-]+/i.test(normalizedValue) ||
+    /response-content-type=image/i.test(normalizedValue) ||
+    /[?&]mime_type=image%2F/i.test(normalizedValue)
+  );
+};
+
+const tryParseJsonValue = (value: string): unknown | null => {
+  const normalizedValue = String(value || '')
+    .trim()
+    .replace(/^\)\]\}',?\s*/u, '');
+  if (!normalizedValue) {
+    return null;
+  }
+
+  const candidates = [normalizedValue, normalizeAssetUrl(normalizedValue)];
+  for (const candidate of candidates) {
+    if (!candidate) {
+      continue;
+    }
+
+    try {
+      return JSON.parse(candidate) as unknown;
+    } catch {
+      // continue
+    }
+  }
+
+  return null;
+};
+
+const tryParseJsonRecord = (value: string): Record<string, unknown> | null => {
+  const parsed = tryParseJsonValue(value);
+  try {
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+};
+
+const collectUrlStrings = (
+  value: unknown,
+  visited = new WeakSet<object>(),
+): string[] => {
+  if (typeof value === 'string') {
+    const trimmedValue = normalizeAssetUrl(value);
+    if (!trimmedValue) {
+      return [];
+    }
+    const parsedJson = tryParseJsonValue(trimmedValue);
+    if (parsedJson && typeof parsedJson === 'object') {
+      return collectUrlStrings(parsedJson, visited);
+    }
+    if (ABSOLUTE_OR_PROTOCOL_URL_PATTERN.test(trimmedValue)) {
+      return [trimmedValue];
+    }
+    return [...(trimmedValue.match(URL_LIKE_TEXT_PATTERN) ?? [])].map(
+      (entry) => normalizeAssetUrl(entry),
+    );
+  }
+
+  if (Array.isArray(value)) {
+    return value.flatMap((entry) => collectUrlStrings(entry, visited));
+  }
+
+  if (!value || typeof value !== 'object') {
+    return [];
+  }
+
+  if (visited.has(value)) {
+    return [];
+  }
+  visited.add(value);
+
+  return Object.values(value as Record<string, unknown>).flatMap((entry) =>
+    collectUrlStrings(entry, visited),
+  );
+};
+
+const buildAssetUrlsFromNetworkRecords = (
+  records: ChatGptConversationNetworkRecord[],
+): Map<string, string> => {
+  const assetUrlByFileId = new Map<string, string>();
+
+  records.forEach((record) => {
+    if (
+      typeof record.url !== 'string' ||
+      !record.url.includes('/backend-api/files/')
+    ) {
+      return;
+    }
+
+    const fileId = extractFileIdFromAssetUrl(record.url);
+    if (!fileId || assetUrlByFileId.has(fileId)) {
+      return;
+    }
+
+    const bodyText = String(record.bodyText || '').trim();
+    const parsedBody = tryParseJsonRecord(bodyText);
+    const bodyCandidates =
+      parsedBody != null
+        ? collectUrlStrings(parsedBody)
+        : [...(normalizeAssetUrl(bodyText).match(URL_LIKE_TEXT_PATTERN) ?? [])];
+
+    const resolvedUrl = bodyCandidates
+      .map((candidate) => normalizeAssetUrl(candidate))
+      .find((candidate) => isLikelyRenderableImageUrl(candidate));
+
+    if (resolvedUrl) {
+      assetUrlByFileId.set(fileId, resolvedUrl);
+    }
+  });
+
+  return assetUrlByFileId;
+};
+
+const chooseConversationByImageResolution = (
+  primaryConversation: ParsedConversationCandidate,
+  fallbackConversation: ParsedConversationCandidate,
+): ParsedConversationCandidate => {
+  const countBlobImageUrls = (conversation: ParsedConversationCandidate) =>
+    conversation.messages.reduce((count, message) => {
+      const blobMatches = message.text.match(/!\[[^\]]*\]\(blob:[^)]+\)/gi);
+      return count + (blobMatches?.length ?? 0);
+    }, 0);
+  const primaryBlobCount = countBlobImageUrls(primaryConversation);
+  const fallbackBlobCount = countBlobImageUrls(fallbackConversation);
+  if (primaryBlobCount !== fallbackBlobCount) {
+    return primaryBlobCount < fallbackBlobCount
+      ? primaryConversation
+      : fallbackConversation;
+  }
+
+  const primaryUnresolved = extractSedimentFileIds(primaryConversation).length;
+  const fallbackUnresolved = extractSedimentFileIds(fallbackConversation).length;
+  if (primaryUnresolved !== fallbackUnresolved) {
+    return primaryUnresolved < fallbackUnresolved
+      ? primaryConversation
+      : fallbackConversation;
+  }
+
+  return scoreParsedConversation(primaryConversation) >=
+    scoreParsedConversation(fallbackConversation)
+    ? primaryConversation
+    : fallbackConversation;
+};
+
 const applyResolvedAssetDataUrls = (
   conversation: ParsedConversationCandidate,
-  dataUrlByFileId: Map<string, string>,
+  assetUrlByFileId: Map<string, string>,
 ): ParsedConversationCandidate => {
-  if (dataUrlByFileId.size === 0) {
+  if (assetUrlByFileId.size === 0) {
     return conversation;
   }
 
@@ -90,17 +344,19 @@ const applyResolvedAssetDataUrls = (
     ...conversation,
     messages: conversation.messages.map((message) => ({
       ...message,
-      text: message.text.replace(
-        SEDIMENT_IMAGE_MARKDOWN_PATTERN,
-        (fullMatch, altText: string, fileId: string) => {
-          const resolvedDataUrl = dataUrlByFileId.get(fileId);
-          if (!resolvedDataUrl) {
-            return fullMatch;
-          }
+      text: message.text.replace(IMAGE_MARKDOWN_PATTERN, (fullMatch, altText: string, url: string) => {
+        const fileId = extractFileIdFromAssetUrl(url);
+        if (!fileId) {
+          return fullMatch;
+        }
 
-          return `![${altText || 'image'}](${resolvedDataUrl})`;
-        },
-      ),
+        const resolvedAssetUrl = assetUrlByFileId.get(fileId);
+        if (!resolvedAssetUrl) {
+          return fullMatch;
+        }
+
+        return `![${altText || 'image'}](${resolvedAssetUrl})`;
+      }),
     })),
   };
 };
@@ -237,35 +493,99 @@ export class DirectChatConversationImportStrategy {
     automationView: ChatGptAutomationView,
     conversation: ParsedConversationCandidate,
     replayHeaders: Record<string, string>,
+    conversationId: string,
   ): Promise<ParsedConversationCandidate> {
     const fileIds = extractSedimentFileIds(conversation);
     if (fileIds.length === 0) {
       return conversation;
     }
 
-    const dataUrlByFileId = new Map<string, string>();
+    const assetUrlByFileId = new Map<string, string>();
     for (const fileId of fileIds) {
       try {
         const assetPayload = await automationView.execute<FetchedConversationAssetPayload>(
-          buildFetchConversationAssetDataUrlScript(fileId, replayHeaders),
+          buildFetchConversationAssetDataUrlScript(
+            fileId,
+            replayHeaders,
+            conversationId,
+          ),
         );
 
-        if (assetPayload?.ok && assetPayload.dataUrl) {
-          dataUrlByFileId.set(fileId, assetPayload.dataUrl);
+        const resolvedAssetUrl = assetPayload?.dataUrl ?? assetPayload?.url ?? '';
+        if (
+          assetPayload?.ok &&
+          typeof resolvedAssetUrl === 'string' &&
+          RENDERABLE_IMAGE_URL_PATTERN.test(resolvedAssetUrl)
+        ) {
+          assetUrlByFileId.set(fileId, resolvedAssetUrl);
         }
       } catch {
         // Keep unresolved pointers when asset fetch fails.
       }
     }
 
+    const networkAssetUrlByFileId = buildAssetUrlsFromNetworkRecords(
+      automationView.getConversationNetworkRecords(),
+    );
+    networkAssetUrlByFileId.forEach((assetUrl, fileId) => {
+      if (!assetUrlByFileId.has(fileId)) {
+        assetUrlByFileId.set(fileId, assetUrl);
+      }
+    });
+
+    for (const [fileId, assetUrl] of [...assetUrlByFileId.entries()]) {
+      if (!assetUrl || assetUrl.startsWith('data:image/')) {
+        continue;
+      }
+
+      try {
+        const payload = await automationView.execute<FetchedConversationAssetPayload>(
+          buildFetchImageDataUrlFromUrlScript(assetUrl, replayHeaders),
+        );
+        if (payload?.ok && payload.dataUrl?.startsWith('data:image/')) {
+          assetUrlByFileId.set(fileId, payload.dataUrl);
+        }
+      } catch {
+        // Keep resolved URL as-is when data URL conversion fails.
+      }
+    }
+
+    const unresolvedFileIds = fileIds.filter((fileId) => !assetUrlByFileId.has(fileId));
+    const dataUrlResolvedCount = [...assetUrlByFileId.values()].filter((assetUrl) =>
+      assetUrl.startsWith('data:image/'),
+    ).length;
+    const unresolvedSample =
+      unresolvedFileIds.length > 0
+        ? unresolvedFileIds.slice(0, 6).join(',')
+        : '-';
+    if (networkAssetUrlByFileId.size === 0 && unresolvedFileIds.length > 0) {
+      const downloadBodySamples = automationView
+        .getConversationNetworkRecords()
+        .filter((record) => /\/backend-api\/files\/download\//i.test(record.url))
+        .slice(-4)
+        .map((record) => {
+          const preview = String(record.bodyText || '')
+            .replace(/\s+/g, ' ')
+            .slice(0, 220);
+          return `${record.status}:${record.url} bodyPreview=${preview}`;
+        });
+      if (downloadBodySamples.length > 0) {
+        console.info(
+          `[gptviewer][direct-chat-import:image-assets:download-json-sample] ${downloadBodySamples.join(
+            ' | ',
+          )}`,
+        );
+      }
+    }
+
     console.info(
-      `[gptviewer][direct-chat-import:image-assets] requested=${fileIds.length} resolved=${dataUrlByFileId.size} unresolved=${Math.max(
+      `[gptviewer][direct-chat-import:image-assets] requested=${fileIds.length} resolved=${assetUrlByFileId.size} unresolved=${Math.max(
         0,
-        fileIds.length - dataUrlByFileId.size,
-      )}`,
+        fileIds.length - assetUrlByFileId.size,
+      )} dataUrlResolved=${dataUrlResolvedCount} networkResolved=${networkAssetUrlByFileId.size} unresolvedSample=${unresolvedSample}`,
     );
 
-    return applyResolvedAssetDataUrls(conversation, dataUrlByFileId);
+    return applyResolvedAssetDataUrls(conversation, assetUrlByFileId);
   }
 
   async importFromChatUrl(
@@ -290,6 +610,28 @@ export class DirectChatConversationImportStrategy {
     automationView: ChatGptAutomationView,
   ): Promise<SharedConversationImport> {
     const conversationId = extractConversationId(request.chatUrl ?? '');
+    let unresolvedImageFallbackConversation: ParsedConversationCandidate | null = null;
+    let unresolvedImageFallbackSource: 'backend' | 'network' | null = null;
+    const rememberUnresolvedImageFallback = (
+      candidateConversation: ParsedConversationCandidate,
+      source: 'backend' | 'network',
+    ) => {
+      if (!unresolvedImageFallbackConversation) {
+        unresolvedImageFallbackConversation = candidateConversation;
+        unresolvedImageFallbackSource = source;
+        return;
+      }
+
+      const chosenConversation = chooseConversationByImageResolution(
+        unresolvedImageFallbackConversation,
+        candidateConversation,
+      );
+      const keepCurrent = chosenConversation === unresolvedImageFallbackConversation;
+      unresolvedImageFallbackConversation = chosenConversation;
+      unresolvedImageFallbackSource = keepCurrent
+        ? unresolvedImageFallbackSource
+        : source;
+    };
 
       let diagnosticsLabel = 'initial';
       const waitForMonitorAttachment = automationView
@@ -417,6 +759,7 @@ export class DirectChatConversationImportStrategy {
                 automationView,
                 directConversationCandidate,
                 capturedBackendHeaders,
+                conversationId,
               )
             : null;
 
@@ -453,10 +796,22 @@ export class DirectChatConversationImportStrategy {
             .join('\n\n');
           const fencedBlocks = countMatches(messageText, /```[\s\S]*?```/g);
           const mermaidBlocks = countMatches(messageText, /```mermaid\b/gi);
+          const unresolvedSedimentFileIds = extractSedimentFileIds(directConversation);
 
           console.info(
             `[gptviewer][direct-chat-import:backend-get] ${request.chatUrl}\nstatus=${fetchedConversationJson.status} url=${fetchedConversationJson.url} messages=${directConversation.messages.length} fenced=${fencedBlocks} mermaid=${mermaidBlocks}`,
           );
+
+          if (unresolvedSedimentFileIds.length > 0) {
+            const unresolvedSample = unresolvedSedimentFileIds
+              .slice(0, 6)
+              .join(',');
+            console.info(
+              `[gptviewer][direct-chat-import:backend-get-unresolved-images] ${request.chatUrl}\nunresolved=${unresolvedSedimentFileIds.length} sample=${unresolvedSample}`,
+            );
+            rememberUnresolvedImageFallback(directConversation, 'backend');
+            return null;
+          }
 
           return buildConversationImportResult(request, {
             fetchedAt: new Date().toISOString(),
@@ -514,11 +869,23 @@ export class DirectChatConversationImportStrategy {
           automationView,
           networkConversation,
           automationView.getLatestBackendApiHeaders()?.headers ?? {},
+          conversationId,
         );
-        return buildConversationImportResult(request, {
-          fetchedAt: new Date().toISOString(),
-          ...networkConversation,
-        });
+        const unresolvedSedimentFileIds = extractSedimentFileIds(networkConversation);
+        if (unresolvedSedimentFileIds.length === 0) {
+          return buildConversationImportResult(request, {
+            fetchedAt: new Date().toISOString(),
+            ...networkConversation,
+          });
+        }
+
+        const unresolvedSample = unresolvedSedimentFileIds
+          .slice(0, 6)
+          .join(',');
+        console.info(
+          `[gptviewer][direct-chat-import:network-unresolved-images] ${request.chatUrl}\nunresolved=${unresolvedSedimentFileIds.length} sample=${unresolvedSample}`,
+        );
+        rememberUnresolvedImageFallback(networkConversation, 'network');
       }
 
       await automationView.execute(buildPrepareConversationHtmlSnapshotScript());
@@ -537,6 +904,18 @@ export class DirectChatConversationImportStrategy {
       );
 
       if (!parsedConversation) {
+        if (unresolvedImageFallbackConversation) {
+          console.info(
+            `[gptviewer][direct-chat-import:html-parse-fallback] ${request.chatUrl}\nsource=${unresolvedImageFallbackSource ?? '-'} unresolved=${extractSedimentFileIds(
+              unresolvedImageFallbackConversation,
+            ).length}`,
+          );
+          return buildConversationImportResult(request, {
+            fetchedAt: new Date().toISOString(),
+            ...unresolvedImageFallbackConversation,
+          });
+        }
+
         throw new SharedConversationRefreshError(
           'unknown',
           isReady
@@ -550,11 +929,35 @@ export class DirectChatConversationImportStrategy {
         automationView,
         parsedConversation,
         automationView.getLatestBackendApiHeaders()?.headers ?? {},
+        conversationId,
+      );
+      const unresolvedHtmlSedimentFileIds = extractSedimentFileIds(
+        resolvedParsedConversation,
+      );
+      if (!unresolvedImageFallbackConversation) {
+        return buildConversationImportResult(request, {
+          fetchedAt: new Date().toISOString(),
+          ...resolvedParsedConversation,
+        });
+      }
+
+      const chosenConversation = chooseConversationByImageResolution(
+        resolvedParsedConversation,
+        unresolvedImageFallbackConversation,
+      );
+      const chooseLabel =
+        chosenConversation === resolvedParsedConversation
+          ? 'html'
+          : unresolvedImageFallbackSource ?? 'fallback';
+      console.info(
+        `[gptviewer][direct-chat-import:final-image-source] ${request.chatUrl}\nchoose=${chooseLabel} htmlUnresolved=${unresolvedHtmlSedimentFileIds.length} fallbackUnresolved=${extractSedimentFileIds(
+          unresolvedImageFallbackConversation,
+        ).length}`,
       );
 
       return buildConversationImportResult(request, {
         fetchedAt: new Date().toISOString(),
-        ...resolvedParsedConversation,
+        ...chosenConversation,
       });
   }
 }
