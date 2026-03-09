@@ -144,6 +144,73 @@ export function MarkdownCodeSourcePanel({
     }
   };
 
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (!editable) return;
+    const textarea = event.currentTarget;
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+
+    if (event.key === 'Tab') {
+      event.preventDefault();
+      if (start === end) {
+        const newValue = value.substring(0, start) + '    ' + value.substring(end);
+        onChange?.(newValue);
+        window.requestAnimationFrame(() => {
+          textarea.selectionStart = textarea.selectionEnd = start + 4;
+          syncEditorScroll();
+        });
+      }
+    } else if (event.key === 'Enter') {
+      event.preventDefault();
+      const upToCursor = value.substring(0, start);
+      const currentLine = upToCursor.split('\n').pop() || '';
+      const indentMatch = currentLine.match(/^\s*/);
+      const baseIndent = indentMatch ? indentMatch[0] : '';
+      
+      const isOpeningBrace = currentLine.trim().endsWith('{');
+      const extraIndent = isOpeningBrace ? '    ' : '';
+      const totalIndent = baseIndent + extraIndent;
+
+      const afterCursor = value.substring(end);
+      const isClosingBraceNext = afterCursor.startsWith('}');
+
+      let newValue;
+      let newCursorPos;
+
+      if (isOpeningBrace && isClosingBraceNext) {
+        newValue = upToCursor + '\n' + totalIndent + '\n' + baseIndent + afterCursor;
+        newCursorPos = start + 1 + totalIndent.length;
+      } else {
+        newValue = upToCursor + '\n' + totalIndent + afterCursor;
+        newCursorPos = start + 1 + totalIndent.length;
+      }
+
+      onChange?.(newValue);
+      window.requestAnimationFrame(() => {
+        textarea.selectionStart = textarea.selectionEnd = newCursorPos;
+        syncEditorScroll();
+      });
+    } else if (['{', '[', '(', '"', "'"].includes(event.key)) {
+      const pairMap: Record<string, string> = { '{': '}', '[': ']', '(': ')', '"': '"', "'": "'" };
+      const closing = pairMap[event.key];
+      if (start === end && closing) {
+        event.preventDefault();
+        const newValue = value.substring(0, start) + event.key + closing + value.substring(end);
+        onChange?.(newValue);
+        window.requestAnimationFrame(() => {
+          textarea.selectionStart = textarea.selectionEnd = start + 1;
+        });
+      }
+    } else if (['}', ']', ')'].includes(event.key)) {
+      if (start === end && value.substring(start, start + 1) === event.key) {
+        event.preventDefault();
+        window.requestAnimationFrame(() => {
+          textarea.selectionStart = textarea.selectionEnd = start + 1;
+        });
+      }
+    }
+  };
+
   // 텍스트 너비가 textarea 너비를 넘을 수 있으므로 하이라이트 레이어의 min-width를 보정
   const highlightWidth = textareaRef.current?.scrollWidth ?? '100%';
 
@@ -276,6 +343,7 @@ export function MarkdownCodeSourcePanel({
                     syncEditorScroll();
                   }}
                   onScroll={syncEditorScroll}
+                  onKeyDown={handleKeyDown}
                   spellCheck={false}
                   value={value}
                   wrap="off"
