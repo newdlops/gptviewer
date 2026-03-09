@@ -181,9 +181,24 @@ export const buildFetchConversationAssetDataUrlScript = (
   const inputFileId = ${JSON.stringify(fileId)};
   const replayHeaders = ${JSON.stringify(replayHeaders)};
   const conversationId = ${JSON.stringify(conversationId)};
+  const FETCH_TIMEOUT_MS = 8_000;
   const normalizedFileId = String(inputFileId)
     .trim()
     .replace(/^sediment:\\/\\//i, '');
+  const fetchWithTimeout = async (url, init) => {
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => {
+      controller.abort();
+    }, FETCH_TIMEOUT_MS);
+    try {
+      return await fetch(url, {
+        ...init,
+        signal: controller.signal,
+      });
+    } finally {
+      window.clearTimeout(timeoutId);
+    }
+  };
 
   const inferMimeTypeFromBytes = (bytes) => {
     if (!bytes || bytes.length < 4) {
@@ -396,7 +411,7 @@ export const buildFetchConversationAssetDataUrlScript = (
     try {
       const targetUrl = new URL(candidateUrl, location.origin);
       const isSameOrigin = targetUrl.origin === location.origin;
-      const response = await fetch(targetUrl.toString(), {
+      const response = await fetchWithTimeout(targetUrl.toString(), {
         cache: 'no-store',
         credentials: isSameOrigin
           ? 'include'
@@ -465,56 +480,40 @@ export const buildFetchConversationAssetDataUrlScript = (
     }
   };
 
-  const bareFileId = normalizedFileId.replace(/^file_/i, '');
-  const hyphenFileId = normalizedFileId.replace(/^file_/, 'file-');
-  const hyphenBareFileId = bareFileId.replace(/^file_/, 'file-');
-  const fileIdCandidates = [
+  const compactFileIdCandidates = [
     ...new Set([
       normalizedFileId,
-      bareFileId,
-      hyphenFileId,
-      hyphenBareFileId,
+      normalizedFileId.replace(/^file_/i, 'file-'),
     ]),
-  ].filter(Boolean);
+  ].filter((candidateId) => /^file[-_][a-z0-9_-]+$/i.test(candidateId));
   const encodedConversationId = encodeURIComponent(conversationId || '');
-  const candidatePaths = fileIdCandidates.flatMap((candidateId) => {
-    const basePaths = [
-      '/backend-api/files/' + candidateId + '/download',
-      '/backend-api/files/' + candidateId,
-      '/backend-api/files/' + candidateId + '?download=true',
-      '/backend-api/files/' + candidateId + '/content',
-      '/backend-api/files/' + candidateId + '/download_url',
-      '/backend-api/files/' + candidateId + '/url',
-      '/backend-api/files/' + candidateId + '/signed_url',
-      '/backend-api/files/' + candidateId + '/presigned_url',
-      '/backend-api/file/' + candidateId + '/download',
-    ];
-
+  const primaryCandidatePaths = compactFileIdCandidates.flatMap((candidateId) => {
+    const downloadPath = '/backend-api/files/download/' + candidateId;
+    const resourcePath = '/backend-api/files/' + candidateId + '/download';
     if (!encodedConversationId) {
-      return basePaths;
+      return [downloadPath, resourcePath];
     }
-
     return [
-      ...basePaths,
-      '/backend-api/files/' +
-        candidateId +
-        '/download?conversation_id=' +
-        encodedConversationId,
-      '/backend-api/files/' +
-        candidateId +
-        '?conversation_id=' +
-        encodedConversationId,
-      '/backend-api/conversation/' +
-        encodedConversationId +
-        '/files/' +
-        candidateId +
-        '/download',
+      downloadPath + '?conversation_id=' + encodedConversationId + '&inline=false',
+      downloadPath + '?conversation_id=' + encodedConversationId,
+      downloadPath,
+      resourcePath + '?conversation_id=' + encodedConversationId + '&inline=false',
+      resourcePath + '?conversation_id=' + encodedConversationId,
+      resourcePath,
     ];
   });
+  const fallbackCandidatePaths = compactFileIdCandidates.flatMap((candidateId) => [
+    '/backend-api/files/' + candidateId,
+    '/backend-api/files/' + candidateId + '?download=true',
+    '/backend-api/files/' + candidateId + '/content',
+  ]);
+  const candidatePaths = [
+    ...new Set([...primaryCandidatePaths, ...fallbackCandidatePaths]),
+  ].slice(0, 14);
 
   for (const candidatePath of candidatePaths) {
     try {
-      const response = await fetch(candidatePath, {
+      const response = await fetchWithTimeout(candidatePath, {
         cache: 'no-store',
         credentials: 'include',
         headers: defaultHeaders,
@@ -560,7 +559,51 @@ export const buildFetchConversationAssetDataUrlScript = (
 
       if (contentType.includes('application/json')) {
         const payload = await response.json().catch(() => null);
-        const candidateUrls = collectCandidateUrlsFromJson(payload);
+        const directDownloadUrl = (() => {
+          if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+            return '';
+          }
+          const record = payload;
+          const directKeys = [
+            'download_url',
+            'downloadUrl',
+            'signed_url',
+            'signedUrl',
+            'url',
+          ];
+          for (const key of directKeys) {
+            const value = record?.[key];
+            if (typeof value === 'string' && /^https?:\\/\\//i.test(value.trim())) {
+              return value.trim();
+            }
+          }
+          return '';
+        })();
+
+        if (directDownloadUrl) {
+          const directResult = await fetchImageDataUrlFromUrl(directDownloadUrl, false);
+          if (directResult) {
+            return {
+              contentType: directResult.contentType,
+              dataUrl: directResult.dataUrl,
+              fileId: normalizedFileId,
+              ok: true,
+              status: directResult.status,
+              url: directResult.url,
+            };
+          }
+          if (isLikelyRenderableImageUrl(directDownloadUrl)) {
+            return {
+              contentType: 'image/*',
+              fileId: normalizedFileId,
+              ok: true,
+              status: response.status,
+              url: directDownloadUrl,
+            };
+          }
+        }
+
+        const candidateUrls = collectCandidateUrlsFromJson(payload).slice(0, 8);
         for (const candidateUrl of candidateUrls) {
           const candidateResult = await fetchImageDataUrlFromUrl(candidateUrl, false);
           if (candidateResult) {
@@ -647,7 +690,22 @@ export const buildFetchImageDataUrlFromUrlScript = (
 (async () => {
   const inputUrl = ${JSON.stringify(assetUrl)};
   const replayHeaders = ${JSON.stringify(replayHeaders)};
+  const FETCH_TIMEOUT_MS = 8_000;
   const normalizeUrl = (value) => String(value || '').trim().split('\\\\/').join('/');
+  const fetchWithTimeout = async (url, init) => {
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => {
+      controller.abort();
+    }, FETCH_TIMEOUT_MS);
+    try {
+      return await fetch(url, {
+        ...init,
+        signal: controller.signal,
+      });
+    } finally {
+      window.clearTimeout(timeoutId);
+    }
+  };
   const inferMimeTypeFromBytes = (bytes) => {
     if (!bytes || bytes.length < 4) {
       return '';
@@ -760,7 +818,7 @@ export const buildFetchImageDataUrlFromUrlScript = (
     try {
       const targetUrl = new URL(normalizedCandidateUrl, location.origin);
       const isSameOrigin = targetUrl.origin === location.origin;
-      const response = await fetch(targetUrl.toString(), {
+      const response = await fetchWithTimeout(targetUrl.toString(), {
         cache: 'no-store',
         credentials: isSameOrigin ? 'include' : 'omit',
         headers: isSameOrigin

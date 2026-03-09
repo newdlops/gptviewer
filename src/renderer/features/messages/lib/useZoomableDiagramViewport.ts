@@ -127,6 +127,24 @@ const readSvgContentSize = (
   return null;
 };
 
+const readImageContentSize = (contentElement: HTMLDivElement) => {
+  const imageElement = contentElement.querySelector('img');
+  if (!imageElement) {
+    return null;
+  }
+
+  const naturalWidth = imageElement.naturalWidth || imageElement.width;
+  const naturalHeight = imageElement.naturalHeight || imageElement.height;
+  if (naturalWidth > 0 && naturalHeight > 0) {
+    return {
+      height: naturalHeight,
+      width: naturalWidth,
+    };
+  }
+
+  return null;
+};
+
 const readBaseFontSize = (contentElement: HTMLDivElement) => {
   const referenceElement =
     contentElement.closest('.message-bubble__content') ?? document.documentElement;
@@ -198,12 +216,19 @@ const measureDiagramMetrics = (
     1,
   );
   const svgSize = readSvgContentSize(contentElement, contentSignature);
+  const imageSize = readImageContentSize(contentElement);
   const contentWidth = Math.max(
-    svgSize?.width || contentElement.scrollWidth || contentElement.offsetWidth,
+    svgSize?.width ||
+      imageSize?.width ||
+      contentElement.scrollWidth ||
+      contentElement.offsetWidth,
     1,
   );
   const contentHeight = Math.max(
-    svgSize?.height || contentElement.scrollHeight || contentElement.offsetHeight,
+    svgSize?.height ||
+      imageSize?.height ||
+      contentElement.scrollHeight ||
+      contentElement.offsetHeight,
     1,
   );
   const fitScale = Math.min(
@@ -477,6 +502,22 @@ export function useZoomableDiagramViewport(
     applyTransform(true);
   };
 
+  const refreshMetrics = () => {
+    const viewportElement = viewportRef.current;
+    const contentElement = contentRef.current;
+    if (!enabled || !viewportElement || !contentElement) {
+      return null;
+    }
+
+    const refreshedMetrics = measureDiagramMetrics(
+      viewportElement,
+      contentElement,
+      contentSignature,
+    );
+    metricsRef.current = refreshedMetrics;
+    return refreshedMetrics;
+  };
+
   const autoAdjustViewport = () => {
     const shellElement = shellRef.current;
     const viewportElement = viewportRef.current;
@@ -549,7 +590,7 @@ export function useZoomableDiagramViewport(
   };
 
   const updateScale = (factor: number) => {
-    const metrics = metricsRef.current;
+    const metrics = refreshMetrics() ?? metricsRef.current;
     if (!metrics) {
       return;
     }
@@ -716,7 +757,9 @@ export function useZoomableDiagramViewport(
     contentRef,
     hasOverflow: uiState.hasOverflow,
     isDragging,
-    resetViewport: () => syncViewport('fit'),
+    resetViewport: () => {
+      syncViewport('fit');
+    },
     shellRef,
     viewportHandlers: {
       onPointerCancel: stopDragging,
@@ -726,8 +769,18 @@ export function useZoomableDiagramViewport(
       onPointerUp: stopDragging,
     },
     viewportRef,
-    zoomIn: () => updateScale(ZOOM_STEP),
+    zoomIn: () => {
+      if (!metricsRef.current) {
+        syncViewport('preserve');
+      }
+      updateScale(ZOOM_STEP);
+    },
     zoomLabel: uiState.zoomLabel,
-    zoomOut: () => updateScale(1 / ZOOM_STEP),
+    zoomOut: () => {
+      if (!metricsRef.current) {
+        syncViewport('preserve');
+      }
+      updateScale(1 / ZOOM_STEP);
+    },
   };
 }

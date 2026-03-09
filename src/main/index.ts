@@ -42,8 +42,11 @@ import {
   buildActivateDeepResearchEmbedsScript,
   buildExtractConversationHtmlSnapshotScript,
   buildExtractStandaloneHtmlSnapshotScript,
+  buildFetchConversationAssetDataUrlScript,
+  buildFetchImageDataUrlFromUrlScript,
   type ExtractedConversationHtmlSnapshot,
   type ExtractedStandaloneHtmlSnapshot,
+  type FetchedConversationAssetPayload,
 } from './services/sharedConversationRefresh/chatgpt/chatGptConversationImportScripts';
 import { SharedConversationRefreshService } from './services/sharedConversationRefresh/SharedConversationRefreshService';
 import { SharedConversationRefreshError } from './services/sharedConversationRefresh/SharedConversationRefreshError';
@@ -57,10 +60,40 @@ type SourceIconImport = {
   finalUrl: string;
 };
 
+type ChatGptImageAssetImport = {
+  cacheKey: string;
+  dataUrl: string;
+  sourceUrl: string;
+};
+
+type ChatGptImageResolveTask = {
+  cacheKey: string;
+  normalizedAssetUrl: string;
+  normalizedChatUrl: string;
+  resolve: (value: ChatGptImageAssetImport | null) => void;
+};
+
 type FrameStandaloneSnapshot = ExtractedStandaloneHtmlSnapshot & {
   frameOrigin: string;
   frameUrl: string;
 };
+
+const CHATGPT_IMAGE_ASSET_CACHE_MAX = 512;
+const CHATGPT_IMAGE_RESOLVE_TASK_TIMEOUT_MS = 40_000;
+const CHATGPT_IMAGE_RESOLVE_TIMEOUT_MARKER = Symbol('chatgpt-image-timeout');
+const CHATGPT_FILE_ID_PATTERN =
+  /(?:sediment:\/\/)?(file_[a-z0-9_-]+)|\/backend-api\/files\/download\/(file_[a-z0-9_-]+)|\/backend-api\/files\/(file_[a-z0-9_-]+)\/download|[?&]id=(file_[a-z0-9_-]+)/i;
+const CHATGPT_CONVERSATION_ID_PATTERN = /\/c\/([^/?#]+)/i;
+const chatGptImageAssetCache = new Map<string, ChatGptImageAssetImport>();
+const chatGptImageAssetInFlight = new Map<
+  string,
+  Promise<ChatGptImageAssetImport | null>
+>();
+const chatGptImageResolveQueue: ChatGptImageResolveTask[] = [];
+let chatGptImageResolveWorkerBusy = false;
+let chatGptImageResolveWorkerView: ChatGptAutomationView | null = null;
+let chatGptImageResolveWorkerChatUrl = '';
+let chatGptImageResolveWorkerHeaders: Record<string, string> = {};
 
 const isMeaningfulDeepResearchUrl = (value: string | null | undefined): boolean => {
   const normalizedValue = (value || '').trim();
@@ -412,6 +445,323 @@ const inferImageMimeType = (url: string): string => {
 
   return 'image/x-icon';
 };
+
+const extractChatGptConversationId = (value: string): string => {
+  const match = value.match(CHATGPT_CONVERSATION_ID_PATTERN);
+  return match?.[1] ?? '';
+};
+
+const extractChatGptImageFileId = (value: string): string => {
+  const match = value.match(CHATGPT_FILE_ID_PATTERN);
+  const fileId =
+    match?.[1] || match?.[2] || match?.[3] || match?.[4] || '';
+  return fileId ? fileId.toLowerCase() : '';
+};
+
+const normalizeChatGptConversationUrl = (value: string): string | null => {
+  try {
+    const parsedUrl = new URL((value || '').trim());
+    if (
+      !['https:', 'http:'].includes(parsedUrl.protocol) ||
+      !['chatgpt.com', 'www.chatgpt.com', 'chat.openai.com'].includes(
+        parsedUrl.hostname,
+      )
+    ) {
+      return null;
+    }
+
+    if (!CHATGPT_CONVERSATION_ID_PATTERN.test(parsedUrl.pathname)) {
+      return null;
+    }
+
+    parsedUrl.hash = '';
+    return parsedUrl.toString();
+  } catch {
+    return null;
+  }
+};
+
+const buildChatGptImageAssetCacheKey = (
+  conversationUrl: string,
+  assetUrl: string,
+): string => {
+  const fileId = extractChatGptImageFileId(assetUrl);
+  return `${conversationUrl}::${fileId || assetUrl.trim()}`;
+};
+
+const rememberChatGptImageAssetCache = (entry: ChatGptImageAssetImport) => {
+  if (chatGptImageAssetCache.has(entry.cacheKey)) {
+    chatGptImageAssetCache.delete(entry.cacheKey);
+  }
+  chatGptImageAssetCache.set(entry.cacheKey, entry);
+
+  while (chatGptImageAssetCache.size > CHATGPT_IMAGE_ASSET_CACHE_MAX) {
+    const oldestKey = chatGptImageAssetCache.keys().next().value;
+    if (!oldestKey) {
+      break;
+    }
+    chatGptImageAssetCache.delete(oldestKey);
+  }
+};
+
+const waitForBackendReplayHeaders = async (
+  automationView: ChatGptAutomationView,
+  timeoutMs = 4_000,
+  intervalMs = 120,
+) => {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline && !automationView.isClosed()) {
+    const headers = automationView.getLatestBackendApiHeaders()?.headers ?? {};
+    if (Object.keys(headers).length > 0) {
+      return headers;
+    }
+
+    await new Promise((resolve) => {
+      setTimeout(resolve, intervalMs);
+    });
+  }
+
+  return automationView.getLatestBackendApiHeaders()?.headers ?? {};
+};
+
+const clearChatGptImageResolveWorkerContext = () => {
+  chatGptImageResolveWorkerChatUrl = '';
+  chatGptImageResolveWorkerHeaders = {};
+};
+
+const closeChatGptImageResolveWorkerView = async () => {
+  if (chatGptImageResolveWorkerView) {
+    await chatGptImageResolveWorkerView.close().catch((): void => undefined);
+    chatGptImageResolveWorkerView = null;
+  }
+  clearChatGptImageResolveWorkerContext();
+};
+
+const ensureChatGptImageResolveWorkerView = async (): Promise<ChatGptAutomationView> => {
+  if (
+    chatGptImageResolveWorkerView &&
+    !chatGptImageResolveWorkerView.isClosed()
+  ) {
+    return chatGptImageResolveWorkerView;
+  }
+
+  chatGptImageResolveWorkerView = await ChatGptAutomationView.acquire('background');
+  clearChatGptImageResolveWorkerContext();
+  return chatGptImageResolveWorkerView;
+};
+
+const resolveChatGptImageAssetWithWorker = async (
+  automationView: ChatGptAutomationView,
+  normalizedChatUrl: string,
+  normalizedAssetUrl: string,
+  cacheKey: string,
+): Promise<ChatGptImageAssetImport | null> => {
+  const extractedFileId = extractChatGptImageFileId(normalizedAssetUrl);
+  const conversationId = extractChatGptConversationId(normalizedChatUrl);
+  const startedAt = Date.now();
+  console.info(
+    `[gptviewer][chatgpt-image:resolve-start] key=${cacheKey} fileId=${extractedFileId || '-'} conversationId=${conversationId || '-'}`,
+  );
+
+  const bootstrapUrl = (() => {
+    try {
+      const parsedUrl = new URL(normalizedChatUrl);
+      return `${parsedUrl.origin}/`;
+    } catch {
+      return 'https://chatgpt.com/';
+    }
+  })();
+
+  if (
+    chatGptImageResolveWorkerChatUrl !== bootstrapUrl ||
+    Object.keys(chatGptImageResolveWorkerHeaders).length === 0
+  ) {
+    const bootstrapStartedAt = Date.now();
+    await automationView.enableConversationNetworkMonitoring().catch((): void => undefined);
+    await automationView.load(bootstrapUrl);
+    chatGptImageResolveWorkerChatUrl = bootstrapUrl;
+    chatGptImageResolveWorkerHeaders = await waitForBackendReplayHeaders(
+      automationView,
+      1_500,
+      100,
+    );
+    console.info(
+      `[gptviewer][chatgpt-image:worker-bootstrap] url=${bootstrapUrl} headers=${Object.keys(
+        chatGptImageResolveWorkerHeaders,
+      ).length} elapsedMs=${Date.now() - bootstrapStartedAt}`,
+    );
+  }
+
+  const replayHeaders = chatGptImageResolveWorkerHeaders;
+  let resolvedDataUrl = '';
+
+  if (extractedFileId) {
+    const payload = await automationView.execute<FetchedConversationAssetPayload>(
+      buildFetchConversationAssetDataUrlScript(
+        extractedFileId,
+        replayHeaders,
+        conversationId,
+      ),
+    );
+    if (payload?.ok) {
+      resolvedDataUrl =
+        typeof payload.dataUrl === 'string' ? payload.dataUrl : '';
+
+      if (
+        !resolvedDataUrl &&
+        typeof payload.url === 'string' &&
+        /^https?:\/\//i.test(payload.url)
+      ) {
+        const converted = await automationView.execute<FetchedConversationAssetPayload>(
+          buildFetchImageDataUrlFromUrlScript(payload.url, replayHeaders),
+        );
+        if (
+          converted?.ok &&
+          typeof converted.dataUrl === 'string' &&
+          converted.dataUrl.startsWith('data:image/')
+        ) {
+          resolvedDataUrl = converted.dataUrl;
+        }
+      }
+    }
+  } else if (/^https?:\/\//i.test(normalizedAssetUrl)) {
+    const converted = await automationView.execute<FetchedConversationAssetPayload>(
+      buildFetchImageDataUrlFromUrlScript(normalizedAssetUrl, replayHeaders),
+    );
+    if (
+      converted?.ok &&
+      typeof converted.dataUrl === 'string' &&
+      converted.dataUrl.startsWith('data:image/')
+    ) {
+      resolvedDataUrl = converted.dataUrl;
+    }
+  }
+
+  if (!resolvedDataUrl.startsWith('data:image/')) {
+    console.info(
+      `[gptviewer][chatgpt-image:resolve-miss] key=${cacheKey} elapsedMs=${Date.now() - startedAt}`,
+    );
+    return null;
+  }
+
+  const result: ChatGptImageAssetImport = {
+    cacheKey,
+    dataUrl: resolvedDataUrl,
+    sourceUrl: normalizedChatUrl,
+  };
+  rememberChatGptImageAssetCache(result);
+  console.info(
+    `[gptviewer][chatgpt-image:resolve-success] key=${cacheKey} elapsedMs=${Date.now() - startedAt}`,
+  );
+  return result;
+};
+
+const runChatGptImageResolveWorker = async () => {
+  if (chatGptImageResolveWorkerBusy) {
+    return;
+  }
+  chatGptImageResolveWorkerBusy = true;
+  console.info(
+    `[gptviewer][chatgpt-image:worker-start] queueSize=${chatGptImageResolveQueue.length}`,
+  );
+
+  try {
+    while (chatGptImageResolveQueue.length > 0) {
+      const task = chatGptImageResolveQueue.shift();
+      if (!task) {
+        continue;
+      }
+      console.info(
+        `[gptviewer][chatgpt-image:worker-dequeue] key=${task.cacheKey} remaining=${chatGptImageResolveQueue.length}`,
+      );
+
+      let resolvedValue: ChatGptImageAssetImport | null = null;
+      let taskStatus: 'error' | 'miss' | 'success' | 'timeout' = 'miss';
+      const taskStartedAt = Date.now();
+      try {
+        const resolvePromise = (async () => {
+          const workerView = await ensureChatGptImageResolveWorkerView();
+          return resolveChatGptImageAssetWithWorker(
+            workerView,
+            task.normalizedChatUrl,
+            task.normalizedAssetUrl,
+            task.cacheKey,
+          );
+        })();
+        const racedResult = await new Promise<
+          ChatGptImageAssetImport | null | typeof CHATGPT_IMAGE_RESOLVE_TIMEOUT_MARKER
+        >((resolve, reject) => {
+          const timeoutId = setTimeout(
+            () => resolve(CHATGPT_IMAGE_RESOLVE_TIMEOUT_MARKER),
+            CHATGPT_IMAGE_RESOLVE_TASK_TIMEOUT_MS,
+          );
+          resolvePromise
+            .then((value) => {
+              clearTimeout(timeoutId);
+              resolve(value);
+            })
+            .catch((error: unknown) => {
+              clearTimeout(timeoutId);
+              reject(error);
+            });
+        });
+
+        if (racedResult === CHATGPT_IMAGE_RESOLVE_TIMEOUT_MARKER) {
+          taskStatus = 'timeout';
+          resolvedValue = null;
+          console.warn(
+            `[gptviewer][chatgpt-image:worker-timeout] key=${task.cacheKey} timeoutMs=${CHATGPT_IMAGE_RESOLVE_TASK_TIMEOUT_MS}`,
+          );
+          await closeChatGptImageResolveWorkerView();
+        } else {
+          resolvedValue = racedResult;
+          taskStatus = resolvedValue ? 'success' : 'miss';
+        }
+      } catch (error) {
+        taskStatus = 'error';
+        resolvedValue = null;
+        const errorMessage = error instanceof Error ? error.message : 'unknown';
+        console.warn(
+          `[gptviewer][chatgpt-image:worker-error] key=${task.cacheKey} error=${errorMessage}`,
+        );
+        await closeChatGptImageResolveWorkerView();
+      }
+
+      chatGptImageAssetInFlight.delete(task.cacheKey);
+      task.resolve(resolvedValue);
+      console.info(
+        `[gptviewer][chatgpt-image:worker-task-done] key=${task.cacheKey} status=${taskStatus} elapsedMs=${Date.now() - taskStartedAt}`,
+      );
+    }
+  } finally {
+    chatGptImageResolveWorkerBusy = false;
+
+    if (chatGptImageResolveQueue.length === 0 && chatGptImageResolveWorkerView) {
+      console.info('[gptviewer][chatgpt-image:worker-idle-close]');
+      await closeChatGptImageResolveWorkerView();
+    } else if (chatGptImageResolveQueue.length > 0) {
+      void runChatGptImageResolveWorker();
+    }
+  }
+};
+
+const enqueueChatGptImageResolveTask = (
+  cacheKey: string,
+  normalizedChatUrl: string,
+  normalizedAssetUrl: string,
+): Promise<ChatGptImageAssetImport | null> =>
+  new Promise((resolve) => {
+    chatGptImageResolveQueue.push({
+      cacheKey,
+      normalizedAssetUrl,
+      normalizedChatUrl,
+      resolve,
+    });
+    console.info(
+      `[gptviewer][chatgpt-image:queue] key=${cacheKey} size=${chatGptImageResolveQueue.length}`,
+    );
+    void runChatGptImageResolveWorker();
+  });
 
 const toSourceIconImport = async (
   response: Response,
@@ -1955,6 +2305,45 @@ ipcMain.handle(
           : '원본 ChatGPT 대화를 가져오지 못했습니다.',
       );
     }
+  },
+);
+
+ipcMain.handle(
+  'chatgpt-image:resolve',
+  async (_event, rawChatUrl: string, rawAssetUrl: string) => {
+    const normalizedChatUrl = normalizeChatGptConversationUrl(rawChatUrl);
+    const normalizedAssetUrl = String(rawAssetUrl || '').trim();
+    if (!normalizedChatUrl || !normalizedAssetUrl) {
+      return null;
+    }
+
+    const cacheKey = buildChatGptImageAssetCacheKey(
+      normalizedChatUrl,
+      normalizedAssetUrl,
+    );
+    const cachedEntry = chatGptImageAssetCache.get(cacheKey);
+    if (cachedEntry) {
+      console.info(
+        `[gptviewer][chatgpt-image:cache-hit] key=${cacheKey}`,
+      );
+      return cachedEntry;
+    }
+
+    const inFlightTask = chatGptImageAssetInFlight.get(cacheKey);
+    if (inFlightTask) {
+      console.info(
+        `[gptviewer][chatgpt-image:duplicate-ignored] key=${cacheKey}`,
+      );
+      return inFlightTask;
+    }
+
+    const queuedTask = enqueueChatGptImageResolveTask(
+      cacheKey,
+      normalizedChatUrl,
+      normalizedAssetUrl,
+    );
+    chatGptImageAssetInFlight.set(cacheKey, queuedTask);
+    return queuedTask;
   },
 );
 

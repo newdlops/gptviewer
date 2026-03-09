@@ -1,5 +1,6 @@
 import type {
   SharedConversationImport,
+  SharedConversationImportWarning,
   SharedConversationRefreshRequest,
 } from '../../../../shared/refresh/sharedConversationRefresh';
 import { parseChatGptConversationHtmlSnapshot } from '../../../parsers/chatGptConversationHtmlParser';
@@ -35,6 +36,8 @@ const FALLBACK_TITLE_SUFFIX_PATTERN = /\s*[-|]\s*ChatGPT.*$/i;
 const NETWORK_MONITOR_ATTACH_GRACE_MS = 1_500;
 const BACKEND_HEADERS_CAPTURE_TIMEOUT_MS = 4_000;
 const BACKEND_HEADERS_CAPTURE_POLL_MS = 120;
+const LARGE_BACKEND_BODY_THRESHOLD = 180_000;
+const EAGER_IMAGE_ASSET_RESOLVE_LIMIT = 8;
 const WIDGET_STATE_MARKER = 'The latest state of the widget is:';
 const SEDIMENT_FILE_ID_PATTERN = /sediment:\/\/(file_[a-z0-9_-]+)/gi;
 const IMAGE_MARKDOWN_PATTERN = /!\[([^\]]*)\]\(([^)]+)\)/gi;
@@ -48,10 +51,23 @@ const BACKEND_FILE_RESOURCE_URL_PATTERN =
 const ABSOLUTE_OR_PROTOCOL_URL_PATTERN = /^https?:\/\/|^\/\//i;
 const URL_LIKE_TEXT_PATTERN =
   /(https?:\/\/[^\s"'<>]+|\/\/[^\s"'<>]+|\/backend-api\/[^\s"'<>]+|https?:\\\/\\\/[^\s"'<>]+|\\\/backend-api\\\/[^\s"'<>]+)/gi;
+const CHAT_IMPORT_SLOW_IMAGE_WARNING_MESSAGE =
+  '이미지 자산이 포함된 대화라 불러오기와 렌더링에 시간이 걸릴 수 있습니다.';
+const CHAT_IMPORT_SLOW_LARGE_BODY_WARNING_MESSAGE =
+  '대화 원본 데이터가 큰 편이라 불러오기와 렌더링에 시간이 걸릴 수 있습니다.';
+const CHAT_IMPORT_SLOW_IMAGE_AND_LARGE_BODY_WARNING_MESSAGE =
+  '이미지 자산과 큰 대화 원본 데이터가 함께 있어 불러오기와 렌더링에 시간이 걸릴 수 있습니다.';
 
 type ParsedConversationCandidate = NonNullable<
   ReturnType<typeof parseChatGptConversationBodyText>
 >;
+type ImageAssetResolutionStats = {
+  dataUrlResolvedCount: number;
+  networkResolvedCount: number;
+  requestedCount: number;
+  resolvedCount: number;
+  unresolvedCount: number;
+};
 
 const normalizeTitle = (title: string, fallback: string) => {
   const normalizedTitle = title.replace(FALLBACK_TITLE_SUFFIX_PATTERN, '').trim();
@@ -470,23 +486,49 @@ const resolveDeepResearchIframeBlocks = async (
 const buildConversationImportResult = (
   request: SharedConversationRefreshRequest,
   conversation: SharedConversationImport,
-): SharedConversationImport => ({
-  ...conversation,
-  importOrigin: 'chat-url',
-  refreshRequest: {
-    chatUrl: request.chatUrl,
-    conversationTitle:
-      request.conversationTitle ??
-      normalizeTitle(conversation.title, 'ChatGPT 대화'),
-    mode: 'direct-chat-page',
-    projectUrl: request.projectUrl,
-    shareUrl: request.chatUrl,
-  },
-  title: normalizeTitle(
-    request.conversationTitle || conversation.title,
-    'ChatGPT 대화',
-  ),
-});
+  importWarning?: SharedConversationImportWarning,
+): SharedConversationImport => {
+  const normalizedImportWarning = importWarning ?? conversation.importWarning;
+
+  return {
+    ...conversation,
+    ...(normalizedImportWarning ? { importWarning: normalizedImportWarning } : {}),
+    importOrigin: 'chat-url',
+    refreshRequest: {
+      chatUrl: request.chatUrl,
+      conversationTitle:
+        request.conversationTitle ??
+        normalizeTitle(conversation.title, 'ChatGPT 대화'),
+      mode: 'direct-chat-page',
+      projectUrl: request.projectUrl,
+      shareUrl: request.chatUrl,
+    },
+    title: normalizeTitle(
+      request.conversationTitle || conversation.title,
+      'ChatGPT 대화',
+    ),
+  };
+};
+
+const buildChatImportSlowWarning = (
+  hasImageAssets: boolean,
+  hasLargeBackendBody: boolean,
+): SharedConversationImportWarning | undefined => {
+  if (!hasImageAssets && !hasLargeBackendBody) {
+    return undefined;
+  }
+
+  const message = hasImageAssets && hasLargeBackendBody
+    ? CHAT_IMPORT_SLOW_IMAGE_AND_LARGE_BODY_WARNING_MESSAGE
+    : hasImageAssets
+      ? CHAT_IMPORT_SLOW_IMAGE_WARNING_MESSAGE
+      : CHAT_IMPORT_SLOW_LARGE_BODY_WARNING_MESSAGE;
+
+  return {
+    code: 'chat-import-may-be-slow',
+    message,
+  };
+};
 
 export class DirectChatConversationImportStrategy {
   private async resolveSedimentImageAssets(
@@ -494,13 +536,40 @@ export class DirectChatConversationImportStrategy {
     conversation: ParsedConversationCandidate,
     replayHeaders: Record<string, string>,
     conversationId: string,
+    onAssetResolution?: (stats: ImageAssetResolutionStats) => void,
   ): Promise<ParsedConversationCandidate> {
     const fileIds = extractSedimentFileIds(conversation);
     if (fileIds.length === 0) {
+      onAssetResolution?.({
+        dataUrlResolvedCount: 0,
+        networkResolvedCount: 0,
+        requestedCount: 0,
+        resolvedCount: 0,
+        unresolvedCount: 0,
+      });
       return conversation;
     }
 
+    if (fileIds.length > EAGER_IMAGE_ASSET_RESOLVE_LIMIT) {
+      onAssetResolution?.({
+        dataUrlResolvedCount: 0,
+        networkResolvedCount: 0,
+        requestedCount: fileIds.length,
+        resolvedCount: 0,
+        unresolvedCount: fileIds.length,
+      });
+      console.info(
+        `[gptviewer][direct-chat-import:image-assets-deferred] requested=${fileIds.length} limit=${EAGER_IMAGE_ASSET_RESOLVE_LIMIT}`,
+      );
+      return conversation;
+    }
+
+    const resolveStartedAt = Date.now();
+    console.info(
+      `[gptviewer][direct-chat-import:image-assets-start] fileIds=${fileIds.length} conversationId=${conversationId || '-'}`,
+    );
     const assetUrlByFileId = new Map<string, string>();
+    let processedCount = 0;
     for (const fileId of fileIds) {
       try {
         const assetPayload = await automationView.execute<FetchedConversationAssetPayload>(
@@ -521,6 +590,16 @@ export class DirectChatConversationImportStrategy {
         }
       } catch {
         // Keep unresolved pointers when asset fetch fails.
+      }
+      processedCount += 1;
+      if (
+        processedCount === 1 ||
+        processedCount === fileIds.length ||
+        processedCount % 5 === 0
+      ) {
+        console.info(
+          `[gptviewer][direct-chat-import:image-assets-progress] processed=${processedCount}/${fileIds.length} resolved=${assetUrlByFileId.size} elapsedMs=${Date.now() - resolveStartedAt}`,
+        );
       }
     }
 
@@ -554,6 +633,14 @@ export class DirectChatConversationImportStrategy {
     const dataUrlResolvedCount = [...assetUrlByFileId.values()].filter((assetUrl) =>
       assetUrl.startsWith('data:image/'),
     ).length;
+    const summary: ImageAssetResolutionStats = {
+      dataUrlResolvedCount,
+      networkResolvedCount: networkAssetUrlByFileId.size,
+      requestedCount: fileIds.length,
+      resolvedCount: assetUrlByFileId.size,
+      unresolvedCount: Math.max(0, fileIds.length - assetUrlByFileId.size),
+    };
+    onAssetResolution?.(summary);
     const unresolvedSample =
       unresolvedFileIds.length > 0
         ? unresolvedFileIds.slice(0, 6).join(',')
@@ -579,10 +666,7 @@ export class DirectChatConversationImportStrategy {
     }
 
     console.info(
-      `[gptviewer][direct-chat-import:image-assets] requested=${fileIds.length} resolved=${assetUrlByFileId.size} unresolved=${Math.max(
-        0,
-        fileIds.length - assetUrlByFileId.size,
-      )} dataUrlResolved=${dataUrlResolvedCount} networkResolved=${networkAssetUrlByFileId.size} unresolvedSample=${unresolvedSample}`,
+      `[gptviewer][direct-chat-import:image-assets] requested=${summary.requestedCount} resolved=${summary.resolvedCount} unresolved=${summary.unresolvedCount} dataUrlResolved=${summary.dataUrlResolvedCount} networkResolved=${summary.networkResolvedCount} unresolvedSample=${unresolvedSample} elapsedMs=${Date.now() - resolveStartedAt}`,
     );
 
     return applyResolvedAssetDataUrls(conversation, assetUrlByFileId);
@@ -610,8 +694,17 @@ export class DirectChatConversationImportStrategy {
     automationView: ChatGptAutomationView,
   ): Promise<SharedConversationImport> {
     const conversationId = extractConversationId(request.chatUrl ?? '');
+    let hasImageAssetContent = false;
+    let hasLargeBackendBody = false;
     let unresolvedImageFallbackConversation: ParsedConversationCandidate | null = null;
     let unresolvedImageFallbackSource: 'backend' | 'network' | null = null;
+    const markImageAssetResolution = (stats: ImageAssetResolutionStats) => {
+      if (stats.requestedCount > 0) {
+        hasImageAssetContent = true;
+      }
+    };
+    const resolveImportWarning = () =>
+      buildChatImportSlowWarning(hasImageAssetContent, hasLargeBackendBody);
     const rememberUnresolvedImageFallback = (
       candidateConversation: ParsedConversationCandidate,
       source: 'backend' | 'network',
@@ -633,40 +726,40 @@ export class DirectChatConversationImportStrategy {
         : source;
     };
 
-      let diagnosticsLabel = 'initial';
-      const waitForMonitorAttachment = automationView
-        .enableConversationNetworkMonitoring()
-        .catch((): void => undefined);
+    let diagnosticsLabel = 'initial';
+    const waitForMonitorAttachment = automationView
+      .enableConversationNetworkMonitoring()
+      .catch((): void => undefined);
 
-      await automationView.load(request.chatUrl);
-      const loginSnapshot = await ensureLoginAttentionIfNeeded(automationView);
-      if (loginSnapshot) {
-        throw new SharedConversationRefreshError(
-          'login_required',
-          'ChatGPT 로그인 또는 보안 확인이 필요합니다. 보조 창에서 먼저 마친 뒤 다시 시도해 주세요.',
-          buildLoginRequiredDetail(loginSnapshot),
-        );
-      }
-      await Promise.race([
-        waitForMonitorAttachment,
-        new Promise<void>((resolve) => {
-          setTimeout(resolve, NETWORK_MONITOR_ATTACH_GRACE_MS);
-        }),
-      ]);
+    await automationView.load(request.chatUrl);
+    const loginSnapshot = await ensureLoginAttentionIfNeeded(automationView);
+    if (loginSnapshot) {
+      throw new SharedConversationRefreshError(
+        'login_required',
+        'ChatGPT 로그인 또는 보안 확인이 필요합니다. 보조 창에서 먼저 마친 뒤 다시 시도해 주세요.',
+        buildLoginRequiredDetail(loginSnapshot),
+      );
+    }
+    await Promise.race([
+      waitForMonitorAttachment,
+      new Promise<void>((resolve) => {
+        setTimeout(resolve, NETWORK_MONITOR_ATTACH_GRACE_MS);
+      }),
+    ]);
 
-      const waitForBackendReplayHeaders = async () => {
-        const deadline = Date.now() + BACKEND_HEADERS_CAPTURE_TIMEOUT_MS;
-        while (Date.now() < deadline && !automationView.isClosed()) {
-          const headers = automationView.getLatestBackendApiHeaders()?.headers ?? {};
-          if (Object.keys(headers).length > 0) {
-            return true;
-          }
-          await sleep(BACKEND_HEADERS_CAPTURE_POLL_MS);
+    const waitForBackendReplayHeaders = async () => {
+      const deadline = Date.now() + BACKEND_HEADERS_CAPTURE_TIMEOUT_MS;
+      while (Date.now() < deadline && !automationView.isClosed()) {
+        const headers = automationView.getLatestBackendApiHeaders()?.headers ?? {};
+        if (Object.keys(headers).length > 0) {
+          return true;
         }
-        return false;
-      };
+        await sleep(BACKEND_HEADERS_CAPTURE_POLL_MS);
+      }
+      return false;
+    };
 
-      const tryFetchConversationJson = async (): Promise<SharedConversationImport | null> => {
+    const tryFetchConversationJson = async (): Promise<SharedConversationImport | null> => {
         if (!conversationId) {
           return null;
         }
@@ -699,6 +792,12 @@ export class DirectChatConversationImportStrategy {
 
         if (!fetchedConversationJson.ok) {
           return null;
+        }
+        if (fetchedConversationJson.bodyText.length >= LARGE_BACKEND_BODY_THRESHOLD) {
+          hasLargeBackendBody = true;
+          console.info(
+            `[gptviewer][direct-chat-import:large-body] ${request.chatUrl}\nbody=${fetchedConversationJson.bodyText.length} threshold=${LARGE_BACKEND_BODY_THRESHOLD}`,
+          );
         }
 
         const bodyHasWidgetMarker = fetchedConversationJson.bodyText.includes(
@@ -745,21 +844,43 @@ export class DirectChatConversationImportStrategy {
         }
 
         try {
-          const directConversationCandidate =
-            parseChatGptConversationBodyText(
+          const parseStartedAt = Date.now();
+          let directConversationCandidate: ParsedConversationCandidate | null = null;
+          let directParseMode: 'json' | 'body-text' | 'none' = 'none';
+          try {
+            const parsedPayload = JSON.parse(
               fetchedConversationJson.bodyText,
-              request.chatUrl,
-            ) ??
-            parseChatGptConversationJsonPayload(
-              JSON.parse(fetchedConversationJson.bodyText) as unknown,
+            ) as unknown;
+            directConversationCandidate = parseChatGptConversationJsonPayload(
+              parsedPayload,
               request.chatUrl,
             );
+            if (directConversationCandidate) {
+              directParseMode = 'json';
+            }
+          } catch {
+            // Fall through to body text parser.
+          }
+
+          if (!directConversationCandidate) {
+            directConversationCandidate = parseChatGptConversationBodyText(
+              fetchedConversationJson.bodyText,
+              request.chatUrl,
+            );
+            if (directConversationCandidate) {
+              directParseMode = 'body-text';
+            }
+          }
+          console.info(
+            `[gptviewer][direct-chat-import:backend-parse] ${request.chatUrl}\nmode=${directParseMode} elapsedMs=${Date.now() - parseStartedAt} messages=${directConversationCandidate?.messages.length ?? 0}`,
+          );
           const directConversation = directConversationCandidate
             ? await this.resolveSedimentImageAssets(
                 automationView,
                 directConversationCandidate,
                 capturedBackendHeaders,
                 conversationId,
+                markImageAssetResolution,
               )
             : null;
 
@@ -774,7 +895,7 @@ export class DirectChatConversationImportStrategy {
               return buildConversationImportResult(request, {
                 fetchedAt: new Date().toISOString(),
                 ...widgetConversation,
-              });
+              }, resolveImportWarning());
             }
 
             console.info(
@@ -809,6 +930,17 @@ export class DirectChatConversationImportStrategy {
             console.info(
               `[gptviewer][direct-chat-import:backend-get-unresolved-images] ${request.chatUrl}\nunresolved=${unresolvedSedimentFileIds.length} sample=${unresolvedSample}`,
             );
+            if (
+              unresolvedSedimentFileIds.length > EAGER_IMAGE_ASSET_RESOLVE_LIMIT
+            ) {
+              console.info(
+                `[gptviewer][direct-chat-import:backend-get-deferred-images] ${request.chatUrl}\nunresolved=${unresolvedSedimentFileIds.length} limit=${EAGER_IMAGE_ASSET_RESOLVE_LIMIT}`,
+              );
+              return buildConversationImportResult(request, {
+                fetchedAt: new Date().toISOString(),
+                ...directConversation,
+              }, resolveImportWarning());
+            }
             rememberUnresolvedImageFallback(directConversation, 'backend');
             return null;
           }
@@ -816,7 +948,7 @@ export class DirectChatConversationImportStrategy {
           return buildConversationImportResult(request, {
             fetchedAt: new Date().toISOString(),
             ...directConversation,
-          });
+          }, resolveImportWarning());
         } catch {
           return null;
         }
@@ -870,13 +1002,14 @@ export class DirectChatConversationImportStrategy {
           networkConversation,
           automationView.getLatestBackendApiHeaders()?.headers ?? {},
           conversationId,
+          markImageAssetResolution,
         );
         const unresolvedSedimentFileIds = extractSedimentFileIds(networkConversation);
         if (unresolvedSedimentFileIds.length === 0) {
           return buildConversationImportResult(request, {
             fetchedAt: new Date().toISOString(),
             ...networkConversation,
-          });
+          }, resolveImportWarning());
         }
 
         const unresolvedSample = unresolvedSedimentFileIds
@@ -885,6 +1018,15 @@ export class DirectChatConversationImportStrategy {
         console.info(
           `[gptviewer][direct-chat-import:network-unresolved-images] ${request.chatUrl}\nunresolved=${unresolvedSedimentFileIds.length} sample=${unresolvedSample}`,
         );
+        if (unresolvedSedimentFileIds.length > EAGER_IMAGE_ASSET_RESOLVE_LIMIT) {
+          console.info(
+            `[gptviewer][direct-chat-import:network-deferred-images] ${request.chatUrl}\nunresolved=${unresolvedSedimentFileIds.length} limit=${EAGER_IMAGE_ASSET_RESOLVE_LIMIT}`,
+          );
+          return buildConversationImportResult(request, {
+            fetchedAt: new Date().toISOString(),
+            ...networkConversation,
+          }, resolveImportWarning());
+        }
         rememberUnresolvedImageFallback(networkConversation, 'network');
       }
 
@@ -913,7 +1055,7 @@ export class DirectChatConversationImportStrategy {
           return buildConversationImportResult(request, {
             fetchedAt: new Date().toISOString(),
             ...unresolvedImageFallbackConversation,
-          });
+          }, resolveImportWarning());
         }
 
         throw new SharedConversationRefreshError(
@@ -930,6 +1072,7 @@ export class DirectChatConversationImportStrategy {
         parsedConversation,
         automationView.getLatestBackendApiHeaders()?.headers ?? {},
         conversationId,
+        markImageAssetResolution,
       );
       const unresolvedHtmlSedimentFileIds = extractSedimentFileIds(
         resolvedParsedConversation,
@@ -938,7 +1081,7 @@ export class DirectChatConversationImportStrategy {
         return buildConversationImportResult(request, {
           fetchedAt: new Date().toISOString(),
           ...resolvedParsedConversation,
-        });
+        }, resolveImportWarning());
       }
 
       const chosenConversation = chooseConversationByImageResolution(
@@ -958,6 +1101,6 @@ export class DirectChatConversationImportStrategy {
       return buildConversationImportResult(request, {
         fetchedAt: new Date().toISOString(),
         ...chosenConversation,
-      });
+      }, resolveImportWarning());
   }
 }

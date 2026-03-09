@@ -28,7 +28,7 @@ export type SharedConversationMessage = {
 };
 
 export type SharedConversationImportWarning = {
-  code: 'shared-deep-research-partial';
+  code: 'shared-deep-research-partial' | 'chat-import-may-be-slow';
   message: string;
 };
 

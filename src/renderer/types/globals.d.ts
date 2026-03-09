@@ -30,6 +30,12 @@ interface SourceIconImport {
   finalUrl: string;
 }
 
+interface ChatGptImageAssetImport {
+  cacheKey: string;
+  dataUrl: string;
+  sourceUrl: string;
+}
+
 interface ElectronAPI {
   fetchSourceIcon(
     iconUrl: string,
@@ -50,6 +56,10 @@ interface ElectronAPI {
   importChatGptConversation(
     request: SharedConversationRefreshRequest,
   ): Promise<SharedConversationImport>;
+  resolveChatGptImageAsset(
+    chatUrl: string,
+    assetUrl: string,
+  ): Promise<ChatGptImageAssetImport | null>;
   fetchSourcePreview(url: string): Promise<SourcePreviewImport>;
   getGoogleDriveConfig(): Promise<GoogleDriveConfigSummary>;
   getGoogleDriveSyncStatus(): Promise<GoogleDriveSyncStatus>;

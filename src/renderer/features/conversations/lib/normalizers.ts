@@ -168,7 +168,8 @@ export const normalizeImportedConversation = (
 
     const warningRecord = warningValue as Record<string, unknown>;
     const code =
-      warningRecord.code === 'shared-deep-research-partial'
+      (warningRecord.code === 'shared-deep-research-partial' ||
+        warningRecord.code === 'chat-import-may-be-slow')
         ? warningRecord.code
         : null;
     const message =

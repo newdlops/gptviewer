@@ -1,6 +1,7 @@
 import {
   AnchorHTMLAttributes,
   HTMLAttributes,
+  ImgHTMLAttributes,
   useCallback,
   memo,
   ReactNode,
@@ -30,6 +31,7 @@ import {
 import { InlineAssistantLink } from './InlineAssistantLink';
 import { LazySourceFavicon } from './SourceFavicon';
 import { MarkdownCodeBlock } from './MarkdownCodeBlock';
+import { MarkdownImageViewport } from './MarkdownImageViewport';
 import { buildMessageSections } from '../lib/messageSections';
 
 const MESSAGE_LIST_GAP = 14;
@@ -43,6 +45,8 @@ const DIAGRAM_KEEPALIVE_MULTIPLIER_BELOW = 3;
 const CODE_BLOCK_PATTERN = /```[\w+-]*\n|```/;
 const RENDERABLE_DIAGRAM_PATTERN =
   /```(?:mermaid|svg|xml|html|image\/svg\+xml)\b|<svg[\s>]/i;
+const RENDERABLE_IMAGE_MARKDOWN_PATTERN =
+  /!\[[^\]]*\]\((?:data:image\/|https?:\/\/|sediment:\/\/file_[a-z0-9_-]+)/i;
 const DATA_IMAGE_URL_PATTERN = /^data:image\/[a-z0-9.+-]+;base64,/i;
 const SEDIMENT_URL_PATTERN = /^sediment:\/\/file_[a-z0-9_-]+/i;
 const SAFE_LOCAL_URL_PATTERN = /^(attachment|sandbox|file):/i;
@@ -95,6 +99,7 @@ type MessageLayout = {
 };
 
 type VirtualizedMessageBubbleProps = {
+  assetResolveChatUrl: string;
   isSourceDrawerOpen: boolean;
   message: Message;
   onHeightChange: (messageId: string, height: number) => void;
@@ -182,6 +187,7 @@ const findEndIndex = (layouts: MessageLayout[], targetOffset: number): number =>
 };
 
 function VirtualizedMessageBubbleComponent({
+  assetResolveChatUrl,
   isSourceDrawerOpen,
   message,
   onHeightChange,
@@ -335,6 +341,38 @@ function VirtualizedMessageBubbleComponent({
         {children}
       </MarkdownCodeBlock>
     ),
+    img: ({
+      alt,
+      node,
+      src,
+    }: ImgHTMLAttributes<HTMLImageElement> & {
+      node?: {
+        position?: {
+          start?: {
+            offset?: number;
+          };
+        };
+      };
+    }) => {
+      const imageUrl = typeof src === 'string' ? src.trim() : '';
+      if (!imageUrl) {
+        return null;
+      }
+
+      const offsetKey =
+        typeof node?.position?.start?.offset === 'number'
+          ? node.position.start.offset
+          : imageUrl;
+
+      return (
+        <MarkdownImageViewport
+          alt={alt}
+          chatUrl={assetResolveChatUrl}
+          persistenceKey={`${message.id}:img:${offsetKey}`}
+          src={imageUrl}
+        />
+      );
+    },
     pre: ({
       children,
     }: HTMLAttributes<HTMLPreElement> & {
@@ -349,6 +387,7 @@ function VirtualizedMessageBubbleComponent({
       onSourcePreviewNeeded,
       sourcePreviewCache,
       sourcePreviewLoading,
+      assetResolveChatUrl,
       themeMode,
       sharedCacheScope,
     ],
@@ -413,6 +452,7 @@ const VirtualizedMessageBubble = memo(
   (previousProps, nextProps) => {
     if (
       previousProps.message !== nextProps.message ||
+      previousProps.assetResolveChatUrl !== nextProps.assetResolveChatUrl ||
       previousProps.top !== nextProps.top ||
       previousProps.renderNonce !== nextProps.renderNonce ||
       previousProps.themeMode !== nextProps.themeMode ||
@@ -622,7 +662,8 @@ export function MessageList({
 
     const diagramLayouts = allLayouts.filter(
       (layout) =>
-        RENDERABLE_DIAGRAM_PATTERN.test(layout.message.text) &&
+        (RENDERABLE_DIAGRAM_PATTERN.test(layout.message.text) ||
+          RENDERABLE_IMAGE_MARKDOWN_PATTERN.test(layout.message.text)) &&
         layout.end >= keepAliveStart &&
         layout.start <= keepAliveEnd,
     );
@@ -936,6 +977,11 @@ export function MessageList({
         >
           {renderedLayouts.map(({ message, start }) => (
             <VirtualizedMessageBubble
+              assetResolveChatUrl={
+                activeConversation.refreshRequest?.chatUrl ||
+                activeConversation.sourceUrl ||
+                ''
+              }
               key={message.id}
               isSourceDrawerOpen={sourceDrawerMessageId === message.id}
               message={message}
