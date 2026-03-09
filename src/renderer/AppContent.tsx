@@ -16,7 +16,6 @@ import { ProjectConversationImportModal } from './features/app/components/modals
 import { SharedConversationImportModal } from './features/app/components/modals/SharedConversationImportModal';
 import { SharedConversationRefreshConfigModal } from './features/app/components/modals/SharedConversationRefreshConfigModal';
 import { WorkspaceModals } from './features/app/components/modals/WorkspaceModals';
-import { MonacoTest } from './features/app/components/MonacoTest';
 
 function AppContent() {
   const [clearLocalWorkspaceState, setClearLocalWorkspaceState] = useState<ClearLocalWorkspaceState | null>(null);
@@ -292,8 +291,6 @@ function AppContent() {
         onSyncNow={googleDriveSync.handleGoogleDriveSyncNow}
         syncConflictState={googleDriveSync.syncConflictState}
       />
-
-      <MonacoTest />
     </main>
   );
 }

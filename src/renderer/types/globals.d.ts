@@ -67,6 +67,8 @@ interface ElectronAPI {
   runJavaCode(
     code: string,
   ): Promise<{ error?: string; output?: string; success: boolean }>;
+  startJavaServer(code: string): Promise<{ success: boolean; port: number; projectDir: string; filePath: string; error?: string }>;
+  stopJavaServer(): Promise<{ success: boolean }>;
   fetchSourcePreview(url: string): Promise<SourcePreviewImport>;
   getGoogleDriveConfig(): Promise<GoogleDriveConfigSummary>;
   getGoogleDriveSyncStatus(): Promise<GoogleDriveSyncStatus>;

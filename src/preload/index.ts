@@ -47,6 +47,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('image:save', dataUrl, defaultName),
   runJavaCode: (code: string) =>
     ipcRenderer.invoke('java:run', code),
+  startJavaServer: (code: string) => ipcRenderer.invoke('java:lsp-start', code),
+  stopJavaServer: () => ipcRenderer.invoke('java:lsp-stop'),
   getGoogleDriveConfig: () => ipcRenderer.invoke('google-drive-sync:get-config'),
   getGoogleDriveSyncStatus: () =>
     ipcRenderer.invoke('google-drive-sync:get-status'),

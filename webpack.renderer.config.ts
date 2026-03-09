@@ -2,19 +2,43 @@ import type { Configuration } from 'webpack';
 
 import { rules } from './webpack.rules';
 import { plugins } from './webpack.plugins';
+import CopyPlugin from 'copy-webpack-plugin';
+import path from 'path';
 
 rules.push({
   test: /\.css$/,
   use: [{ loader: 'style-loader' }, { loader: 'css-loader' }],
 });
 
+// Monaco Editor 폰트(TTF 등) 로딩을 위한 Webpack 5 Asset Module 설정 추가
+rules.push({
+  test: /\.ttf$/,
+  type: 'asset/resource',
+});
+
 export const rendererConfig: Configuration = {
   module: {
     rules,
   },
-  plugins,
+  plugins: [
+    ...plugins,
+    new CopyPlugin({
+      patterns: [
+        {
+          from: path.resolve(__dirname, 'node_modules/monaco-editor/min/vs'),
+          to: 'vs', // 출력 폴더 내 'vs' 폴더로 복사
+        },
+      ],
+    }),
+  ],
   resolve: {
     extensions: ['.js', '.ts', '.jsx', '.tsx', '.css'],
+    alias: {
+      path: require.resolve('path-browserify')
+    },
+    fallback: {
+      path: require.resolve('path-browserify')
+    }
   },
   // 웹팩 개발 서버의 에러 오버레이가 화면을 가리지 않도록 설정
   devServer: {

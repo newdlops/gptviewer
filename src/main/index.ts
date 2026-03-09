@@ -67,6 +67,7 @@ import {
   CHATGPT_LOGIN_TEXT_MARKERS,
   CHATGPT_LOGIN_URL_PATTERNS,
 } from './services/sharedConversationRefresh/chatgpt/ChatGptDomSelectors';
+import { javaLspService } from './services/javaLspService';
 
 declare const MAIN_WINDOW_WEBPACK_ENTRY: string;
 declare const MAIN_WINDOW_PRELOAD_WEBPACK_ENTRY: string;
@@ -2334,6 +2335,20 @@ ipcMain.handle(
   },
 );
 
+ipcMain.handle('java:lsp-start', async (_event, code: string) => {
+  const serverRes = await javaLspService.startServer();
+  if (serverRes.success) {
+    const { projectDir, filePath } = await javaLspService.prepareProject(code);
+    return { ...serverRes, projectDir, filePath };
+  }
+  return serverRes;
+});
+
+ipcMain.handle('java:lsp-stop', async () => {
+  return javaLspService.stopServer();
+});
+
+
 ipcMain.handle(
   'chatgpt-automation:cleanup-background-pool',
   async () => {
@@ -2376,6 +2391,7 @@ ipcMain.handle(
   },
 );
 
+
 ipcMain.handle(
   'chatgpt-conversation:import',
   async (_event, request: SharedConversationRefreshRequest) => {
@@ -2406,6 +2422,7 @@ ipcMain.handle(
     }
   },
 );
+
 
 ipcMain.handle(
   'chatgpt-image:resolve',
@@ -2560,6 +2577,7 @@ ipcMain.handle(
   },
 );
 
+
 ipcMain.handle('source-preview:fetch', async (_event, rawUrl: string) => {
   const normalizedUrl = rawUrl.trim();
 
@@ -2665,6 +2683,7 @@ ipcMain.handle(
     }
   },
 );
+
 
 registerGoogleDriveSyncIpc();
 

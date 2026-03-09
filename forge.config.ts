@@ -14,6 +14,9 @@ import { rendererConfig } from './webpack.renderer.config';
 const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
+    extraResource: [
+      './resources'
+    ],
   },
   rebuildConfig: {},
   makers: [
@@ -26,7 +29,7 @@ const config: ForgeConfig = {
     new AutoUnpackNativesPlugin({}),
     new WebpackPlugin({
       mainConfig,
-      devContentSecurityPolicy: "default-src 'self' 'unsafe-inline' data:; script-src 'self' 'unsafe-eval' 'unsafe-inline' data: blob: https://unpkg.com https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://unpkg.com https://cdn.jsdelivr.net; font-src 'self' data: https://unpkg.com https://cdn.jsdelivr.net; img-src 'self' data: blob: https:; connect-src 'self' https:;",
+      devContentSecurityPolicy: "default-src 'self' 'unsafe-inline' data:; script-src 'self' 'unsafe-eval' 'unsafe-inline' data: blob: https://unpkg.com https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://unpkg.com https://cdn.jsdelivr.net; font-src 'self' data: https://unpkg.com https://cdn.jsdelivr.net; img-src 'self' data: blob: https:; connect-src 'self' https: ws://127.0.0.1:* ws://localhost:* http://127.0.0.1:* http://localhost:*;",
       renderer: {
         config: rendererConfig,
         entryPoints: [
