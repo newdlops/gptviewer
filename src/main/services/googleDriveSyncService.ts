@@ -620,7 +620,7 @@ export class GoogleDriveSyncService {
         authorization: `Bearer ${tokens.accessToken}`,
         ...(init.headers ?? {}),
       },
-    });
+    } as RequestInit); // 명시적 캐스팅으로 BodyInit 호환성 해결
 
     if (response.status === 401 && retry && tokens.refreshToken) {
       const config = this.loadOAuthConfig();
@@ -707,11 +707,11 @@ export class GoogleDriveSyncService {
     metadata: Record<string, unknown>,
     snapshot: WorkspaceSnapshot,
   ): {
-    body: string;
+    body: Buffer;
     boundary: string;
   } {
     const boundary = `gptviewer-${randomBytes(12).toString('hex')}`;
-    const body = [
+    const head = [
       `--${boundary}`,
       'Content-Type: application/json; charset=UTF-8',
       '',
@@ -719,10 +719,15 @@ export class GoogleDriveSyncService {
       `--${boundary}`,
       'Content-Type: application/json; charset=UTF-8',
       '',
-      JSON.stringify(snapshot),
-      `--${boundary}--`,
       '',
     ].join('\r\n');
+    const tail = `\r\n--${boundary}--\r\n`;
+
+    const body = Buffer.concat([
+      Buffer.from(head, 'utf8'),
+      Buffer.from(JSON.stringify(snapshot), 'utf8'),
+      Buffer.from(tail, 'utf8'),
+    ]);
 
     return {
       body,
@@ -990,9 +995,10 @@ export class GoogleDriveSyncService {
       await this.driveFetch<GoogleDriveFileMetadata>(
         `${GOOGLE_DRIVE_UPLOAD_ENDPOINT}/${remoteWorkspaceFile.id}?uploadType=multipart&fields=id,name,modifiedTime`,
         {
-          body,
+          body: body as unknown as BodyInit,
           headers: {
             'content-type': `multipart/related; boundary=${boundary}`,
+            'content-length': String(body.length),
           },
           method: 'PATCH',
         },
@@ -1006,9 +1012,10 @@ export class GoogleDriveSyncService {
       await this.driveFetch<GoogleDriveFileMetadata>(
         `${GOOGLE_DRIVE_UPLOAD_ENDPOINT}?uploadType=multipart&fields=id,name,modifiedTime`,
         {
-          body,
+          body: body as unknown as BodyInit,
           headers: {
             'content-type': `multipart/related; boundary=${boundary}`,
+            'content-length': String(body.length),
           },
           method: 'POST',
         },

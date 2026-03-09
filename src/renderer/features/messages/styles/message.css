@@ -650,6 +650,8 @@
   border: 1px solid var(--border-soft);
   border-radius: 18px;
   background: color-mix(in srgb, var(--panel-bg-soft) 92%, transparent);
+  content-visibility: auto; /* 화면 밖 렌더링 최적화 */
+  contain-intrinsic-size: 1px 200px; /* 초기 높이 추정치 제공 */
 }
 
 .code-block__header {
