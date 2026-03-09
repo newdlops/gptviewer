@@ -1,6 +1,7 @@
 import { useCallback, useState } from 'react';
 import { clearAllCustomMermaidSourceCache } from '../../messages/lib/customMermaidSourceCache';
-import { clearAllMermaidCodeBlockState } from '../../messages/lib/markdownCodeBlockState';
+import { clearAllCustomJavaSourceCache } from '../../messages/lib/customJavaSourceCache';
+import { clearAllCodeBlockState } from '../../messages/lib/markdownCodeBlockState';
 
 function buildResetSuccessMessage() {
   const resetTime = new Date();
@@ -21,7 +22,7 @@ function buildMermaidResetSuccessMessage() {
     month: '2-digit',
     day: '2-digit',
   });
-  return `Mermaid 렌더/사용자 수정 캐시를 초기화했습니다. (${formattedTime})`;
+  return `코드 블록(Mermaid/Java) 렌더 및 수정 캐시를 초기화했습니다. (${formattedTime})`;
 }
 
 function buildChatGptResetErrorMessage(error: unknown) {
@@ -90,8 +91,9 @@ export function useAppSettingsActions() {
     setMermaidCacheNotice('');
 
     try {
-      clearAllMermaidCodeBlockState();
+      clearAllCodeBlockState();
       clearAllCustomMermaidSourceCache();
+      clearAllCustomJavaSourceCache();
       setMermaidCacheNotice(buildMermaidResetSuccessMessage());
     } catch (error) {
       setMermaidCacheError(

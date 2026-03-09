@@ -36,8 +36,8 @@ const MIN_SCALE_FLOOR = 0.05;
 const MAX_READABLE_SCALE = 12;
 const READABLE_FIT_EPSILON = 0.05;
 const ZOOM_STEP = 1.2;
-const MAX_READABLE_SHELL_WIDTH = 1200; // 6400 -> 1200으로 대폭 축소
-const MAX_READABLE_SHELL_HEIGHT = 800; // 4800 -> 800으로 대폭 축소
+const MAX_READABLE_SHELL_WIDTH = 6400; // 원래 값으로 복구
+const MAX_READABLE_SHELL_HEIGHT = 4800; // 원래 값으로 복구
 const MERMAID_TEXT_CANDIDATE_SELECTORS = [
   'text',
   'foreignObject div',
@@ -83,17 +83,8 @@ const clamp = (value: number, min: number, max: number): number =>
   Math.min(max, Math.max(min, value));
 
 const getAvailableShellWidth = (shellElement: HTMLDivElement) => {
-  const parent = shellElement.parentElement;
-  if (!parent) return 1;
-
-  // 부모의 실제 가용 너비(패딩 제외)를 계산
-  const styles = window.getComputedStyle(parent);
-  const paddingLeft = parseFloat(styles.paddingLeft || '0');
-  const paddingRight = parseFloat(styles.paddingRight || '0');
-  const parentInnerWidth = parent.clientWidth - paddingLeft - paddingRight;
-
-  // 가용 너비와 시스템 최대치 중 작은 값 선택
-  return Math.max(Math.min(parentInnerWidth, MAX_READABLE_SHELL_WIDTH), 1);
+  const parentWidth = shellElement.parentElement?.clientWidth ?? shellElement.clientWidth;
+  return Math.max(Math.min(parentWidth, MAX_READABLE_SHELL_WIDTH), 1);
 };
 
 const clampShellWidthToBounds = (shellElement: HTMLDivElement) => {
@@ -493,15 +484,18 @@ export function useZoomableDiagramViewport(
     metrics: DiagramMetrics,
     targetScale: number,
   ) => {
+    clampShellWidthToBounds(shellElement);
+    const currentWidth = shellElement.clientWidth;
+    const currentHeight = shellElement.clientHeight;
     const maxWidth = getAvailableShellWidth(shellElement);
-    const maxHeight = Math.min(MAX_READABLE_SHELL_HEIGHT, window.innerHeight * 0.7);
-    
-    // 셸이 부모 가용 너비를 넘지 않도록 강력히 제한 (핸들 가시성 및 UI 유지)
+    const maxHeight = Math.max(
+      currentHeight,
+      Math.min(MAX_READABLE_SHELL_HEIGHT, Math.floor(window.innerHeight * 6)),
+    );
     const requiredWidth = metrics.contentWidth * targetScale + FIT_PADDING * 2;
     const requiredHeight = metrics.contentHeight * targetScale + FIT_PADDING * 2;
-    
-    const nextWidth = Math.min(requiredWidth, maxWidth);
-    const nextHeight = Math.min(requiredHeight, maxHeight);
+    const nextWidth = clamp(requiredWidth, Math.min(currentWidth, maxWidth), maxWidth);
+    const nextHeight = clamp(requiredHeight, currentHeight, maxHeight);
 
     shellElement.style.width = `${nextWidth}px`;
     shellElement.style.height = `${nextHeight}px`;
@@ -612,17 +606,12 @@ export function useZoomableDiagramViewport(
       initialMetrics.maxScale,
     );
 
-    // 이미지의 경우 너무 크게 확대되지 않도록 제한 (최대 1.2배)
-    const safeTargetScale = initialMetrics.readableMinScale === 1.0 
-      ? Math.min(targetScale, 1.2)
-      : targetScale;
-
-    if (safeTargetScale <= initialMetrics.fitScale + READABLE_FIT_EPSILON) {
+    if (targetScale <= initialMetrics.fitScale + READABLE_FIT_EPSILON) {
       syncViewport('fit');
       return;
     }
 
-    resizeShellToReadableScale(shellElement, initialMetrics, safeTargetScale);
+    resizeShellToReadableScale(shellElement, initialMetrics, targetScale);
 
     window.requestAnimationFrame(() => {
       const refreshedViewport = viewportRef.current;

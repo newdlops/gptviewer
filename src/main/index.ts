@@ -7,8 +7,13 @@ import {
   shell,
   type IpcMainInvokeEvent,
 } from 'electron';
-import { writeFile } from 'node:fs/promises'; // 추가
-import { join } from 'node:path'; // 추가 (이미 있을 수 있음 확인)
+import { writeFile, mkdtemp, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { exec } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const execAsync = promisify(exec);
 import type {
   ProjectConversationCollectionResult,
   ProjectConversationImportProgress,
@@ -2491,6 +2496,67 @@ ipcMain.handle(
     }
 
     return { success: false };
+  },
+);
+
+ipcMain.handle(
+  'java:run',
+  async (_event, code: string) => {
+    let tempDir = '';
+    try {
+      // 1. 임시 디렉토리 생성
+      tempDir = await mkdtemp(join(tmpdir(), 'gptviewer-java-'));
+      
+      // 2. 클래스 이름 추출 (간단한 정규식 사용)
+      const classMatch = code.match(/public\s+class\s+([a-zA-Z0-9_$]+)/);
+      const className = classMatch ? classMatch[1] : 'Main';
+      const fileName = `${className}.java`;
+      const filePath = join(tempDir, fileName);
+
+      // 3. 파일 쓰기
+      await writeFile(filePath, code, 'utf8');
+
+      // 4. 컴파일 (javac)
+      try {
+        await execAsync(`javac "${fileName}"`, { cwd: tempDir, timeout: 10000 });
+      } catch (compileError: any) {
+        return {
+          error: compileError.stderr || compileError.message,
+          output: compileError.stdout,
+          success: false,
+        };
+      }
+
+      // 5. 실행 (java)
+      try {
+        const { stdout, stderr } = await execAsync(`java "${className}"`, { 
+          cwd: tempDir, 
+          timeout: 10000,
+          maxBuffer: 1024 * 1024 // 1MB 제한
+        });
+        return {
+          error: stderr,
+          output: stdout,
+          success: true,
+        };
+      } catch (runError: any) {
+        return {
+          error: runError.stderr || runError.message,
+          output: runError.stdout,
+          success: false,
+        };
+      }
+    } catch (error: any) {
+      return {
+        error: error.message,
+        success: false,
+      };
+    } finally {
+      // 6. 정리
+      if (tempDir) {
+        await rm(tempDir, { recursive: true, force: true }).catch((): void => undefined);
+      }
+    }
   },
 );
 

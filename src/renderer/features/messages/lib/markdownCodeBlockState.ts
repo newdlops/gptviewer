@@ -14,12 +14,14 @@ export const transformedMermaidLabelStore = new Map<string, string>();
 export const autoAdjustedViewportStore = new Map<string, string>();
 export const mermaidRenderIssueStore = new Map<string, MermaidRenderIssue>();
 export const customMermaidSourceStore = new Map<string, string>();
+export const customJavaSourceStore = new Map<string, string>();
 
-export const clearAllMermaidCodeBlockState = () => {
+export const clearAllCodeBlockState = () => {
   renderedMarkupStore.clear();
   transformedMermaidSourceStore.clear();
   transformedMermaidLabelStore.clear();
   autoAdjustedViewportStore.clear();
   mermaidRenderIssueStore.clear();
   customMermaidSourceStore.clear();
+  customJavaSourceStore.clear();
 };

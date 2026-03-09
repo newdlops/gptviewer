@@ -840,13 +840,16 @@
 
 .code-block__source-editor-shell {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: auto 1fr; /* 너비 확보를 위해 1fr 명시 */
+  width: 100%;
 }
 
 .code-block__source-editor-gutter {
   overflow: hidden;
   border-right: 1px solid var(--border-soft);
   background: color-mix(in srgb, var(--panel-bg-strong) 82%, transparent);
+  pointer-events: none;
+  will-change: scroll-position;
 }
 
 .code-block__source-editor-gutter-content {
@@ -876,6 +879,14 @@
   inset: 0;
   overflow: hidden;
   pointer-events: none;
+  will-change: scroll-position;
+}
+
+/* 하이라이트 레이어 및 일반 코드 블록 내부의 모든 요소 배경색 투명화 */
+.code-block__source-editor-highlight *,
+.code-block__source-content * {
+  background: transparent !important;
+  background-color: transparent !important;
 }
 
 .code-block__source-editor-highlight-content {
@@ -913,6 +924,7 @@
   min-width: 0;
   border-left: 1px solid var(--border-soft);
   background: color-mix(in srgb, var(--panel-bg-strong) 32%, transparent);
+  justify-self: stretch; /* 그리드 영역을 꽉 채움 */
 }
 
 .code-block__source-preview {

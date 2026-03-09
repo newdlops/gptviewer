@@ -1,12 +1,12 @@
-const CUSTOM_MERMAID_SOURCE_CACHE_STORAGE_KEY =
-  'gptviewer.custom-mermaid-source-cache.v1';
+const CUSTOM_JAVA_SOURCE_CACHE_STORAGE_KEY =
+  'gptviewer.custom-java-source-cache.v1';
 
-const customMermaidSourceCacheStore = new Map<string, string>();
+const customJavaSourceCacheStore = new Map<string, string>();
 
-let isCustomMermaidSourceCacheLoaded = false;
+let isCustomJavaSourceCacheLoaded = false;
 
 const normalizeCachedSource = (value: string) =>
-  value.replace(/\r\n/g, '\n').trim(); // Mermaid를 위해 trim() 복구
+  value.replace(/\r\n/g, '\n'); // trim() 제거
 
 const hashString = (value: string) => {
   let hash = 2166136261;
@@ -19,16 +19,16 @@ const hashString = (value: string) => {
   return (hash >>> 0).toString(36);
 };
 
-const ensureCustomMermaidSourceCacheLoaded = () => {
-  if (isCustomMermaidSourceCacheLoaded || typeof window === 'undefined') {
+const ensureCustomJavaSourceCacheLoaded = () => {
+  if (isCustomJavaSourceCacheLoaded || typeof window === 'undefined') {
     return;
   }
 
-  isCustomMermaidSourceCacheLoaded = true;
+  isCustomJavaSourceCacheLoaded = true;
 
   try {
     const rawValue = window.localStorage.getItem(
-      CUSTOM_MERMAID_SOURCE_CACHE_STORAGE_KEY,
+      CUSTOM_JAVA_SOURCE_CACHE_STORAGE_KEY,
     );
 
     if (!rawValue) {
@@ -45,7 +45,7 @@ const ensureCustomMermaidSourceCacheLoaded = () => {
       const normalizedValue = normalizeCachedSource(value);
 
       if (normalizedValue) {
-        customMermaidSourceCacheStore.set(key, normalizedValue);
+        customJavaSourceCacheStore.set(key, normalizedValue);
       }
     });
   } catch {
@@ -53,22 +53,22 @@ const ensureCustomMermaidSourceCacheLoaded = () => {
   }
 };
 
-const persistCustomMermaidSourceCache = () => {
+const persistCustomJavaSourceCache = () => {
   if (typeof window === 'undefined') {
     return;
   }
 
   try {
     window.localStorage.setItem(
-      CUSTOM_MERMAID_SOURCE_CACHE_STORAGE_KEY,
-      JSON.stringify(Object.fromEntries(customMermaidSourceCacheStore.entries())),
+      CUSTOM_JAVA_SOURCE_CACHE_STORAGE_KEY,
+      JSON.stringify(Object.fromEntries(customJavaSourceCacheStore.entries())),
     );
   } catch {
     // Ignore localStorage failures and continue with the in-memory store only.
   }
 };
 
-export const buildCustomMermaidSourceCacheKey = (
+export const buildCustomJavaSourceCacheKey = (
   scope: string | undefined,
   source: string,
 ) => {
@@ -82,16 +82,16 @@ export const buildCustomMermaidSourceCacheKey = (
   return `${normalizedScope}:${hashString(normalizedSource)}`;
 };
 
-export const loadCustomMermaidSourceFromCache = (cacheKey: string) => {
+export const loadCustomJavaSourceFromCache = (cacheKey: string) => {
   if (!cacheKey) {
     return '';
   }
 
-  ensureCustomMermaidSourceCacheLoaded();
-  return customMermaidSourceCacheStore.get(cacheKey) ?? '';
+  ensureCustomJavaSourceCacheLoaded();
+  return customJavaSourceCacheStore.get(cacheKey) ?? '';
 };
 
-export const saveCustomMermaidSourceToCache = (
+export const saveCustomJavaSourceToCache = (
   cacheKey: string,
   source: string,
 ) => {
@@ -101,31 +101,31 @@ export const saveCustomMermaidSourceToCache = (
     return;
   }
 
-  ensureCustomMermaidSourceCacheLoaded();
-  customMermaidSourceCacheStore.set(cacheKey, normalizedSource);
-  persistCustomMermaidSourceCache();
+  ensureCustomJavaSourceCacheLoaded();
+  customJavaSourceCacheStore.set(cacheKey, normalizedSource);
+  persistCustomJavaSourceCache();
 };
 
-export const clearCustomMermaidSourceFromCache = (cacheKey: string) => {
+export const clearCustomJavaSourceFromCache = (cacheKey: string) => {
   if (!cacheKey) {
     return;
   }
 
-  ensureCustomMermaidSourceCacheLoaded();
-  customMermaidSourceCacheStore.delete(cacheKey);
-  persistCustomMermaidSourceCache();
+  ensureCustomJavaSourceCacheLoaded();
+  customJavaSourceCacheStore.delete(cacheKey);
+  persistCustomJavaSourceCache();
 };
 
-export const clearAllCustomMermaidSourceCache = () => {
-  ensureCustomMermaidSourceCacheLoaded();
-  customMermaidSourceCacheStore.clear();
+export const clearAllCustomJavaSourceCache = () => {
+  ensureCustomJavaSourceCacheLoaded();
+  customJavaSourceCacheStore.clear();
 
   if (typeof window === 'undefined') {
     return;
   }
 
   try {
-    window.localStorage.removeItem(CUSTOM_MERMAID_SOURCE_CACHE_STORAGE_KEY);
+    window.localStorage.removeItem(CUSTOM_JAVA_SOURCE_CACHE_STORAGE_KEY);
   } catch {
     // Ignore localStorage failures and continue with the in-memory store only.
   }
