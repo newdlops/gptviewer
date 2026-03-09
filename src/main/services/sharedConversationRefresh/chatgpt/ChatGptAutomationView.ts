@@ -230,6 +230,16 @@ export class ChatGptAutomationView {
     ChatGptAutomationView.allViews.add(this);
   }
 
+  static async destroyAll() {
+    const activeViews = [...ChatGptAutomationView.allViews];
+    ChatGptAutomationView.backgroundIdleViews.length = 0;
+    await Promise.all(
+      activeViews.map(async (view) => {
+        await view.destroyImmediately();
+      }),
+    );
+  }
+
   get webContents(): WebContents { return this.view.webContents; }
 
   private readonly syncViewBounds = () => {
@@ -327,16 +337,20 @@ export class ChatGptAutomationView {
   }
 
   async enableConversationNetworkMonitoring() {
+    console.info('[gptviewer][automation-view] revealing view for monitoring...');
     this.reveal();
 
     if (!this.conversationNetworkMonitor) {
+      console.info('[gptviewer][automation-view] creating network monitor...');
       this.conversationNetworkMonitor = new ChatGptConversationNetworkMonitor(
         this.view.webContents,
       );
     }
 
+    console.info('[gptviewer][automation-view] waiting for monitor ready...');
     await this.conversationNetworkMonitor.ready();
     this.conversationNetworkMonitor.clear();
+    console.info('[gptviewer][automation-view] network monitoring enabled.');
   }
 
   async execute<T>(script: string): Promise<T> {

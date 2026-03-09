@@ -176,12 +176,14 @@ export const buildFetchConversationAssetDataUrlScript = (
   fileId: string,
   replayHeaders: ReplayRequestHeaders = {},
   conversationId = '',
+  referrerUrl = '',
 ) => `
 (async () => {
   const inputFileId = ${JSON.stringify(fileId)};
   const replayHeaders = ${JSON.stringify(replayHeaders)};
   const conversationId = ${JSON.stringify(conversationId)};
-  const FETCH_TIMEOUT_MS = 8_000;
+  const requestReferrer = ${JSON.stringify(referrerUrl)};
+  const FETCH_TIMEOUT_MS = 30_000;
   const normalizedFileId = String(inputFileId)
     .trim()
     .replace(/^sediment:\\/\\//i, '');
@@ -422,7 +424,7 @@ export const buildFetchConversationAssetDataUrlScript = (
         method: 'GET',
         mode: 'cors',
         redirect: 'follow',
-        referrer: location.href,
+        referrer: requestReferrer || location.href,
       });
 
       if (!response.ok) {
@@ -487,6 +489,19 @@ export const buildFetchConversationAssetDataUrlScript = (
     ]),
   ].filter((candidateId) => /^file[-_][a-z0-9_-]+$/i.test(candidateId));
   const encodedConversationId = encodeURIComponent(conversationId || '');
+
+  // estuary/content 패턴 (최신 ChatGPT 이미지 서빙 방식)
+  const estuaryCandidatePaths = compactFileIdCandidates.flatMap((candidateId) => {
+    // 원본 assetUrl에서 쿼리 파라미터가 있었다면 이를 최대한 활용해야 함
+    // 여기서는 기본 구조를 먼저 시도
+    const baseEstuaryPath = '/backend-api/estuary/content?id=' + candidateId;
+    if (!encodedConversationId) return [baseEstuaryPath];
+    return [
+      baseEstuaryPath + '&cid=' + encodedConversationId,
+      baseEstuaryPath
+    ];
+  });
+
   const primaryCandidatePaths = compactFileIdCandidates.flatMap((candidateId) => {
     const downloadPath = '/backend-api/files/download/' + candidateId;
     const resourcePath = '/backend-api/files/' + candidateId + '/download';
@@ -508,8 +523,8 @@ export const buildFetchConversationAssetDataUrlScript = (
     '/backend-api/files/' + candidateId + '/content',
   ]);
   const candidatePaths = [
-    ...new Set([...primaryCandidatePaths, ...fallbackCandidatePaths]),
-  ].slice(0, 14);
+    ...new Set([...estuaryCandidatePaths, ...primaryCandidatePaths, ...fallbackCandidatePaths]),
+  ].slice(0, 20);
 
   for (const candidatePath of candidatePaths) {
     try {
@@ -520,7 +535,7 @@ export const buildFetchConversationAssetDataUrlScript = (
         method: 'GET',
         mode: 'same-origin',
         redirect: 'manual',
-        referrer: location.href,
+        referrer: requestReferrer || location.href,
       });
 
       const contentType = (response.headers.get('content-type') || '').toLowerCase();
@@ -686,11 +701,13 @@ export const buildFetchConversationAssetDataUrlScript = (
 export const buildFetchImageDataUrlFromUrlScript = (
   assetUrl: string,
   replayHeaders: ReplayRequestHeaders = {},
+  referrerUrl = '',
 ) => `
 (async () => {
   const inputUrl = ${JSON.stringify(assetUrl)};
   const replayHeaders = ${JSON.stringify(replayHeaders)};
-  const FETCH_TIMEOUT_MS = 8_000;
+  const requestReferrer = ${JSON.stringify(referrerUrl)};
+  const FETCH_TIMEOUT_MS = 30_000;
   const normalizeUrl = (value) => String(value || '').trim().split('\\\\/').join('/');
   const fetchWithTimeout = async (url, init) => {
     const controller = new AbortController();
@@ -830,7 +847,7 @@ export const buildFetchImageDataUrlFromUrlScript = (
         method: 'GET',
         mode: 'cors',
         redirect: 'follow',
-        referrer: location.href,
+        referrer: requestReferrer || location.href,
       });
       if (!response.ok) {
         return null;

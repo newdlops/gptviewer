@@ -80,7 +80,7 @@ function MarkdownImageViewportComponent({
   const slowLoadNotice = requiresAssetResolve
     ? '대화가 크거나 이미지가 많으면 로딩까지 시간이 걸릴 수 있습니다.'
     : '';
-  const [isVisible, setIsVisible] = useState(!requiresAssetResolve);
+  const [isVisible, setIsVisible] = useState(false);
   const [resolvedSrc, setResolvedSrc] = useState(
     requiresAssetResolve ? '' : normalizedSrc,
   );
@@ -89,10 +89,10 @@ function MarkdownImageViewportComponent({
   const [naturalSize, setNaturalSize] = useState<{ height: number; width: number } | null>(
     null,
   );
+  const [hasAutoAdjusted, setHasAutoAdjusted] = useState(false);
   const contentSignature = useMemo(
-    () =>
-      `${src}:${naturalSize?.width ?? 0}x${naturalSize?.height ?? 0}:${status === 'ready' ? 'ready' : 'pending'}`,
-    [naturalSize?.height, naturalSize?.width, src, status],
+    () => `${src}:${naturalSize?.width ?? 0}x${naturalSize?.height ?? 0}`,
+    [naturalSize?.height, naturalSize?.width, src],
   );
   const {
     autoAdjustViewport,
@@ -111,15 +111,21 @@ function MarkdownImageViewportComponent({
 
   useEffect(() => {
     setResolveError('');
-    setIsVisible(!requiresAssetResolve);
+    setIsVisible(false);
     setNaturalSize(null);
     setStatus('loading');
+    setHasAutoAdjusted(false);
     setResolvedSrc(requiresAssetResolve ? '' : normalizedSrc);
   }, [normalizedSrc, requiresAssetResolve]);
 
   useEffect(() => {
     const figureElement = figureRef.current;
-    if (!figureElement || isVisible || !requiresAssetResolve) {
+    if (!figureElement || isVisible) {
+      return;
+    }
+
+    if (typeof window === 'undefined' || !('IntersectionObserver' in window)) {
+      setIsVisible(true);
       return;
     }
 
@@ -139,7 +145,7 @@ function MarkdownImageViewportComponent({
     return () => {
       observer.disconnect();
     };
-  }, [isVisible, requiresAssetResolve]);
+  }, [isVisible]);
 
   useEffect(() => {
     if (!requiresAssetResolve) {
@@ -209,17 +215,19 @@ function MarkdownImageViewportComponent({
   ]);
 
   useEffect(() => {
-    if (status !== 'ready') {
+    if (status !== 'ready' || hasAutoAdjusted) {
       return;
     }
 
     const frameId = window.requestAnimationFrame(() => {
-      autoAdjustViewport();
+      // 초기 동작을 '맞춤(fit)'으로 고정
+      resetViewport();
+      setHasAutoAdjusted(true);
     });
     return () => {
       window.cancelAnimationFrame(frameId);
     };
-  }, [autoAdjustViewport, status, contentSignature]);
+  }, [resetViewport, status, hasAutoAdjusted]);
 
   return (
     <figure className="message-image" data-status={status} ref={figureRef}>
@@ -265,7 +273,11 @@ function MarkdownImageViewportComponent({
       </div>
       <div className="message-image__shell" ref={shellRef}>
         <div className="message-image__frame">
-          {status === 'error' ? (
+          {!isVisible ? (
+            <p className="message-image__status" role="status">
+              {loadingStatusText}
+            </p>
+          ) : status === 'error' ? (
             <div className="message-image__status message-image__status--error">
               {resolveError || '이미지를 표시하지 못했습니다.'}{' '}
               <a href={src} target="_blank" rel="noreferrer">
@@ -291,6 +303,8 @@ function MarkdownImageViewportComponent({
                     draggable={false}
                     loading="lazy"
                     src={resolvedSrc}
+                    data-natural-width={naturalSize?.width || ''}
+                    data-natural-height={naturalSize?.height || ''}
                     onError={() => {
                       setNaturalSize(null);
                       setStatus('error');

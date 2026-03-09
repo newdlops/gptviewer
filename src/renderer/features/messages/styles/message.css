@@ -469,10 +469,11 @@
   display: grid;
   gap: 10px;
   margin: 0 0 12px;
-  padding: 12px;
+  padding: 18px; /* Mermaid와 동일하게 설정 */
   border: 1px solid var(--border-soft);
   border-radius: 18px;
   background: color-mix(in srgb, var(--panel-bg-soft) 90%, transparent);
+  overflow: hidden;
 }
 
 .message-image__header {
@@ -480,6 +481,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  padding-bottom: 8px; /* 헤더 하단 여백만 설정 */
 }
 
 .message-image__label {
@@ -488,13 +490,16 @@
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+  flex-shrink: 0;
 }
 
 .message-image__actions {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 10px;
   min-width: 0;
+  flex-wrap: wrap;
 }
 
 .message-image__zoom-controls {
@@ -551,6 +556,7 @@
   max-width: 100%;
   min-width: min(320px, 100%);
   min-height: 260px;
+  max-height: 80vh;
   margin: 0 auto;
   resize: both;
   overflow: auto;

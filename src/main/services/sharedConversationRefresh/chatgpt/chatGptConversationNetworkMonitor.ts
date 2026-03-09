@@ -146,11 +146,21 @@ export class ChatGptConversationNetworkMonitor {
 
     try {
       if (!debuggerApi.isAttached()) {
+        console.info('[gptviewer][network-monitor] attaching debugger...');
         debuggerApi.attach('1.3');
       }
+      
       debuggerApi.on('message', this.handleDebuggerMessage);
-      await debuggerApi.sendCommand('Network.enable');
-    } catch {
+      
+      console.info('[gptviewer][network-monitor] enabling network domain...');
+      // 5초 타임아웃 추가
+      await Promise.race([
+        debuggerApi.sendCommand('Network.enable'),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('debugger_command_timeout')), 5000))
+      ]);
+      console.info('[gptviewer][network-monitor] debugger attached and network enabled.');
+    } catch (error) {
+      console.warn(`[gptviewer][network-monitor] debugger attach failed: ${error instanceof Error ? error.message : 'unknown'}`);
       // Ignore debugger attach failures and allow DOM fallback to continue.
     }
   }

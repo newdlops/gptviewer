@@ -36,8 +36,8 @@ const MIN_SCALE_FLOOR = 0.05;
 const MAX_READABLE_SCALE = 12;
 const READABLE_FIT_EPSILON = 0.05;
 const ZOOM_STEP = 1.2;
-const MAX_READABLE_SHELL_WIDTH = 6400;
-const MAX_READABLE_SHELL_HEIGHT = 4800;
+const MAX_READABLE_SHELL_WIDTH = 1200; // 6400 -> 1200으로 대폭 축소
+const MAX_READABLE_SHELL_HEIGHT = 800; // 4800 -> 800으로 대폭 축소
 const MERMAID_TEXT_CANDIDATE_SELECTORS = [
   'text',
   'foreignObject div',
@@ -54,15 +54,38 @@ const MERMAID_TEXT_CANDIDATE_SELECTORS = [
 ].join(', ');
 
 const intrinsicSizeStore = new Map<string, { height: number; width: number }>();
-const persistedViewportStore = new Map<string, PersistedViewportState>();
 const svgMinFontSizeStore = new Map<string, number | null>();
+
+// localStorage를 사용한 영구 저장소 구현
+const PERSISTENCE_STORAGE_KEY = 'gptviewer-viewport-cache-v1';
+
+const loadPersistedViewportStore = (): Record<string, PersistedViewportState> => {
+  try {
+    const data = localStorage.getItem(PERSISTENCE_STORAGE_KEY);
+    return data ? JSON.parse(data) : {};
+  } catch {
+    return {};
+  }
+};
+
+const savePersistedViewportStore = (store: Record<string, PersistedViewportState>) => {
+  try {
+    // 너무 비대해지는 것을 방지하기 위해 최근 200개 정도만 유지 (필요 시)
+    localStorage.setItem(PERSISTENCE_STORAGE_KEY, JSON.stringify(store));
+  } catch {
+    // 용량 초과 시 오래된 데이터 삭제 로직을 추가할 수 있음
+  }
+};
+
+const persistedViewportStore = loadPersistedViewportStore();
 
 const clamp = (value: number, min: number, max: number): number =>
   Math.min(max, Math.max(min, value));
 
 const getAvailableShellWidth = (shellElement: HTMLDivElement) => {
   const parentWidth = shellElement.parentElement?.clientWidth ?? shellElement.clientWidth;
-  return Math.max(Math.min(parentWidth, MAX_READABLE_SHELL_WIDTH), 1);
+  // 윈도우 너비의 90% 또는 설정된 최대 너비 중 작은 값 선택
+  return Math.max(Math.min(parentWidth, MAX_READABLE_SHELL_WIDTH, window.innerWidth * 0.9), 1);
 };
 
 const clampShellWidthToBounds = (shellElement: HTMLDivElement) => {
@@ -131,6 +154,14 @@ const readImageContentSize = (contentElement: HTMLDivElement) => {
   const imageElement = contentElement.querySelector('img');
   if (!imageElement) {
     return null;
+  }
+
+  // 1. 데이터셋에 저장된 natural size가 있다면 우선 사용
+  if (imageElement.dataset.naturalWidth && imageElement.dataset.naturalHeight) {
+    return {
+      height: Number(imageElement.dataset.naturalHeight),
+      width: Number(imageElement.dataset.naturalWidth),
+    };
   }
 
   const naturalWidth = imageElement.naturalWidth || imageElement.width;
@@ -238,9 +269,14 @@ const measureDiagramMetrics = (
   );
   const baseFontSize = readBaseFontSize(contentElement);
   const minTextFontSize = readSvgMinimumTextFontSize(contentElement, contentSignature);
+  
+  // 이미지는 100% (scale = 1) 가 가독성이 좋은 최소 크기가 됨
+  const imageReadableMinScale = imageSize ? 1.0 : fitScale;
+
   const readableMinScale = minTextFontSize
     ? clamp(baseFontSize / minTextFontSize, MIN_SCALE_FLOOR, MAX_READABLE_SCALE)
-    : fitScale;
+    : imageReadableMinScale;
+    
   return {
     contentHeight,
     contentWidth,
@@ -299,6 +335,28 @@ const toZoomLabel = (scale: number, fitScale: number) => {
   return `${Math.round(zoomRatio * 100)}%`;
 };
 
+const sanitizeScale = (scale: number, metrics: DiagramMetrics) => {
+  if (!Number.isFinite(scale) || scale <= 0) {
+    return metrics.fitScale || 1;
+  }
+  return clamp(scale, metrics.minScale, metrics.maxScale);
+};
+
+const sanitizeTransform = (
+  transform: DiagramTransform,
+  metrics: DiagramMetrics,
+): DiagramTransform => {
+  const safeScale = sanitizeScale(transform.scale, metrics);
+  const safeX = Number.isFinite(transform.x) ? transform.x : centerOffset(metrics, safeScale).x;
+  const safeY = Number.isFinite(transform.y) ? transform.y : centerOffset(metrics, safeScale).y;
+  const safeOffset = clampOffsets(metrics, safeScale, safeX, safeY);
+  return {
+    scale: safeScale,
+    x: safeOffset.x,
+    y: safeOffset.y,
+  };
+};
+
 export function useZoomableDiagramViewport(
   enabled: boolean,
   contentSignature: string,
@@ -317,7 +375,7 @@ export function useZoomableDiagramViewport(
   } | null>(null);
   const metricsRef = useRef<DiagramMetrics | null>(null);
   const transformRef = useRef<DiagramTransform>({ scale: 1, x: 0, y: 0 });
-  const lastContentSignatureRef = useRef(contentSignature);
+  const lastContentSignatureRef = useRef<string | null>(null);
   const applyFrameRef = useRef<number | null>(null);
   const resizeFrameRef = useRef<number | null>(null);
   const publishedUiRef = useRef<DiagramUiState>({
@@ -334,14 +392,19 @@ export function useZoomableDiagramViewport(
 
   const persistViewport = () => {
     const shellElement = shellRef.current;
-    persistedViewportStore.set(persistenceKey, {
+    if (!shellElement) return;
+
+    const nextState: PersistedViewportState = {
       contentSignature,
       scale: transformRef.current.scale,
-      shellHeight: shellElement?.clientHeight,
-      shellWidth: shellElement?.clientWidth,
+      shellHeight: shellElement.clientHeight,
+      shellWidth: shellElement.clientWidth,
       x: transformRef.current.x,
       y: transformRef.current.y,
-    });
+    };
+
+    persistedViewportStore[persistenceKey] = nextState;
+    savePersistedViewportStore(persistedViewportStore);
   };
 
   const publishUiState = () => {
@@ -382,7 +445,9 @@ export function useZoomableDiagramViewport(
       return;
     }
 
-    const { scale, x, y } = transformRef.current;
+    const nextTransformValue = sanitizeTransform(transformRef.current, metrics);
+    transformRef.current = nextTransformValue;
+    const { scale, x, y } = nextTransformValue;
     const nextTransform = `translate(${x}px, ${y}px) scale(${scale})`;
     const nextWidth = `${metrics.contentWidth}px`;
     const nextHeight = `${metrics.contentHeight}px`;
@@ -477,22 +542,26 @@ export function useZoomableDiagramViewport(
     );
     metricsRef.current = nextMetrics;
 
-    const persistedState = persistedViewportStore.get(persistenceKey);
+    const persistedState = persistedViewportStore[persistenceKey];
     const baseTransform =
       mode === 'preserve' &&
       persistedState &&
       persistedState.contentSignature === contentSignature
         ? persistedState
         : transformRef.current;
-
-    const nextScale =
-      mode === 'fit'
-        ? nextMetrics.fitScale
-        : clamp(baseTransform.scale, nextMetrics.minScale, nextMetrics.maxScale);
+    const normalizedBaseTransform = sanitizeTransform(baseTransform, nextMetrics);
+    const nextScale = mode === 'fit'
+      ? nextMetrics.fitScale
+      : normalizedBaseTransform.scale;
     const nextOffset =
       mode === 'fit'
         ? centerOffset(nextMetrics, nextScale)
-        : clampOffsets(nextMetrics, nextScale, baseTransform.x, baseTransform.y);
+        : clampOffsets(
+            nextMetrics,
+            nextScale,
+            normalizedBaseTransform.x,
+            normalizedBaseTransform.y,
+          );
 
     transformRef.current = {
       scale: nextScale,
@@ -532,17 +601,23 @@ export function useZoomableDiagramViewport(
       contentElement,
       contentSignature,
     );
-    const targetScale = Math.max(
-      initialMetrics.readableMinScale,
-      initialMetrics.fitScale,
+    const targetScale = clamp(
+      Math.max(initialMetrics.readableMinScale, initialMetrics.fitScale),
+      initialMetrics.minScale,
+      initialMetrics.maxScale,
     );
 
-    if (targetScale <= initialMetrics.fitScale + READABLE_FIT_EPSILON) {
+    // 이미지의 경우 너무 크게 확대되지 않도록 제한 (최대 1.2배)
+    const safeTargetScale = initialMetrics.readableMinScale === 1.0 
+      ? Math.min(targetScale, 1.2)
+      : targetScale;
+
+    if (safeTargetScale <= initialMetrics.fitScale + READABLE_FIT_EPSILON) {
       syncViewport('fit');
       return;
     }
 
-    resizeShellToReadableScale(shellElement, initialMetrics, targetScale);
+    resizeShellToReadableScale(shellElement, initialMetrics, safeTargetScale);
 
     window.requestAnimationFrame(() => {
       const refreshedViewport = viewportRef.current;
@@ -595,7 +670,8 @@ export function useZoomableDiagramViewport(
       return;
     }
 
-    const { scale, x, y } = transformRef.current;
+    const baseTransform = sanitizeTransform(transformRef.current, metrics);
+    const { scale, x, y } = baseTransform;
     const nextScale = clamp(scale * factor, metrics.minScale, metrics.maxScale);
     const centerX = metrics.viewportWidth / 2;
     const centerY = metrics.viewportHeight / 2;
@@ -622,7 +698,7 @@ export function useZoomableDiagramViewport(
     }
 
     const shellElement = shellRef.current;
-    const persistedState = persistedViewportStore.get(persistenceKey);
+    const persistedState = persistedViewportStore[persistenceKey];
 
     if (
       shellElement &&
@@ -642,11 +718,18 @@ export function useZoomableDiagramViewport(
       return;
     }
 
-    const shouldPreserveScale =
-      lastContentSignatureRef.current === contentSignature &&
-      persistedViewportStore.get(persistenceKey)?.contentSignature === contentSignature;
+    const isFirstEnable = lastContentSignatureRef.current === null;
+    const isNewContent = !isFirstEnable && lastContentSignatureRef.current !== contentSignature;
+    const persistedState = persistedViewportStore[persistenceKey];
+    const hasValidPersistedState = persistedState?.contentSignature === contentSignature;
+
+    // 1. 저장된 상태가 있다면(사용자가 이미 조작했다면) 무조건 'preserve'
+    // 2. 처음 로드된 완전 새로운 콘텐츠라면 'fit'
+    // 3. 그 외에는 기존 상태 유지
+    const mode = hasValidPersistedState ? 'preserve' : isNewContent ? 'fit' : 'preserve';
+    
     lastContentSignatureRef.current = contentSignature;
-    syncViewport(shouldPreserveScale ? 'preserve' : 'fit');
+    syncViewport(mode);
   }, [contentSignature, enabled, persistenceKey]);
 
   useEffect(() => {
