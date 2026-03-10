@@ -775,6 +775,7 @@
 
 .code-block__content {
   overflow-x: auto;
+  overflow-y: hidden;
 }
 
 .code-block__source-compare {
@@ -821,7 +822,7 @@
 }
 
 .code-block__source-editor-shell {
-  min-height: 220px;
+  min-height: 100px;
   border-top: 1px solid transparent;
 }
 
@@ -870,7 +871,7 @@
 .code-block__source-editor-stage {
   position: relative;
   min-width: 0;
-  min-height: 220px;
+  min-height: 100px;
   overflow: hidden;
 }
 
@@ -896,7 +897,7 @@
 .code-block__source-editor-input {
   position: relative;
   width: 100%;
-  min-height: 220px;
+  min-height: 100px;
   padding: 14px 18px 16px;
   border: 0;
   background: transparent;

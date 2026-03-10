@@ -48,6 +48,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   runJavaCode: (code: string) =>
     ipcRenderer.invoke('java:run', code),
   startJavaServer: (code: string) => ipcRenderer.invoke('java:lsp-start', code),
+  updateJavaFile: (filePath: string, code: string) =>
+    ipcRenderer.invoke('java:update-file', filePath, code),
+  getJavaProjectTree: (projectDir: string) =>
+    ipcRenderer.invoke('java:get-project-tree', projectDir),
+  readJavaFile: (filePath: string) =>
+    ipcRenderer.invoke('java:read-file', filePath),
   stopJavaServer: () => ipcRenderer.invoke('java:lsp-stop'),
   getGoogleDriveConfig: () => ipcRenderer.invoke('google-drive-sync:get-config'),
   getGoogleDriveSyncStatus: () =>

@@ -1,13 +1,19 @@
 import { MonacoLanguageClient, MonacoServices } from 'monaco-languageclient';
 import { CloseAction, ErrorAction } from 'vscode-languageclient';
 import { WebSocketMessageReader, WebSocketMessageWriter, toSocket } from 'vscode-ws-jsonrpc';
-import * as monaco from 'monaco-editor/esm/vs/editor/editor.api';
 
 let isServicesInstalled = false;
 
-export async function createJavaLanguageClient(port: number, projectDir: string): Promise<MonacoLanguageClient> {
+export async function createJavaLanguageClient(port: number, projectDir: string, monaco: any): Promise<MonacoLanguageClient> {
     if (!isServicesInstalled) {
-        MonacoServices.install(monaco as any);
+        // monaco-languageclient expects a VSCode-like environment. We must mock Uri.file manually
+        // if it doesn't exist on the passed monaco instance.
+        const m: any = monaco;
+        if (!m.Uri.file) {
+            m.Uri.file = (path: string) => m.Uri.parse(`file://${path}`);
+        }
+
+        MonacoServices.install(m);
         isServicesInstalled = true;
     }
 
@@ -22,22 +28,19 @@ export async function createJavaLanguageClient(port: number, projectDir: string)
         webSocket.onopen = async () => {
             console.info('[JavaLspClient] -> SUCCESS: WebSocket connection opened');
 
-            // v4 API
             const socket = toSocket(webSocket);
             const reader = new WebSocketMessageReader(socket);
             const writer = new WebSocketMessageWriter(socket);
 
             try {
                 console.info('[JavaLspClient] Creating MonacoLanguageClient (v4)...');
-                const languageClient = createMonacoLanguageClient({ reader, writer }, projectDir);
+                const languageClient = createMonacoLanguageClient({ reader, writer }, projectDir, monaco);
 
-                // Await start() to ensure client is running before resolve
                 await languageClient.start();
                 console.info('[JavaLspClient] -> SUCCESS: Language Client started and attached to Monaco.\n');
 
                 reader.onClose(() => {
                     console.warn('\n[JavaLspClient] WebSocket connection CLOSED by server.');
-                    // state를 확인하고 stop() 호출
                     if (languageClient.isRunning()) {
                         languageClient.stop();
                     }
@@ -66,13 +69,15 @@ export async function createJavaLanguageClient(port: number, projectDir: string)
     });
 }
 
-function createMonacoLanguageClient(transports: any, projectDir: string): MonacoLanguageClient {
+function createMonacoLanguageClient(transports: any, projectDir: string, monaco: any): MonacoLanguageClient {
+    const projectUri = monaco.Uri.parse(`file://${projectDir}`);
+
     return new MonacoLanguageClient({
         name: 'Java Language Client',
         clientOptions: {
-            documentSelector: ['java'], // v4는 단순 string array 허용
+            documentSelector: ['java', 'xml'],
             workspaceFolder: {
-                uri: monaco.Uri.parse(`file://${projectDir}`) as any,
+                uri: projectUri as any,
                 name: 'temp-java-project',
                 index: 0
             } as any,
@@ -80,8 +85,18 @@ function createMonacoLanguageClient(transports: any, projectDir: string): Monaco
                 settings: {
                     java: {
                         configuration: { updateBuildConfiguration: "disabled" },
-                        format: { enabled: true }
+                        format: { enabled: true },
+                        completion: {
+                            enabled: true,
+                            guessMethodArguments: true
+                        }
                     }
+                },
+                extendedClientCapabilities: {
+                    progressiveProgressSupport: true,
+                    classFileContentsSupport: true,
+                    overrideMethodsSupport: true,
+                    debuggerSupport: true
                 }
             },
             errorHandler: {
@@ -94,3 +109,4 @@ function createMonacoLanguageClient(transports: any, projectDir: string): Monaco
         }
     });
 }
+

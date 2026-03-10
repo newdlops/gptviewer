@@ -51,7 +51,7 @@ export function MarkdownCodeSourcePanel({
   const gutterRef = useRef<HTMLDivElement | null>(null);
   const highlightRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-  
+
   // 편집기 너비 비율 상태 (기본 50%)
   const [editorWidthPercent, setEditorWidthPercent] = useState(() => {
     try {
@@ -78,7 +78,7 @@ export function MarkdownCodeSourcePanel({
       const rect = layoutElement.getBoundingClientRect();
       const newWidthPercent = ((e.clientX - rect.left) / rect.width) * 100;
       const clampedPercent = Math.min(Math.max(newWidthPercent, 20), 80); // 20% ~ 80% 사이로 제한
-      
+
       setEditorWidthPercent(clampedPercent);
     };
 
@@ -124,7 +124,7 @@ export function MarkdownCodeSourcePanel({
   const editorLines = useMemo(() => {
     return Array.from({ length: Math.max(1, lineCount) }, (_, index) => index + 1);
   }, [lineCount]);
-  
+
   const editorLineNumbers = useMemo(
     () => editorLines.map((lineNumber) => String(lineNumber)).join('\n'),
     [editorLines],
@@ -166,7 +166,7 @@ export function MarkdownCodeSourcePanel({
       const currentLine = upToCursor.split('\n').pop() || '';
       const indentMatch = currentLine.match(/^\s*/);
       const baseIndent = indentMatch ? indentMatch[0] : '';
-      
+
       const isOpeningBrace = currentLine.trim().endsWith('{');
       const extraIndent = isOpeningBrace ? '    ' : '';
       const totalIndent = baseIndent + extraIndent;
@@ -223,13 +223,13 @@ export function MarkdownCodeSourcePanel({
           className={`code-block__source-editor-layout${
             preview ? ' code-block__source-editor-layout--with-preview' : ''
           }`}
-          style={{ 
-            display: 'flex', 
-            flexDirection: 'row', 
-            position: 'relative', 
-            width: '100%', 
-            alignItems: 'stretch', 
-            minHeight: '300px',
+          style={{
+            display: 'flex',
+            flexDirection: 'row',
+            position: 'relative',
+            width: '100%',
+            alignItems: 'stretch',
+            minHeight: '100px',
             cursor: isResizing ? 'col-resize' : 'default',
             userSelect: isResizing ? 'none' : 'auto',
           }}
@@ -242,7 +242,7 @@ export function MarkdownCodeSourcePanel({
                 aria-hidden="true"
                 className="code-block__source-editor-gutter"
               >
-                <pre 
+                <pre
                   className="code-block__source-editor-gutter-content"
                   style={{
                     ...EDITOR_COMMON_STYLES,
@@ -300,8 +300,8 @@ export function MarkdownCodeSourcePanel({
                       {value.length > 0 ? value : ' '}
                     </SyntaxHighlighter>
                   ) : (
-                    <div 
-                      style={{ 
+                    <div
+                      style={{
                         ...EDITOR_COMMON_STYLES,
                         whiteSpace: 'pre',
                         color: 'inherit',
@@ -323,16 +323,16 @@ export function MarkdownCodeSourcePanel({
                     position: 'relative',
                     zIndex: 2,
                     background: 'transparent',
-                    color: 'transparent', 
+                    color: 'transparent',
                     caretColor: themeMode === 'dark' ? '#fff' : '#000',
                     width: '100%',
                     height: '100%',
-                    minHeight: '300px',
+                    minHeight: '100px',
                     minWidth: '100%',
                     resize: 'none',
                     border: 'none',
                     outline: 'none',
-                    overflow: 'auto',
+                    overflow: 'hidden',
                     whiteSpace: 'pre',
                     wordBreak: 'normal',
                     display: 'block',
@@ -382,6 +382,7 @@ export function MarkdownCodeSourcePanel({
               borderRadius: 0,
               margin: 0,
               padding: '14px 18px 16px',
+              overflow: 'visible',
             }}
             codeTagProps={{
               style: {
@@ -396,12 +397,12 @@ export function MarkdownCodeSourcePanel({
             {value}
           </SyntaxHighlighter>
         ) : (
-          <div 
-            className="code-block__source-content" 
-            style={{ 
+          <div
+            className="code-block__source-content"
+            style={{
               ...EDITOR_COMMON_STYLES,
-              whiteSpace: 'pre-wrap', 
-              wordBreak: 'break-all', 
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-all',
             }}
           >
             {value}

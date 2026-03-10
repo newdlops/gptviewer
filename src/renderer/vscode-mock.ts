@@ -98,6 +98,14 @@ export class CancellationError extends Error {}
 export class Position {
     constructor(public line: number, public character: number) {}
 }
+export class CancellationTokenSource {
+    public token = {
+        isCancellationRequested: false,
+        onCancellationRequested: () => ({ dispose: () => {} })
+    };
+    cancel() { this.token.isCancellationRequested = true; }
+    dispose() {}
+}
 export class Range {
     constructor(public start: Position, public end: Position) {}
 }
@@ -152,9 +160,15 @@ export const Services = {
     install: (services: any) => ({ dispose: () => {} }),
     get: () => ({})
 };
-export const Severity = {
-    Ignore: 0,
-    Info: 1,
+export const DiagnosticSeverity = {
+    Error: 1,
     Warning: 2,
-    Error: 3
+    Information: 3,
+    Hint: 4
 };
+export const DiagnosticTag = {
+    Unnecessary: 1,
+    Deprecated: 2
+};
+export const Severity = DiagnosticSeverity;
+

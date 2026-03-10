@@ -2344,6 +2344,21 @@ ipcMain.handle('java:lsp-start', async (_event, code: string) => {
   return serverRes;
 });
 
+ipcMain.handle('java:update-file', async (_event, filePath: string, code: string) => {
+  console.log(`[IPC-DEBUG] Request: java:update-file, path=${filePath}, length=${code.length}`);
+  const result = await javaLspService.updateProjectFile(filePath, code);
+  console.log(`[IPC-DEBUG] Response: java:update-file, success=${result.success}`);
+  return result;
+});
+
+ipcMain.handle('java:get-project-tree', async (_event, projectDir: string) => {
+  return await javaLspService.getProjectTree(projectDir);
+});
+
+ipcMain.handle('java:read-file', async (_event, filePath: string) => {
+  return await javaLspService.readProjectFile(filePath);
+});
+
 ipcMain.handle('java:lsp-stop', async () => {
   return javaLspService.stopServer();
 });

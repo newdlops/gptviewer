@@ -35,6 +35,7 @@ export const rendererConfig: Configuration = {
     extensions: ['.js', '.ts', '.jsx', '.tsx', '.css'],
     alias: {
       path: require.resolve('path-browserify'),
+      'monaco-editor': path.resolve(__dirname, 'node_modules/monaco-editor'),
       'vscode/services': path.resolve(__dirname, 'src/renderer/vscode-mock.ts'),
       vscode: path.resolve(__dirname, 'src/renderer/vscode-mock.ts')
     },

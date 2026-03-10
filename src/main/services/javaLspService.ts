@@ -1,14 +1,16 @@
-import { spawn, ChildProcess } from 'node:child_process';
+import { spawn, ChildProcess, execSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
-import { mkdtemp, rm, mkdir, writeFile, readdir } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { mkdtemp, rm, mkdir, writeFile, readdir, readFile } from 'node:fs/promises';
+import { existsSync, statSync } from 'node:fs';
 import { app } from 'electron';
-import * as rpc from 'vscode-ws-jsonrpc';
+import * as WS from 'ws';
+// @ts-ignore
+import * as serverRpc from 'vscode-ws-jsonrpc/server';
 
 export class JavaLspService {
   private lspProcess: ChildProcess | null = null;
-  private wss: any = null;
+  private wss: WS.Server | null = null;
   private workspaceStateDir: string | null = null;
 
   private findJavaExecutable(): string {
@@ -16,7 +18,6 @@ export class JavaLspService {
     const isMac = process.platform === 'darwin';
     const javaExe = isWin ? 'java.exe' : 'java';
 
-    // 0. Check for explicit Java 21 (Homebrew) - required for modern JDT.LS
     if (isMac) {
         const brewJava21 = '/opt/homebrew/opt/openjdk@21/bin/java';
         if (existsSync(brewJava21)) {
@@ -25,25 +26,21 @@ export class JavaLspService {
         }
     }
 
-    // 1. First, check if there is a system-wide java available and valid
-    // On some environments, the embedded JDK might be a Git LFS pointer which causes ENOEXEC.
     try {
         const { execSync } = require('node:child_process');
         const systemJava = execSync(isWin ? 'where java' : 'which java').toString().trim().split('\n')[0];
         if (systemJava && existsSync(systemJava)) {
-            // Check if it's a real executable (not an LFS pointer)
             const fs = require('node:fs');
             const stats = fs.statSync(systemJava);
-            if (stats.size > 1024) { // LFS pointers are usually < 200 bytes
+            if (stats.size > 1024) {
                 console.info(`[JavaLspService] Using system Java: ${systemJava}`);
                 return systemJava;
             }
         }
     } catch (e) {
-        // ignore errors if java is not in PATH
+        // ignore
     }
 
-    // 2. Check embedded JDK
     const resPath = app.isPackaged ? process.resourcesPath : app.getAppPath();
     let embeddedJdkPath = join(resPath, 'resources', 'bin', 'jdk');
 
@@ -53,14 +50,9 @@ export class JavaLspService {
 
     const javaBin = join(embeddedJdkPath, 'bin', javaExe);
     if (existsSync(javaBin)) {
-        // Validation: Ensure it's not an LFS pointer
         const fs = require('node:fs');
         const stats = fs.statSync(javaBin);
-        if (stats.size > 1024) {
-            return javaBin;
-        } else {
-            console.warn(`[JavaLspService] Embedded Java at ${javaBin} seems to be a pointer file. Skipping.`);
-        }
+        if (stats.size > 1024) return javaBin;
     }
 
     if (process.env.JAVA_HOME) {
@@ -74,24 +66,13 @@ export class JavaLspService {
   private async getJdtlsLaunchArgs(javaBin: string, workspaceDir: string): Promise<string[]> {
     const resPath = app.isPackaged ? process.resourcesPath : app.getAppPath();
     const jdtlsRoot = join(resPath, 'resources', 'bin', 'jdtls');
-
     const pluginsDir = join(jdtlsRoot, 'plugins');
-    if (!existsSync(pluginsDir)) {
-        throw new Error(`JDT.LS plugins directory not found at ${pluginsDir}`);
-    }
+
+    if (!existsSync(pluginsDir)) throw new Error(`JDT.LS plugins directory not found at ${pluginsDir}`);
 
     const files = await readdir(pluginsDir);
     const launcherJar = files.find(f => f.startsWith('org.eclipse.equinox.launcher_') && f.endsWith('.jar'));
-
     if (!launcherJar) throw new Error('JDT.LS launcher jar not found');
-
-    // Validation: Check if launcher JAR is an LFS pointer
-    const fs = require('node:fs');
-    const launcherPath = join(pluginsDir, launcherJar);
-    const stats = fs.statSync(launcherPath);
-    if (stats.size < 1024) {
-        throw new Error(`JDT.LS launcher JAR at ${launcherPath} is a Git LFS pointer. Please install git-lfs and run 'git lfs pull' to get the real binaries.`);
-    }
 
     let configFolderName = 'config_mac';
     if (process.platform === 'win32') configFolderName = 'config_win';
@@ -131,7 +112,6 @@ export class JavaLspService {
     const filePath = join(srcDir, `${className}.java`);
 
     await writeFile(filePath, code, 'utf8');
-
     await writeFile(join(projectDir, '.project'), `<?xml version="1.0" encoding="UTF-8"?>
 <projectDescription>
 	<name>temp-java-project-${Date.now()}</name>
@@ -141,126 +121,116 @@ export class JavaLspService {
     await writeFile(join(projectDir, '.classpath'), `<?xml version="1.0" encoding="UTF-8"?>
 <classpath>
 	<classpathentry kind="src" path="src"/>
-	<classpathentry kind="con" path="org.eclipse.jdt.launching.JRE_CONTAINER"/>
+	<classpathentry kind="con" path="org.eclipse.jdt.launching.JRE_CONTAINER/org.eclipse.jdt.internal.debug.ui.launcher.StandardVMType/JavaSE-21"/>
 	<classpathentry kind="output" path="bin"/>
 </classpath>`, 'utf8');
 
     return { projectDir, filePath };
   }
 
-  async startServer(port: number = 5007) {
-    if (this.wss) return { success: true, alreadyRunning: true, port };
-
+  async updateProjectFile(filePath: string, code: string): Promise<{ success: boolean }> {
     try {
-      const WS = require('ws');
-      const WSS = WS.WebSocketServer || WS.Server || WS;
-      this.wss = new WSS({ port, host: '127.0.0.1' });
+        await writeFile(filePath, code, 'utf8');
+        return { success: true };
+    } catch (e) {
+        console.error('[JavaLspService] Failed to update project file:', e);
+        return { success: false };
+    }
+  }
+
+  async readProjectFile(filePath: string): Promise<string> {
+    try {
+      console.info(`[JavaLspService] Reading file: ${filePath}`);
+      if (!existsSync(filePath)) {
+        console.error(`[JavaLspService] File does not exist: ${filePath}`);
+        return '';
+      }
+      return await readFile(filePath, 'utf8');
+    } catch (e) {
+      console.error('[JavaLspService] Failed to read project file:', e);
+      return '';
+    }
+  }
+
+  async getProjectTree(projectDir: string): Promise<any[]> {
+    const walk = async (dir: string): Promise<any[]> => {
+      const entries = await readdir(dir, { withFileTypes: true });
+      const nodes = await Promise.all(entries.map(async (entry) => {
+        const fullPath = join(dir, entry.name);
+        const relativePath = fullPath.replace(projectDir, '').replace(/^\//, '');
+        if (entry.isDirectory()) {
+          return { name: entry.name, type: 'directory', path: fullPath, relativePath, children: await walk(fullPath) };
+        }
+        return { name: entry.name, type: 'file', path: fullPath, relativePath };
+      }));
+      return nodes.sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === 'directory' ? -1 : 1));
+    };
+    try {
+      return await walk(projectDir);
+    } catch (e) {
+      return [];
+    }
+  }
+
+  async startServer(port = 5007) {
+    console.info(`\n[JavaLspService] startServer invoked. Target port: ${port}`);
+    if (this.wss) {
+        console.info(`[JavaLspService] Server already running on port ${this.wss.options?.port || port}`);
+        return { success: true, alreadyRunning: true, port: this.wss.options?.port || port };
+    }
+    try {
+      this.wss = new WS.Server({ port, host: '127.0.0.1' });
       console.info(`[JavaLspService] WebSocket Server listening on 127.0.0.1:${port}`);
 
       const javaBin = this.findJavaExecutable();
+      console.info(`[JavaLspService] Found Java Executable: ${javaBin}`);
 
-      this.wss.on('connection', async (socket: any) => {
-        console.info('\n[JavaLspService] Renderer connection established');
-
-        // Use a unique workspace state dir for each connection to avoid Eclipse locks
+      this.wss.on('connection', async (socket: WS.WebSocket) => {
         const uniqueStateDir = await mkdtemp(join(tmpdir(), 'jdtls-state-'));
         this.workspaceStateDir = uniqueStateDir;
-
-        // socket을 vscode-ws-jsonrpc 호환 객체로 변환
         const rpcSocket = {
-            send: (content: string) => socket.send(content, (error: any) => {
-                if (error) console.error(error);
-            }),
-            onMessage: (cb: any) => socket.on('message', (data: any) => cb(data.toString())),
-            onError: (cb: any) => socket.on('error', cb),
-            onClose: (cb: any) => socket.on('close', cb),
+            send: (content: string) => socket.send(content, (error) => { if (error) console.error(error); }),
+            onMessage: (cb: (data: string) => void) => socket.on('message', (data) => cb(data.toString())),
+            onError: (cb: (error: Error) => void) => socket.on('error', cb),
+            onClose: (cb: (code: number, reason: string) => void) => socket.on('close', cb),
             dispose: () => socket.close()
         };
-
         const env = { ...process.env };
-        const jdkHome = resolve(javaBin, '..', '..');
         let localLspProcess: ChildProcess | null = null;
-
         try {
             const args = await this.getJdtlsLaunchArgs(javaBin, uniqueStateDir);
-            console.info(`\n========== [JDT.LS START ATTEMPT] ==========`);
-            console.info(`[JavaLspService] Java Binary: ${javaBin}`);
-            console.info(`[JavaLspService] Args:\n  ${args.join('\n  ')}`);
-
-            // JDT.LS 프로세스 실행
             localLspProcess = spawn(javaBin, args, { env, stdio: 'pipe' });
             this.lspProcess = localLspProcess;
-
-            if (localLspProcess && localLspProcess.pid) {
-              console.info(`[JavaLspService] -> SUCCESS: Process spawned with PID: ${localLspProcess.pid}\n`);
-            }
-
-            localLspProcess.on('error', (err) => console.error('\n[JavaLspService] ! PROCESS SPAWN ERROR !', err));
-            localLspProcess.on('exit', (code, signal) => {
-                console.warn(`\n[JavaLspService] Process EXITED. Code: ${code}, Signal: ${signal}\n`);
-                // cleanup state dir after exit
-                rm(uniqueStateDir, { recursive: true, force: true }).catch(() => {});
-            });
-
+            localLspProcess.on('exit', () => { rm(uniqueStateDir, { recursive: true, force: true }).catch(() => {}); });
             if (localLspProcess) {
-              localLspProcess.stderr?.on('data', (data) => {
-                const msg = data.toString().trim();
-                // 너무 많은 로그가 찍히는 것을 방지, 심각한 에러나 초기 정보만 출력
-                if (msg.includes('ERROR') || msg.includes('WARNING') || msg.includes('Exception')) {
-                  console.log(`[JDT.LS LOG] ${msg}`);
-                }
-              });
-
-              // LSP 브릿징 (WebSocket <-> Process stdio)
-              // vscode-ws-jsonrpc의 server 모듈을 사용하여 직접 파이핑 연결
-              const serverRpc = require('vscode-ws-jsonrpc/server');
               if (serverRpc.createWebSocketConnection && serverRpc.createProcessStreamConnection) {
                   const socketConnection = serverRpc.createWebSocketConnection(rpcSocket);
                   const serverConnection = serverRpc.createProcessStreamConnection(localLspProcess);
-
                   if (serverConnection) {
                       serverConnection.forward(socketConnection, (message: any) => {
-                          // console.log('[LSP MAIN <- SERVER]', JSON.stringify(message).substring(0, 500));
+                          console.log('[LSP MAIN <- SERVER]', JSON.stringify(message).substring(0, 500));
                           return message;
                       });
                       socketConnection.forward(serverConnection, (message: any) => {
-                          // console.log('[LSP MAIN -> SERVER]', JSON.stringify(message).substring(0, 500));
+                          console.log('[LSP MAIN -> SERVER]', JSON.stringify(message).substring(0, 500));
                           return message;
                       });
-
                       serverConnection.onClose(() => socketConnection.dispose());
                       socketConnection.onClose(() => serverConnection.dispose());
-                      console.info('[JavaLspService] -> SUCCESS: JSON-RPC Bridge Attached.');
                   }
-              } else {
-                  console.error('[JavaLspService] Could not find stream connection methods in vscode-ws-jsonrpc');
               }
             }
-        } catch (e) {
-            console.error('\n[JavaLspService] ! LAUNCH ERROR !', e);
-        }
-
-        socket.on('close', () => {
-          console.info('[JavaLspService] WebSocket connection closed by Renderer');
-          if (localLspProcess) {
-            localLspProcess.kill();
-          }
-        });
+        } catch (e) { console.error(e); }
+        socket.on('close', () => { if (localLspProcess) localLspProcess.kill(); });
       });
-
       return { success: true, port };
-    } catch (error: any) {
-      console.error('[JavaLspService] Bootstrap error:', error);
-      return { success: false, error: error.message };
-    }
+    } catch (error: any) { return { success: false, error: error.message }; }
   }
 
   async stopServer() {
     if (this.wss) this.wss.close();
     if (this.lspProcess) this.lspProcess.kill();
-    if (this.workspaceStateDir) {
-      await rm(this.workspaceStateDir, { recursive: true, force: true }).catch(() => {});
-    }
+    if (this.workspaceStateDir) await rm(this.workspaceStateDir, { recursive: true, force: true }).catch(() => {});
     return { success: true };
   }
 }

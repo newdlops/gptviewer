@@ -77,7 +77,7 @@ function MarkdownCodeBlockComponent({
           <span className="code-block__language">{language || 'text'}</span>
         </div>
       </div>
-      <div className="code-block__content">
+      <div className="code-block__content" style={{ overflowX: 'auto', overflowY: 'visible' }}>
         <MarkdownCodeSourcePanel
           language={language || 'text'}
           themeMode={themeMode}
