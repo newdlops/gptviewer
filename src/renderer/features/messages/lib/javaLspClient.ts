@@ -2,20 +2,12 @@ import { MonacoLanguageClient, MonacoServices } from 'monaco-languageclient';
 import { CloseAction, ErrorAction } from 'vscode-languageclient';
 import { WebSocketMessageReader, WebSocketMessageWriter, toSocket } from 'vscode-ws-jsonrpc';
 import * as monaco from 'monaco-editor/esm/vs/editor/editor.api';
-import * as vscode from 'vscode';
 
 let isServicesInstalled = false;
 
 export async function createJavaLanguageClient(port: number, projectDir: string): Promise<MonacoLanguageClient> {
     if (!isServicesInstalled) {
-        // monaco-languageclient expects a VSCode-like environment. We must mock Uri.file manually
-        // because monaco.Uri.file doesn't exist by default in recent monaco-editor versions.
-        const m: any = monaco;
-        if (!m.Uri.file) {
-            m.Uri.file = (path: string) => m.Uri.parse(`file://${path}`);
-        }
-
-        MonacoServices.install(m);
+        MonacoServices.install(monaco as any);
         isServicesInstalled = true;
     }
 

@@ -51,7 +51,7 @@ export const languages: any = new Proxy({
     get(target, prop: string) {
         if (prop in target) return (target as any)[prop];
         if (typeof prop === 'string' && prop.startsWith('register')) {
-            return () => ({ dispose: () => {} });
+            return () => new Disposable(() => {});
         }
         return undefined;
     }
