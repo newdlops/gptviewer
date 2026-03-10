@@ -32,13 +32,13 @@ export function MarkdownJavaBlock({
     () => buildCustomJavaSourceCacheKey(sharedCacheScope, code),
     [sharedCacheScope, code],
   );
-  
+
   const [customJavaSource, setCustomJavaSource] = useState<string | null>(() =>
     (customJavaSourceStore.get(persistenceKey) ??
     loadCustomJavaSourceFromCache(sharedCustomJavaCacheKey)) ||
     null
   );
-  
+
   const [isJavaEditMode, setIsJavaEditMode] = useState(false);
   const [isJavaRunning, setIsJavaRunning] = useState(false);
   const [javaFilePath, setJavaFilePath] = useState<string | null>(null);
@@ -60,8 +60,17 @@ export function MarkdownJavaBlock({
           const res = await window.electronAPI?.startJavaServer(activeJavaSource);
           if (res?.success && isMounted) {
             setJavaFilePath(res.filePath);
-            languageClient = await createJavaLanguageClient(res.port, res.projectDir);
-            setLspStatus('connected');
+            const client = await createJavaLanguageClient(res.port, res.projectDir);
+
+            if (isMounted) {
+              languageClient = client;
+              setLspStatus('connected');
+            } else {
+              // unmount 이후라면 생성된 클라이언트를 종료함
+              if (client && typeof client.isRunning === 'function' && client.isRunning()) {
+                client.stop();
+              }
+            }
           } else if (res?.error) {
             setLspStatus('error');
             console.error('Failed to start Java LSP server:', res.error);
@@ -78,7 +87,14 @@ export function MarkdownJavaBlock({
     return () => {
       isMounted = false;
       if (languageClient) {
-        languageClient.stop();
+        try {
+          // 상태를 확인하고 stop() 호출
+          if (typeof languageClient.isRunning === 'function' && languageClient.isRunning()) {
+            languageClient.stop();
+          }
+        } catch (err) {
+          console.warn('Error while stopping language client:', err);
+        }
       }
     };
   }, [isJavaEditMode]);
@@ -110,8 +126,8 @@ export function MarkdownJavaBlock({
     } catch {
       // ignore storage failures
     }
-    
-    // 이제 정적 Provider 등록 코드는 모두 제거되었습니다. 
+
+    // 이제 정적 Provider 등록 코드는 모두 제거되었습니다.
     // 모든 언어 지원(호버, 자동완성, 에러 체크)은 LSP 서버를 통해 수행됩니다.
   };
 
@@ -121,9 +137,9 @@ export function MarkdownJavaBlock({
         <div className="code-block__header-meta">
           <span className="code-block__language">{formatCodeLanguageLabel('java')}</span>
           {isJavaEditMode && (
-            <span style={{ 
-              marginLeft: '10px', 
-              fontSize: '12px', 
+            <span style={{
+              marginLeft: '10px',
+              fontSize: '12px',
               color: lspStatus === 'connected' ? '#4caf50' : lspStatus === 'error' ? '#f44336' : '#ff9800',
               fontWeight: 'bold'
             }}>

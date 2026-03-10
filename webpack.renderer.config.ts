@@ -34,7 +34,9 @@ export const rendererConfig: Configuration = {
   resolve: {
     extensions: ['.js', '.ts', '.jsx', '.tsx', '.css'],
     alias: {
-      path: require.resolve('path-browserify')
+      path: require.resolve('path-browserify'),
+      'vscode/services': path.resolve(__dirname, 'src/renderer/vscode-mock.ts'),
+      vscode: path.resolve(__dirname, 'src/renderer/vscode-mock.ts')
     },
     fallback: {
       path: require.resolve('path-browserify')

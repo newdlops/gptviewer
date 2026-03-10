@@ -1,14 +1,21 @@
-import { MonacoLanguageClient } from 'monaco-languageclient';
-import { MonacoServices } from 'monaco-languageclient/lib/monaco-services';
+import { MonacoLanguageClient, MonacoServices } from 'monaco-languageclient';
 import { CloseAction, ErrorAction } from 'vscode-languageclient';
 import { WebSocketMessageReader, WebSocketMessageWriter, toSocket } from 'vscode-ws-jsonrpc';
 import * as monaco from 'monaco-editor/esm/vs/editor/editor.api';
+import * as vscode from 'vscode';
 
 let isServicesInstalled = false;
 
 export async function createJavaLanguageClient(port: number, projectDir: string): Promise<MonacoLanguageClient> {
     if (!isServicesInstalled) {
-        MonacoServices.install(monaco as any);
+        // monaco-languageclient expects a VSCode-like environment. We must mock Uri.file manually
+        // because monaco.Uri.file doesn't exist by default in recent monaco-editor versions.
+        const m: any = monaco;
+        if (!m.Uri.file) {
+            m.Uri.file = (path: string) => m.Uri.parse(`file://${path}`);
+        }
+
+        MonacoServices.install(m);
         isServicesInstalled = true;
     }
 
@@ -16,27 +23,32 @@ export async function createJavaLanguageClient(port: number, projectDir: string)
     console.info(`\n========== [LSP CLIENT START ATTEMPT] ==========`);
     console.info(`[JavaLspClient] Target URL: ${url}`);
     console.info(`[JavaLspClient] Workspace: ${projectDir}`);
-    
+
     const webSocket = new WebSocket(url);
 
     return new Promise((resolve, reject) => {
-        webSocket.onopen = () => {
+        webSocket.onopen = async () => {
             console.info('[JavaLspClient] -> SUCCESS: WebSocket connection opened');
-            
+
             // v4 API
             const socket = toSocket(webSocket);
             const reader = new WebSocketMessageReader(socket);
             const writer = new WebSocketMessageWriter(socket);
-            
+
             try {
                 console.info('[JavaLspClient] Creating MonacoLanguageClient (v4)...');
                 const languageClient = createMonacoLanguageClient({ reader, writer }, projectDir);
-                languageClient.start();
+
+                // Await start() to ensure client is running before resolve
+                await languageClient.start();
                 console.info('[JavaLspClient] -> SUCCESS: Language Client started and attached to Monaco.\n');
-                
+
                 reader.onClose(() => {
                     console.warn('\n[JavaLspClient] WebSocket connection CLOSED by server.');
-                    languageClient.stop();
+                    // state를 확인하고 stop() 호출
+                    if (languageClient.isRunning()) {
+                        languageClient.stop();
+                    }
                 });
                 resolve(languageClient);
             } catch (err) {
@@ -45,7 +57,7 @@ export async function createJavaLanguageClient(port: number, projectDir: string)
                 reject(err);
             }
         };
-        
+
         webSocket.onerror = (error) => {
             console.error('\n[JavaLspClient] !!!!!!!!! WEBSOCKET CONNECTION ERROR !!!!!!!!!');
             console.error(error);
@@ -68,10 +80,18 @@ function createMonacoLanguageClient(transports: any, projectDir: string): Monaco
         clientOptions: {
             documentSelector: ['java'], // v4는 단순 string array 허용
             workspaceFolder: {
-                uri: `file://${projectDir}`,
+                uri: monaco.Uri.parse(`file://${projectDir}`) as any,
                 name: 'temp-java-project',
                 index: 0
             } as any,
+            initializationOptions: {
+                settings: {
+                    java: {
+                        configuration: { updateBuildConfiguration: "disabled" },
+                        format: { enabled: true }
+                    }
+                }
+            },
             errorHandler: {
                 error: () => ({ action: ErrorAction.Continue }),
                 closed: () => ({ action: CloseAction.DoNotRestart })
