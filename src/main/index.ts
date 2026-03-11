@@ -2531,6 +2531,75 @@ ipcMain.handle(
   },
 );
 
+const runningJavaProcesses = new Map<string, { process: import('child_process').ChildProcess, tempDir: string }>();
+
+ipcMain.handle(
+  'java:start-interactive',
+  async (event, sessionId: string, code: string) => {
+    let tempDir = '';
+    try {
+      const { mkdtemp, writeFile, rm } = require('fs/promises');
+      const { tmpdir } = require('os');
+      const { join } = require('path');
+      const { spawn, exec } = require('child_process');
+      const util = require('util');
+      const execAsync = util.promisify(exec);
+
+      tempDir = await mkdtemp(join(tmpdir(), 'gptviewer-java-'));
+      const classMatch = code.match(/public\s+class\s+([a-zA-Z0-9_$]+)/);
+      const className = classMatch ? classMatch[1] : 'Main';
+      const fileName = `${className}.java`;
+      const filePath = join(tempDir, fileName);
+
+      await writeFile(filePath, code, 'utf8');
+
+      // Compile
+      try {
+        await execAsync(`javac "${fileName}"`, { cwd: tempDir, timeout: 10000 });
+      } catch (compileError: any) {
+        return { success: false, error: compileError.stderr || compileError.message };
+      }
+
+      // Run interactively
+      const javaProcess = spawn('java', [className], { cwd: tempDir });
+
+      javaProcess.stdout.on('data', (data: Buffer) => {
+        event.sender.send('java:run-output', sessionId, data.toString());
+      });
+
+      javaProcess.stderr.on('data', (data: Buffer) => {
+        event.sender.send('java:run-error', sessionId, data.toString());
+      });
+
+      javaProcess.on('close', (code) => {
+        event.sender.send('java:run-exit', sessionId, code);
+        runningJavaProcesses.delete(sessionId);
+        rm(tempDir, { recursive: true, force: true }).catch(() => {});
+      });
+
+      runningJavaProcesses.set(sessionId, { process: javaProcess, tempDir });
+      return { success: true };
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  }
+);
+
+ipcMain.on('java:send-input', (event, sessionId: string, input: string) => {
+  const session = runningJavaProcesses.get(sessionId);
+  if (session && session.process.stdin) {
+    session.process.stdin.write(input + '\n');
+  }
+});
+
+ipcMain.on('java:stop-interactive', (event, sessionId: string) => {
+  const session = runningJavaProcesses.get(sessionId);
+  if (session) {
+    session.process.kill();
+    runningJavaProcesses.delete(sessionId);
+  }
+});
+
 ipcMain.handle(
   'java:run',
   async (_event, code: string) => {

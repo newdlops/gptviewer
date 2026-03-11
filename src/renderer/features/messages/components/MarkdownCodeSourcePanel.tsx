@@ -126,7 +126,7 @@ export function MarkdownCodeSourcePanel({
   }, [lineCount]);
 
   const editorLineNumbers = useMemo(
-    () => editorLines.map((lineNumber) => String(lineNumber)).join('\n'),
+    () => editorLines.map((lineNumber) => String(lineNumber)).join('\n') + '\n', // 스크롤바나 하단 패딩에 의해 마지막 줄이 잘리지 않도록 빈 줄 하나 추가
     [editorLines],
   );
 
@@ -214,6 +214,13 @@ export function MarkdownCodeSourcePanel({
   // 텍스트 너비가 textarea 너비를 넘을 수 있으므로 하이라이트 레이어의 min-width를 보정
   const highlightWidth = textareaRef.current?.scrollWidth ?? '100%';
 
+  // 코드의 줄 수에 비례하여 동적으로 최소 높이 계산 (한 줄 대략 24px + 여백 40px)
+  const dynamicMinHeight = useMemo(() => {
+    if (!editable) return 'auto';
+    const calculatedHeight = Math.max(100, lineCount * 24 + 40);
+    return `${calculatedHeight}px`;
+  }, [editable, lineCount]);
+
   return (
     <section className="code-block__source-section" ref={containerRef} style={{ width: '100%', maxWidth: '100%' }}>
       {title ? <div className="code-block__source-title">{title}</div> : null}
@@ -229,13 +236,13 @@ export function MarkdownCodeSourcePanel({
             position: 'relative',
             width: '100%',
             alignItems: 'stretch',
-            minHeight: '100px',
+            minHeight: dynamicMinHeight,
             cursor: isResizing ? 'col-resize' : 'default',
             userSelect: isResizing ? 'none' : 'auto',
           }}
         >
-          <div className="code-block__source-editor-pane" style={{ minWidth: 0, flex: `0 0 ${editorWidthPercent}%`, display: 'flex', flexDirection: 'column' }}>
-            <div className="code-block__source-editor-shell code-block__source-editor" style={{ width: '100%', flex: 1, display: 'grid', gridTemplateColumns: 'auto 1fr' }}>
+          <div className="code-block__source-editor-pane" style={{ minWidth: 0, flex: `0 0 ${editorWidthPercent}%`, display: 'flex', flexDirection: 'column', minHeight: dynamicMinHeight }}>
+            <div className="code-block__source-editor-shell code-block__source-editor" style={{ width: '100%', flex: 1, display: 'grid', gridTemplateColumns: 'auto 1fr', minHeight: dynamicMinHeight }}>
               {/* ... (기존 거터 및 스테이지 내용 동일) ... */}
               <div
                 ref={gutterRef}
@@ -332,7 +339,7 @@ export function MarkdownCodeSourcePanel({
                     resize: 'none',
                     border: 'none',
                     outline: 'none',
-                    overflow: 'hidden',
+                    overflow: 'auto',
                     whiteSpace: 'pre',
                     wordBreak: 'normal',
                     display: 'block',

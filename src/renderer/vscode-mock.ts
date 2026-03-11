@@ -155,6 +155,17 @@ export class SignatureInformation {
 export class ParameterInformation {
     constructor(public label: string | [number, number], public documentation?: string | any) {}
 }
+export class SemanticTokensLegend {
+    constructor(public tokenTypes: string[], public tokenModifiers: string[] = []) {}
+}
+export class SemanticTokensBuilder {
+    private _data: number[] = [];
+    constructor(public legend?: SemanticTokensLegend) {}
+    push(line: number, char: number, length: number, tokenType: number, tokenModifiers: number) {
+        this._data.push(line, char, length, tokenType, tokenModifiers);
+    }
+    build() { return { resultId: undefined, data: new Uint32Array(this._data) }; }
+}
 export const CodeActionKind = { Empty: { value: '' }, QuickFix: { value: 'quickfix' }, Refactor: { value: 'refactor' }, RefactorExtract: { value: 'refactor.extract' }, RefactorInline: { value: 'refactor.inline' }, RefactorRewrite: { value: 'refactor.rewrite' }, Source: { value: 'source' }, SourceOrganizeImports: { value: 'source.organizeImports' }, SourceFixAll: { value: 'source.fixAll' } };
 export const Services = {
     install: (services: any) => ({ dispose: () => {} }),

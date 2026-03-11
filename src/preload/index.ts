@@ -47,6 +47,27 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('image:save', dataUrl, defaultName),
   runJavaCode: (code: string) =>
     ipcRenderer.invoke('java:run', code),
+  startInteractiveJava: (sessionId: string, code: string) =>
+    ipcRenderer.invoke('java:start-interactive', sessionId, code),
+  sendJavaInput: (sessionId: string, input: string) =>
+    ipcRenderer.send('java:send-input', sessionId, input),
+  stopInteractiveJava: (sessionId: string) =>
+    ipcRenderer.send('java:stop-interactive', sessionId),
+  onJavaRunOutput: (listener: (sessionId: string, data: string) => void) => {
+    const wrappedListener = (_event: any, sid: string, data: string) => listener(sid, data);
+    ipcRenderer.on('java:run-output', wrappedListener);
+    return () => ipcRenderer.removeListener('java:run-output', wrappedListener);
+  },
+  onJavaRunError: (listener: (sessionId: string, data: string) => void) => {
+    const wrappedListener = (_event: any, sid: string, data: string) => listener(sid, data);
+    ipcRenderer.on('java:run-error', wrappedListener);
+    return () => ipcRenderer.removeListener('java:run-error', wrappedListener);
+  },
+  onJavaRunExit: (listener: (sessionId: string, code: number) => void) => {
+    const wrappedListener = (_event: any, sid: string, code: number) => listener(sid, code);
+    ipcRenderer.on('java:run-exit', wrappedListener);
+    return () => ipcRenderer.removeListener('java:run-exit', wrappedListener);
+  },
   startJavaServer: (code: string) => ipcRenderer.invoke('java:lsp-start', code),
   updateJavaFile: (filePath: string, code: string) =>
     ipcRenderer.invoke('java:update-file', filePath, code),

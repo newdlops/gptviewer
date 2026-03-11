@@ -67,6 +67,12 @@ interface ElectronAPI {
   runJavaCode(
     code: string,
   ): Promise<{ error?: string; output?: string; success: boolean }>;
+  startInteractiveJava(sessionId: string, code: string): Promise<{ success: boolean; error?: string }>;
+  sendJavaInput(sessionId: string, input: string): void;
+  stopInteractiveJava(sessionId: string): void;
+  onJavaRunOutput(listener: (sessionId: string, data: string) => void): () => void;
+  onJavaRunError(listener: (sessionId: string, data: string) => void): () => void;
+  onJavaRunExit(listener: (sessionId: string, code: number) => void): () => void;
   startJavaServer(code: string): Promise<{ success: boolean; port: number; projectDir: string; filePath: string; error?: string }>;
   updateJavaFile(filePath: string, code: string): Promise<{ success: boolean }>;
   getJavaProjectTree(projectDir: string): Promise<any[]>;
