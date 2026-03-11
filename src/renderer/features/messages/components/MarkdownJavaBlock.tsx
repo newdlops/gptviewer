@@ -647,7 +647,7 @@ export function MarkdownJavaBlock({
 
       <div style={{
         display: 'flex',
-        height: isJavaEditMode ? editorHeight : 'auto',
+        height: 'auto',
         backgroundColor: isDark ? '#1e1e1e' : '#fff',
         position: 'relative',
         overflow: 'visible'
@@ -689,7 +689,7 @@ export function MarkdownJavaBlock({
               <div style={{ flex: 1 }}></div>
             </div>
           )}
-          <div style={{ flexGrow: 1, overflow: 'visible' }}>
+          <div style={{ flexGrow: 1, overflow: 'visible', height: isJavaEditMode ? editorHeight : 'auto' }}>
             {isJavaEditMode ? (
               <Editor
                 height="100%"
@@ -729,11 +729,11 @@ export function MarkdownJavaBlock({
 
           {(javaResult || javaTerminalOutput.length > 0) && (
             <div style={{
-              position: 'absolute', bottom: 0, left: 0, right: 0, zIndex: 20, maxHeight: '60%', minHeight: '120px',
+              position: 'relative', zIndex: 20, height: '220px', flexShrink: 0,
               display: 'flex', flexDirection: 'column',
               backgroundColor: isDark ? 'rgba(30, 30, 30, 0.98)' : 'rgba(255, 255, 255, 0.98)',
               borderTop: `2px solid ${isJavaRunning ? '#007acc' : (javaTerminalOutput.some(o => o.type === 'err') ? '#f44336' : '#4caf50')}`,
-              boxShadow: '0 -4px 12px rgba(0,0,0,0.3)', backdropFilter: 'blur(8px)'
+              boxShadow: '0 -4px 12px rgba(0,0,0,0.1)', backdropFilter: 'blur(8px)'
             }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 12px', borderBottom: isDark ? '1px solid #333' : '1px solid #ddd', backgroundColor: isDark ? '#252526' : '#f3f3f3' }}>
                 <span style={{ fontWeight: 'bold', fontSize: '11px', color: isDark ? '#d4d4d4' : '#333', textTransform: 'uppercase', letterSpacing: '0.05em', display: 'flex', alignItems: 'center' }}>

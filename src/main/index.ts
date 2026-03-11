@@ -2540,39 +2540,67 @@ ipcMain.handle(
     try {
       const { mkdtemp, writeFile, rm } = require('fs/promises');
       const { tmpdir } = require('os');
-      const { join } = require('path');
+      const { join, dirname } = require('path');
       const { spawn, exec } = require('child_process');
       const util = require('util');
       const execAsync = util.promisify(exec);
+      const { analyzeJavaExecution } = require('./services/javaExecutionAnalyzer');
+      const { javaLspService } = require('./services/javaLspService');
 
-      tempDir = await mkdtemp(join(tmpdir(), 'gptviewer-java-'));
-      const classMatch = code.match(/public\s+class\s+([a-zA-Z0-9_$]+)/);
-      const className = classMatch ? classMatch[1] : 'Main';
-      const fileName = `${className}.java`;
-      const filePath = join(tempDir, fileName);
+      // javaLspService에서 찾아낸 Java 21 실행 파일 경로를 가져옴
+      const javaBinPath = javaLspService.findJavaExecutable();
+      const jdkBinDir = dirname(javaBinPath); // /opt/homebrew/.../bin
+      const javacPath = join(jdkBinDir, process.platform === 'win32' ? 'javac.exe' : 'javac');
+      const jshellPath = join(jdkBinDir, process.platform === 'win32' ? 'jshell.exe' : 'jshell');
 
-      await writeFile(filePath, code, 'utf8');
+      const analysis = analyzeJavaExecution(code);
 
-      // Compile
-      try {
-        await execAsync(`javac "${fileName}"`, { cwd: tempDir, timeout: 10000 });
-      } catch (compileError: any) {
-        return { success: false, error: compileError.stderr || compileError.message };
+      let javaProcess;
+
+      if (analysis.strategy === 'JSHELL') {
+        // --- JShell 모드 (스니펫 & 단순 함수) ---
+        tempDir = await mkdtemp(join(tmpdir(), 'gptviewer-jshell-'));
+        javaProcess = spawn(jshellPath, ['-q'], { cwd: tempDir });
+        
+        // JShell이 켜지면 분석된 코드를 바로 밀어넣습니다.
+        if (javaProcess.stdin) {
+          javaProcess.stdin.write(analysis.executableCode + '\n');
+        }
+      } else {
+        // --- 일반/감싸기 모드 (클래스 기반) ---
+        tempDir = await mkdtemp(join(tmpdir(), 'gptviewer-java-'));
+        const className = analysis.mainClassName || 'Main';
+        const fileName = `${className}.java`;
+        const filePath = join(tempDir, fileName);
+
+        await writeFile(filePath, analysis.executableCode, 'utf8');
+
+        // Compile (절대 경로 javac 사용)
+        try {
+          await execAsync(`"${javacPath}" --release 21 --enable-preview "${fileName}"`, { cwd: tempDir, timeout: 10000 });
+        } catch (compileError: any) {
+          return { success: false, error: compileError.stderr || compileError.message };
+        }
+
+        // Run interactively (절대 경로 java 사용)
+        javaProcess = spawn(javaBinPath, ['--enable-preview', className], { cwd: tempDir });
       }
 
-      // Run interactively
-      const javaProcess = spawn('java', [className], { cwd: tempDir });
-
+      // 프로세스 스트림 브릿징
       javaProcess.stdout.on('data', (data: Buffer) => {
-        event.sender.send('java:run-output', sessionId, data.toString());
+        let text = data.toString();
+        if (analysis.strategy === 'JSHELL') {
+            text = text.replace(/jshell> /g, '').replace(/...> /g, '');
+        }
+        event.sender.send('java:run-output', sessionId, text);
       });
 
       javaProcess.stderr.on('data', (data: Buffer) => {
         event.sender.send('java:run-error', sessionId, data.toString());
       });
 
-      javaProcess.on('close', (code) => {
-        event.sender.send('java:run-exit', sessionId, code);
+      javaProcess.on('close', (exitCode) => {
+        event.sender.send('java:run-exit', sessionId, exitCode);
         runningJavaProcesses.delete(sessionId);
         rm(tempDir, { recursive: true, force: true }).catch(() => {});
       });

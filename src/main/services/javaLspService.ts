@@ -13,7 +13,7 @@ export class JavaLspService {
   private wss: WS.Server | null = null;
   private workspaceStateDir: string | null = null;
 
-  private findJavaExecutable(): string {
+  public findJavaExecutable(): string {
     const isWin = process.platform === 'win32';
     const isMac = process.platform === 'darwin';
     const javaExe = isWin ? 'java.exe' : 'java';
