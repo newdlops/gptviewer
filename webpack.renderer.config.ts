@@ -22,14 +22,6 @@ export const rendererConfig: Configuration = {
   },
   plugins: [
     ...plugins,
-    new CopyPlugin({
-      patterns: [
-        {
-          from: path.resolve(__dirname, 'node_modules/monaco-editor/min/vs'),
-          to: 'vs', // 출력 폴더 내 'vs' 폴더로 복사
-        },
-      ],
-    }),
   ],
   resolve: {
     extensions: ['.js', '.ts', '.jsx', '.tsx', '.css'],

@@ -67,7 +67,7 @@ interface ElectronAPI {
   runJavaCode(
     code: string,
   ): Promise<{ error?: string; output?: string; success: boolean }>;
-  startInteractiveJava(sessionId: string, code: string): Promise<{ success: boolean; error?: string }>;
+  startInteractiveJava(sessionId: string, code: string, snapshot?: Record<string, string>): Promise<{ success: boolean; error?: string }>;
   sendJavaInput(sessionId: string, input: string): void;
   stopInteractiveJava(sessionId: string): void;
   onJavaRunOutput(listener: (sessionId: string, data: string) => void): () => void;

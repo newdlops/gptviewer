@@ -99,10 +99,13 @@ export function MarkdownCodeSourcePanel({
   const isLargeCode = lineCount > LAZY_RENDER_THRESHOLD_LINES;
 
   useEffect(() => {
-    if (!isLargeCode) {
+    if (!isLargeCode || editable) {
       setIsVisible(true);
       return;
     }
+
+    // 이미 가시 상태라면 관찰할 필요 없음
+    if (isVisible) return;
 
     const observer = new IntersectionObserver(
       ([entry]) => {
@@ -119,7 +122,7 @@ export function MarkdownCodeSourcePanel({
     }
 
     return () => observer.disconnect();
-  }, [isLargeCode]);
+  }, [isLargeCode, editable, isVisible]);
 
   const editorLines = useMemo(() => {
     return Array.from({ length: Math.max(1, lineCount) }, (_, index) => index + 1);
@@ -311,7 +314,7 @@ export function MarkdownCodeSourcePanel({
                       style={{
                         ...EDITOR_COMMON_STYLES,
                         whiteSpace: 'pre',
-                        color: 'inherit',
+                        color: themeMode === 'dark' ? '#d4d4d4' : '#333',
                         width: '100%',
                       }}
                     >
@@ -410,6 +413,7 @@ export function MarkdownCodeSourcePanel({
               ...EDITOR_COMMON_STYLES,
               whiteSpace: 'pre-wrap',
               wordBreak: 'break-all',
+              color: themeMode === 'dark' ? '#d4d4d4' : '#333',
             }}
           >
             {value}

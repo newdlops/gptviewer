@@ -7,7 +7,7 @@ import {
   shell,
   type IpcMainInvokeEvent,
 } from 'electron';
-import { writeFile, mkdtemp, rm } from 'node:fs/promises';
+import { writeFile, mkdtemp, rm, mkdir } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawn, exec } from 'node:child_process';
@@ -2550,7 +2550,7 @@ const runningJavaProcesses = new Map<string, { process: import('child_process').
 
 ipcMain.handle(
   'java:start-interactive',
-  async (event, sessionId: string, code: string) => {
+  async (event, sessionId: string, code: string, snapshot?: Record<string, string>) => {
     let tempDir = '';
     try {
       // javaLspService에서 찾아낸 Java 21 실행 파일 경로를 가져옴
@@ -2563,8 +2563,8 @@ ipcMain.handle(
 
       let javaProcess;
 
-      if (analysis.strategy === 'JSHELL') {
-        // --- JShell 모드 (스니펫 & 단순 함수) ---
+      if (analysis.strategy === 'JSHELL' && !snapshot) {
+        // --- JShell 모드 (단일 스니펫 & 단순 함수, 프로젝트 아님) ---
         tempDir = await mkdtemp(join(tmpdir(), 'gptviewer-jshell-'));
         javaProcess = spawn(jshellPath, ['-q'], { cwd: tempDir });
         
@@ -2573,29 +2573,63 @@ ipcMain.handle(
           javaProcess.stdin.write(analysis.executableCode + '\n');
         }
       } else {
-        // --- 일반/감싸기 모드 (클래스 기반) ---
-        tempDir = await mkdtemp(join(tmpdir(), 'gptviewer-java-'));
+        // --- 프로젝트 모드 (클래스 기반 혹은 다중 파일) ---
+        tempDir = await mkdtemp(join(tmpdir(), 'gptviewer-java-proj-'));
+        const srcDir = join(tempDir, 'src');
+        const binDir = join(tempDir, 'bin');
+        await mkdir(srcDir, { recursive: true });
+        await mkdir(binDir, { recursive: true });
+
+        let targetRelPath = '';
         const className = analysis.mainClassName || 'Main';
-        const fileName = `${className}.java`;
-        const filePath = join(tempDir, fileName);
 
-        await writeFile(filePath, analysis.executableCode, 'utf8');
+        if (snapshot && Object.keys(snapshot).length > 0) {
+          // 1. 스냅샷 복원 (src 폴더 하위로)
+          for (const [relPath, content] of Object.entries(snapshot)) {
+            // relPath는 보통 'src/com/example/Main.java' 형태이거나 'src/Main.java'
+            const fullPath = join(tempDir, relPath);
+            await mkdir(dirname(fullPath), { recursive: true });
+            
+            // 현재 에디터에서 보고 있는 파일(code)이라면 최신 내용으로 덮어씀
+            const isCurrentFile = relPath.endsWith(`${className}.java`);
+            await writeFile(fullPath, isCurrentFile ? code : content, 'utf8');
+            
+            if (isCurrentFile) targetRelPath = relPath;
+          }
+        }
 
-        // Compile (절대 경로 javac 사용)
+        // targetRelPath가 지정되지 않았다면 (스냅샷이 없거나 매칭 실패) 기본 생성
+        if (!targetRelPath) {
+          targetRelPath = join('src', `${className}.java`);
+          await writeFile(join(tempDir, targetRelPath), analysis.executableCode, 'utf8');
+        }
+
+        // 2. 컴파일
+        // -sourcepath src를 지정하면 의존성 있는 파일들을 javac가 자동으로 찾아서 함께 컴파일합니다.
         try {
-          await execAsync(`"${javacPath}" --release 21 --enable-preview "${fileName}"`, { cwd: tempDir, timeout: 10000 });
+          const targetFileFullPath = join(tempDir, targetRelPath);
+          await execAsync(`"${javacPath}" -d bin -sourcepath src --release 21 --enable-preview "${targetFileFullPath}"`, { 
+            cwd: tempDir, 
+            timeout: 15000 
+          });
         } catch (compileError: any) {
           return { success: false, error: compileError.stderr || compileError.message };
         }
 
-        // Run interactively (절대 경로 java 사용)
-        javaProcess = spawn(javaBinPath, ['--enable-preview', className], { cwd: tempDir });
+        // 3. 실행
+        // 패키지 경로를 포함한 클래스명 추출 (src/com/foo/Bar.java -> com.foo.Bar)
+        const fullClassName = targetRelPath
+          .replace(/^src[/\\]/, '')
+          .replace(/\.java$/, '')
+          .replace(/[/\\]/g, '.');
+
+        javaProcess = spawn(javaBinPath, ['-cp', 'bin', '--enable-preview', fullClassName], { cwd: tempDir });
       }
 
       // 프로세스 스트림 브릿징
       javaProcess.stdout.on('data', (data: Buffer) => {
         let text = data.toString();
-        if (analysis.strategy === 'JSHELL') {
+        if (analysis.strategy === 'JSHELL' && !snapshot) {
             text = text.replace(/jshell> /g, '').replace(/...> /g, '');
         }
         event.sender.send('java:run-output', sessionId, text);

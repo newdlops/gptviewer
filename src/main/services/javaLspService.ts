@@ -9,9 +9,9 @@ import * as WS from 'ws';
 import * as serverRpc from 'vscode-ws-jsonrpc/server';
 
 export class JavaLspService {
-  private lspProcess: ChildProcess | null = null;
+  private lspProcesses: Set<ChildProcess> = new Set();
   private wss: WS.Server | null = null;
-  private workspaceStateDir: string | null = null;
+  private workspaceStateDirs: Set<string> = new Set();
 
   public findJavaExecutable(): string {
     const isWin = process.platform === 'win32';
@@ -145,25 +145,34 @@ export class JavaLspService {
 	<classpathentry kind="output" path="bin"/>
 </classpath>`, 'utf8');
 
-    return { projectDir, filePath: mainFilePath };
+    // macOS 등에서 /var -> /private/var 심볼릭 링크 문제 방지를 위해 realpath 사용
+    const { realpath } = require('node:fs/promises');
+    const realProjectDir = await realpath(projectDir);
+    const realFilePath = await realpath(mainFilePath);
+
+    return { projectDir: realProjectDir, filePath: realFilePath };
   }
 
   async getProjectSnapshot(projectDir: string): Promise<Record<string, string>> {
+    const { realpath } = require('node:fs/promises');
+    const realProjDir = await realpath(projectDir);
+    const srcDir = join(realProjDir, 'src');
+    
     const snapshot: Record<string, string> = {};
     const walk = async (dir: string) => {
       const entries = await readdir(dir, { withFileTypes: true });
       for (const entry of entries) {
         const fullPath = join(dir, entry.name);
+        const realFullPath = await realpath(fullPath);
+        
         if (entry.isDirectory()) {
-          // .metadata, bin 같은 불필요한 폴더는 제외
           if (!['.metadata', 'bin'].includes(entry.name)) {
-            await walk(fullPath);
+            await walk(realFullPath);
           }
         } else {
-          // 사용자 소스코드(src 폴더 내부 등)와 관련 없는 설정 파일 제외
-          if (!['.project', '.classpath'].includes(entry.name) && fullPath.includes(join(projectDir, 'src'))) {
-            const relPath = fullPath.replace(projectDir, '').replace(/^[/\\]/, '');
-            snapshot[relPath] = await readFile(fullPath, 'utf8');
+          if (!['.project', '.classpath'].includes(entry.name) && realFullPath.startsWith(srcDir)) {
+            const relPath = realFullPath.replace(realProjDir, '').replace(/^[/\\]/, '');
+            snapshot[relPath] = await readFile(realFullPath, 'utf8');
           }
         }
       }
@@ -180,7 +189,14 @@ export class JavaLspService {
 
   async updateProjectFile(filePath: string, code: string): Promise<{ success: boolean }> {
     try {
-        await writeFile(filePath, code, 'utf8');
+        const { realpath } = require('node:fs/promises');
+        let targetPath = filePath;
+        try {
+          targetPath = await realpath(filePath);
+        } catch {
+          // If file doesn't exist yet, we can't get realpath, but writeFile will create it.
+        }
+        await writeFile(targetPath, code, 'utf8');
         return { success: true };
     } catch (e) {
         console.error('[JavaLspService] Failed to update project file:', e);
@@ -301,7 +317,8 @@ export class JavaLspService {
 
       this.wss.on('connection', async (socket: WS.WebSocket) => {
         const uniqueStateDir = await mkdtemp(join(tmpdir(), 'jdtls-state-'));
-        this.workspaceStateDir = uniqueStateDir;
+        this.workspaceStateDirs.add(uniqueStateDir);
+        
         const rpcSocket = {
             send: (content: string) => socket.send(content, (error) => { if (error) console.error(error); }),
             onMessage: (cb: (data: string) => void) => socket.on('message', (data) => cb(data.toString())),
@@ -314,19 +331,23 @@ export class JavaLspService {
         try {
             const args = await this.getJdtlsLaunchArgs(javaBin, uniqueStateDir);
             localLspProcess = spawn(javaBin, args, { env, stdio: 'pipe' });
-            this.lspProcess = localLspProcess;
-            localLspProcess.on('exit', () => { rm(uniqueStateDir, { recursive: true, force: true }).catch(() => {}); });
+            this.lspProcesses.add(localLspProcess);
+
+            localLspProcess.on('exit', () => {
+              this.workspaceStateDirs.delete(uniqueStateDir);
+              rm(uniqueStateDir, { recursive: true, force: true }).catch(() => {});
+              if (localLspProcess) this.lspProcesses.delete(localLspProcess);
+            });
+
             if (localLspProcess) {
               if (serverRpc.createWebSocketConnection && serverRpc.createProcessStreamConnection) {
                   const socketConnection = serverRpc.createWebSocketConnection(rpcSocket);
                   const serverConnection = serverRpc.createProcessStreamConnection(localLspProcess);
                   if (serverConnection) {
                       serverConnection.forward(socketConnection, (message: any) => {
-                          console.log('[LSP MAIN <- SERVER]', JSON.stringify(message).substring(0, 500));
                           return message;
                       });
                       socketConnection.forward(serverConnection, (message: any) => {
-                          console.log('[LSP MAIN -> SERVER]', JSON.stringify(message).substring(0, 500));
                           return message;
                       });
                       serverConnection.onClose(() => socketConnection.dispose());
@@ -335,7 +356,12 @@ export class JavaLspService {
               }
             }
         } catch (e) { console.error(e); }
-        socket.on('close', () => { if (localLspProcess) localLspProcess.kill(); });
+        socket.on('close', () => {
+          if (localLspProcess) {
+            localLspProcess.kill();
+            this.lspProcesses.delete(localLspProcess);
+          }
+        });
       });
       return { success: true, port };
     } catch (error: any) { return { success: false, error: error.message }; }
@@ -343,8 +369,17 @@ export class JavaLspService {
 
   async stopServer() {
     if (this.wss) this.wss.close();
-    if (this.lspProcess) this.lspProcess.kill();
-    if (this.workspaceStateDir) await rm(this.workspaceStateDir, { recursive: true, force: true }).catch(() => {});
+    
+    for (const proc of this.lspProcesses) {
+      proc.kill();
+    }
+    this.lspProcesses.clear();
+
+    for (const dir of this.workspaceStateDirs) {
+      await rm(dir, { recursive: true, force: true }).catch(() => {});
+    }
+    this.workspaceStateDirs.clear();
+
     return { success: true };
   }
 }

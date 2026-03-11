@@ -16,9 +16,33 @@ import {
 } from '../lib/customJavaProjectCache';
 import { MarkdownCodeSourcePanel } from './MarkdownCodeSourcePanel';
 import Editor, { loader, OnMount } from '@monaco-editor/react';
+import * as monaco from 'monaco-editor';
 import { createJavaLanguageClient } from '../lib/javaLspClient';
 
-loader.config({ paths: { vs: '../vs' } });
+loader.config({ monaco });
+
+const getLanguageFromFile = (filename: string) => {
+  if (filename.endsWith('.java')) return 'java';
+  if (filename.endsWith('.xml')) return 'xml';
+  if (filename.endsWith('.project')) return 'xml';
+  if (filename.endsWith('.classpath')) return 'xml';
+  return 'plaintext';
+};
+
+const getJavaFullClassName = (filePath: string, projectDir: string) => {
+  if (!filePath || !projectDir) return 'Main.java';
+  const normalizedPath = filePath.replace(/\\/g, '/');
+  const normalizedProjectDir = projectDir.replace(/\\/g, '/');
+  const relPath = normalizedPath.replace(normalizedProjectDir, '').replace(/^\/+/, '');
+  
+  if (!relPath.startsWith('src/')) return relPath.split('/').pop() || '';
+  
+  const pathAfterSrc = relPath.replace(/^src\//, '');
+  if (!pathAfterSrc) return 'Main.java';
+  
+  // com/example/Main.java -> com.example.Main
+  return pathAfterSrc.replace(/\.java$/, '').replace(/\//g, '.');
+};
 
 type MarkdownJavaBlockProps = {
   code: string;
@@ -119,6 +143,15 @@ export function MarkdownJavaBlock({
   }, [javaSessionId]);
   // ------------------------------------
 
+  // 컴포넌트 언마운트 시 혹은 프로젝트 디렉토리 변경 시 스냅샷 저장 보장
+  useEffect(() => {
+    return () => {
+      if (projectDir) {
+        saveCurrentProjectSnapshot(projectDir);
+      }
+    };
+  }, [projectDir]);
+
   const lspStatusRef = useRef(lspStatus);
   const javaFilePathRef = useRef(javaFilePath);
   const languageClientInstanceRef = useRef<any>(null);
@@ -127,6 +160,11 @@ export function MarkdownJavaBlock({
   useEffect(() => { javaFilePathRef.current = javaFilePath; }, [javaFilePath]);
 
   const activeJavaSource = customJavaSource !== null ? customJavaSource : code;
+
+  const currentLanguage = useMemo(() => {
+    if (!javaFilePath) return 'java';
+    return getLanguageFromFile(javaFilePath.split(/[/\\]/).pop() || '');
+  }, [javaFilePath]);
 
   // 프로젝트 스냅샷 저장 헬퍼
   const saveCurrentProjectSnapshot = async (currentDir: string) => {
@@ -150,14 +188,6 @@ export function MarkdownJavaBlock({
     }
   };
 
-  const getLanguageFromFile = (filename: string) => {
-    if (filename.endsWith('.java')) return 'java';
-    if (filename.endsWith('.xml')) return 'xml';
-    if (filename.endsWith('.project')) return 'xml';
-    if (filename.endsWith('.classpath')) return 'xml';
-    return 'plaintext';
-  };
-
   const handleFileClick = async (node: any) => {
     if (node.type === 'directory') {
       const newExpanded = new Set(expandedPaths);
@@ -176,13 +206,6 @@ export function MarkdownJavaBlock({
         if (content !== undefined && content !== null) {
           setJavaFilePath(node.path);
           setCurrentFileContent(content);
-          if (editorInstance) {
-            const model = editorInstance.getModel();
-            if (model) {
-              const lang = getLanguageFromFile(node.name);
-              monacoInstance.editor.setModelLanguage(model, lang);
-            }
-          }
         }
       } catch (e) {
         console.error('[JavaBlock] Failed to read file', e);
@@ -246,7 +269,6 @@ export function MarkdownJavaBlock({
       console.log('[JavaBlock] Idle state or monacoInstance missing. EditMode:', isJavaEditMode, 'Monaco:', !!monacoInstance);
       setLspStatus('idle');
       if (!isJavaEditMode) {
-        setMonacoInstance(null);
         languageClientInstanceRef.current = null;
       }
     }
@@ -293,7 +315,7 @@ export function MarkdownJavaBlock({
         '>>', '>>>', '+=', '-=', '*=', '/=', '&=', '|=',
         '^=', '%=', '<<=', '>>=', '>>>='
       ],
-      symbols: /[=><!~?:&|+\-*\/\^%]+/,
+      symbols: /[=><!~?:&|+\-*/^%]+/,
       escapes: /\\(?:[abfnrtv\\"']|x[0-9A-Fa-f]{1,4}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8})/,
       tokenizer: {
         root: [
@@ -302,16 +324,16 @@ export function MarkdownJavaBlock({
           // 대문자로만 이루어진 단어 (상수, 예: MAX_VALUE)
           [/[A-Z][A-Z0-9_]*\b/, 'constant'],
           // 대문자로 시작하는 단어는 클래스/인터페이스로 간주 (예: String, System)
-          [/[A-Z][\w\$]*\b/, 'type.identifier'],
+          [/[A-Z][\w$]*\b/, 'type.identifier'],
           // 소문자로 시작하고 뒤에 '('가 오면 메서드로 간주
-          [/[a-z_$][\w\$]*(?=\s*\()/, 'function'],
+          [/[a-z_$][\w$]*(?=\s*\()/, 'function'],
           // 일반 식별자 (예: 변수)
-          [/[a-zA-Z_$][\w\$]*\b/, { cases: { '@keywords': 'keyword', '@default': 'identifier' } }],
+          [/[a-zA-Z_$][\w$]*\b/, { cases: { '@keywords': 'keyword', '@default': 'identifier' } }],
           { include: '@whitespace' },
-          [/[{}()\[\]]/, '@brackets'],
+          [/[{}()[\]]/, '@brackets'],
           [/[;,.]/, 'delimiter'],
           [/@symbols/, { cases: { '@operators': 'operator', '@default': '' } }],
-          [/\d*\.\d+([eE][\-+]?\d+)?/, 'number.float'],
+          [/\d*\.\d+([eE][-+]?\d+)?/, 'number.float'],
           [/0[xX][0-9a-fA-F]+/, 'number.hex'],
           [/\d+/, 'number'],
           [/"([^"\\]|\\.)*$/, 'string.invalid'],
@@ -326,10 +348,10 @@ export function MarkdownJavaBlock({
           [/\/\/.*$/, 'comment'],
         ],
         comment: [
-          [/[^\/*]+/, 'comment'],
+          [/[^/*]+/, 'comment'],
           [/\/\*/, 'comment', '@push' ],
           ["\\*/", 'comment', '@pop'  ],
-          [/[\/*]/, 'comment']
+          [/[/*]/, 'comment']
         ],
         string: [
           [/[^\\"]+/, 'string'],
@@ -501,7 +523,7 @@ export function MarkdownJavaBlock({
             position: { line: position.lineNumber - 1, character: position.column - 1 }
           });
           if (!result || !result.contents) return null;
-          let contents: any[] = [];
+          const contents: any[] = [];
           const raw = Array.isArray(result.contents) ? result.contents : [result.contents];
           for (const c of raw) {
             if (typeof c === 'string') contents.push({ value: c });
@@ -575,23 +597,64 @@ export function MarkdownJavaBlock({
     }
 
     // Windows와 Unix 환경의 경로 구분자 차이를 안전하게 처리
-    let relativePath = creatingItemState.parentPath.replace(projectDir!, '');
-    relativePath = relativePath.replace(/^[/\\]+/, ''); // 맨 앞의 슬래시 제거
-    if (relativePath) {
-      relativePath = relativePath + '/' + name;
+    let parentRelPath = creatingItemState.parentPath.replace(projectDir!, '');
+    parentRelPath = parentRelPath.replace(/^[/\\]+/, ''); // 맨 앞의 슬래시 제거
+    
+    let finalRelPath = '';
+
+    // 만약 파일 생성이고 이름에 점(.)이 포함되어 있다면 (예: com.example.Test)
+    // 그리고 아직 확장자가 명시되지 않았다면 점을 경로 구분자로 해석합니다.
+    if (creatingItemState.type === 'file' && name.includes('.') && !name.toLowerCase().endsWith('.java') && !name.toLowerCase().endsWith('.xml')) {
+      const parts = name.split('.');
+      const className = parts.pop();
+      const packagePath = parts.join('/');
+      
+      // 항상 src 하위에 패키지 구조를 생성하도록 유도 (import 가능하게)
+      finalRelPath = `src/${packagePath}/${className}.java`;
     } else {
-      relativePath = name;
+      // 일반적인 파일/폴더 생성
+      let fileNameWithExt = name;
+      if (creatingItemState.type === 'file' && !name.includes('.')) {
+        fileNameWithExt = name + '.java';
+      }
+
+      if (parentRelPath) {
+        finalRelPath = parentRelPath + '/' + fileNameWithExt;
+      } else {
+        // 루트에 파일을 만들 때도 src 하위로 유도하는 것이 좋음 (Java 관례)
+        finalRelPath = `src/${fileNameWithExt}`;
+      }
     }
     
     try {
-      console.log(`[JavaBlock] Creating ${creatingItemState.type}: ${relativePath}`);
+      console.log(`[JavaBlock] Creating ${creatingItemState.type}: ${finalRelPath}`);
       if (creatingItemState.type === 'file') {
-        const className = name.replace('.java', '');
-        const defaultContent = name.endsWith('.java') ? `public class ${className} {\n    \n}\n` : '';
-        const res = await window.electronAPI?.createJavaFile(projectDir!, relativePath, defaultContent);
+        const className = finalRelPath.split(/[/\\]/).pop()?.replace('.java', '') || 'Main';
+        
+        let defaultContent = '';
+        if (finalRelPath.endsWith('.java')) {
+          // src/ 이후의 경로를 추출하여 패키지명 생성
+          const srcPattern = /^src[/\\]/;
+          if (srcPattern.test(finalRelPath)) {
+            const pathAfterSrc = finalRelPath.replace(srcPattern, '');
+            // 슬래시나 백슬래시가 포함되어 있어야 하위 패키지가 존재하는 것임
+            if (pathAfterSrc.includes('/') || pathAfterSrc.includes('\\')) {
+              const packagePath = pathAfterSrc
+                .replace(/[/\\][^/\\]+$/, '') // '파일명.java' 제거
+                .replace(/[/\\]/g, '.'); // '/'를 '.'으로 변경
+              
+              if (packagePath) {
+                defaultContent = `package ${packagePath};\n\n`;
+              }
+            }
+          }
+          defaultContent += `public class ${className} {\n    \n}\n`;
+        }
+        
+        const res = await window.electronAPI?.createJavaFile(projectDir!, finalRelPath, defaultContent);
         if (!res?.success) console.error('[JavaBlock] File creation failed:', res?.error);
       } else {
-        const res = await window.electronAPI?.createJavaDirectory(projectDir!, relativePath);
+        const res = await window.electronAPI?.createJavaDirectory(projectDir!, finalRelPath);
         if (!res?.success) console.error('[JavaBlock] Dir creation failed:', res?.error);
       }
       refreshProjectTree(projectDir!);
@@ -627,7 +690,7 @@ export function MarkdownJavaBlock({
     }
   };
 
-  const renderTree = (nodes: any[], depth = 0, parentPath = projectDir!) => (
+  const renderTree = (nodes: any[], depth = 0, _parentPath = projectDir!) => (
     <div style={{ marginLeft: depth > 0 ? '12px' : '0' }}>
       {nodes.map(node => (
         <div key={node.path}>
@@ -756,12 +819,19 @@ export function MarkdownJavaBlock({
               // 새 대화형 세션 시작
               const sid = Date.now().toString();
               setJavaSessionId(sid);
-              setJavaTerminalOutput([]);
+              setJavaTerminalOutput([{ type: 'out', text: '[프로세스를 시작하는 중...]\n' }]);
               setIsJavaRunning(true);
               setJavaResult(null);
 
               try {
-                const res = await window.electronAPI?.startInteractiveJava(sid, activeJavaSource);
+                // 실행 전 최신 스냅샷 확보
+                let snapshot = undefined;
+                if (projectDir) {
+                  snapshot = await window.electronAPI?.getJavaProjectSnapshot(projectDir);
+                  if (snapshot) saveCustomJavaProjectToCache(sharedCustomJavaCacheKey, snapshot);
+                }
+
+                const res = await window.electronAPI?.startInteractiveJava(sid, activeJavaSource, snapshot || undefined);
                 if (!res?.success) {
                   setJavaTerminalOutput([{ type: 'err', text: res?.error || '프로세스를 시작하지 못했습니다.' }]);
                   setIsJavaRunning(false);
@@ -776,19 +846,43 @@ export function MarkdownJavaBlock({
             {isJavaRunning ? '⏹ 중지' : '▶ 실행'}
           </button>
           {isJavaEditMode && (
-            <button className="code-block__action-button" type="button" onClick={() => {
-              if (confirm('모든 추가된 파일과 변경 사항이 삭제되고 원본 코드로 초기화됩니다. 계속하시겠습니까?')) {
+            <button className="code-block__action-button" type="button" onClick={async () => {
+              if (confirm('현재 편집 중인 메인 파일의 내용을 원본으로 초기화하시겠습니까? (추가한 다른 파일들은 유지됩니다.)')) {
+                // 1. 원본 소스 캐시 제거
                 clearCustomJavaSourceFromCache(sharedCustomJavaCacheKey);
-                clearCustomJavaProjectFromCache(sharedCustomJavaCacheKey);
                 setCustomJavaSource(null);
-                setIsJavaEditMode(false);
-                setProjectTree([]);
+                
+                // 2. 만약 프로젝트가 실행 중이라면 실제 파일도 원본으로 덮어씀
+                if (originalJavaFilePath && projectDir) {
+                  try {
+                    await window.electronAPI?.updateJavaFile(originalJavaFilePath, code);
+                    // 최신 스냅샷 저장 (다른 파일들 유지됨)
+                    const snapshot = await window.electronAPI?.getJavaProjectSnapshot(projectDir);
+                    if (snapshot) {
+                      saveCustomJavaProjectToCache(sharedCustomJavaCacheKey, snapshot);
+                    }
+                    // 현재 에디터 내용도 원본으로 갱신 (만약 메인 파일을 보고 있었다면)
+                    if (javaFilePath === originalJavaFilePath) {
+                      setCurrentFileContent(code);
+                    }
+                  } catch (e) {
+                    console.error('[JavaBlock] Failed to reset original file content', e);
+                  }
+                } else {
+                  // 프로젝트 시작 전이라면 에디터 내용만 변경
+                  setCurrentFileContent(code);
+                }
               }
             }}>
               원본 복원
             </button>
           )}
-          <button className={`code-block__action-button${isJavaEditMode ? ' is-active' : ''}`} type="button" onClick={() => setIsJavaEditMode(!isJavaEditMode)}>
+          <button className={`code-block__action-button${isJavaEditMode ? ' is-active' : ''}`} type="button" onClick={async () => {
+            if (isJavaEditMode && projectDir) {
+              await saveCurrentProjectSnapshot(projectDir);
+            }
+            setIsJavaEditMode(!isJavaEditMode);
+          }}>
             {isJavaEditMode ? '편집 종료' : '편집'}
           </button>
         </div>
@@ -858,10 +952,7 @@ export function MarkdownJavaBlock({
                 cursor: 'default'
               }}>
                 <span style={{ marginRight: '8px' }}>☕</span>
-                <span>{javaFilePath ? javaFilePath.split(/[/\\]/).pop() : 'Main.java'}</span>
-                {javaFilePath && javaFilePath.includes('src') && (
-                  <span style={{ marginLeft: '8px', opacity: 0.5, fontSize: '10px' }}>src/</span>
-                )}
+                <span>{javaFilePath && projectDir ? getJavaFullClassName(javaFilePath, projectDir) : (javaFilePath ? javaFilePath.split(/[/\\]/).pop() : 'Main.java')}</span>
               </div>
               <div style={{ flex: 1 }}></div>
             </div>
@@ -871,7 +962,7 @@ export function MarkdownJavaBlock({
               <Editor
                 height="100%"
                 path={javaFilePath ? `file://${javaFilePath}` : undefined}
-                language="java"
+                language={currentLanguage}
                 theme={isDark ? 'vscode-dark-custom' : 'vscode-light-custom'}
                 value={currentFileContent}
                 beforeMount={handleEditorWillMount}
@@ -911,7 +1002,7 @@ export function MarkdownJavaBlock({
             )}
           </div>
 
-          {(javaResult || javaTerminalOutput.length > 0) && (
+          {(javaResult || javaTerminalOutput.length > 0 || isJavaRunning) && (
             <div style={{
               position: 'relative', zIndex: 20, height: '220px', flexShrink: 0,
               display: 'flex', flexDirection: 'column',

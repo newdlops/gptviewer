@@ -47,8 +47,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('image:save', dataUrl, defaultName),
   runJavaCode: (code: string) =>
     ipcRenderer.invoke('java:run', code),
-  startInteractiveJava: (sessionId: string, code: string) =>
-    ipcRenderer.invoke('java:start-interactive', sessionId, code),
+  startInteractiveJava: (sessionId: string, code: string, snapshot?: Record<string, string>) =>
+    ipcRenderer.invoke('java:start-interactive', sessionId, code, snapshot),
   sendJavaInput: (sessionId: string, input: string) =>
     ipcRenderer.send('java:send-input', sessionId, input),
   stopInteractiveJava: (sessionId: string) =>
@@ -68,7 +68,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('java:run-exit', wrappedListener);
     return () => ipcRenderer.removeListener('java:run-exit', wrappedListener);
   },
-  startJavaServer: (code: string) => ipcRenderer.invoke('java:lsp-start', code),
+  startJavaServer: (code: string, snapshot?: Record<string, string>) =>
+    ipcRenderer.invoke('java:lsp-start', code, snapshot),
   updateJavaFile: (filePath: string, code: string) =>
     ipcRenderer.invoke('java:update-file', filePath, code),
   createJavaFile: (projectDir: string, relativePath: string, content?: string) =>
