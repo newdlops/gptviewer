@@ -102,16 +102,36 @@ export class JavaLspService {
     ];
   }
 
-  async prepareProject(code: string): Promise<{ projectDir: string; filePath: string }> {
+  async prepareProject(code: string, snapshot?: Record<string, string>): Promise<{ projectDir: string; filePath: string }> {
     const projectDir = await mkdtemp(join(tmpdir(), 'java-proj-'));
     const srcDir = join(projectDir, 'src');
     await mkdir(srcDir, { recursive: true });
 
-    const classMatch = code.match(/public\s+class\s+([a-zA-Z0-9_$]+)/);
-    const className = classMatch ? classMatch[1] : 'Main';
-    const filePath = join(srcDir, `${className}.java`);
+    let mainFilePath = '';
 
-    await writeFile(filePath, code, 'utf8');
+    if (snapshot && Object.keys(snapshot).length > 0) {
+      // 스냅샷이 있는 경우 전체 파일 복원
+      for (const [relPath, content] of Object.entries(snapshot)) {
+        const fullPath = join(projectDir, relPath);
+        const dirPath = resolve(fullPath, '..');
+        if (!existsSync(dirPath)) {
+          await mkdir(dirPath, { recursive: true });
+        }
+        await writeFile(fullPath, content, 'utf8');
+        
+        // 원본 코드와 일치하는 파일이거나 Main.java 형태인 것을 초기 파일로 잡음
+        if (relPath.endsWith('.java') && !mainFilePath) {
+          mainFilePath = fullPath;
+        }
+      }
+    } else {
+      // 스냅샷이 없는 경우 기존처럼 단일 파일 생성
+      const classMatch = code.match(/public\s+class\s+([a-zA-Z0-9_$]+)/);
+      const className = classMatch ? classMatch[1] : 'Main';
+      mainFilePath = join(srcDir, `${className}.java`);
+      await writeFile(mainFilePath, code, 'utf8');
+    }
+
     await writeFile(join(projectDir, '.project'), `<?xml version="1.0" encoding="UTF-8"?>
 <projectDescription>
 	<name>temp-java-project-${Date.now()}</name>
@@ -125,7 +145,37 @@ export class JavaLspService {
 	<classpathentry kind="output" path="bin"/>
 </classpath>`, 'utf8');
 
-    return { projectDir, filePath };
+    return { projectDir, filePath: mainFilePath };
+  }
+
+  async getProjectSnapshot(projectDir: string): Promise<Record<string, string>> {
+    const snapshot: Record<string, string> = {};
+    const walk = async (dir: string) => {
+      const entries = await readdir(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        const fullPath = join(dir, entry.name);
+        if (entry.isDirectory()) {
+          // .metadata, bin 같은 불필요한 폴더는 제외
+          if (!['.metadata', 'bin'].includes(entry.name)) {
+            await walk(fullPath);
+          }
+        } else {
+          // 사용자 소스코드(src 폴더 내부 등)와 관련 없는 설정 파일 제외
+          if (!['.project', '.classpath'].includes(entry.name) && fullPath.includes(join(projectDir, 'src'))) {
+            const relPath = fullPath.replace(projectDir, '').replace(/^[/\\]/, '');
+            snapshot[relPath] = await readFile(fullPath, 'utf8');
+          }
+        }
+      }
+    };
+    try {
+      if (existsSync(projectDir)) {
+        await walk(projectDir);
+      }
+    } catch (e) {
+      console.error('[JavaLspService] Failed to create project snapshot', e);
+    }
+    return snapshot;
   }
 
   async updateProjectFile(filePath: string, code: string): Promise<{ success: boolean }> {
@@ -135,6 +185,70 @@ export class JavaLspService {
     } catch (e) {
         console.error('[JavaLspService] Failed to update project file:', e);
         return { success: false };
+    }
+  }
+
+  async createProjectFile(projectDir: string, relativePath: string, content: string = ''): Promise<{ success: boolean, error?: string }> {
+    try {
+      const fullPath = resolve(projectDir, relativePath);
+      if (!fullPath.startsWith(resolve(projectDir))) return { success: false, error: 'Invalid path' };
+      
+      const dirPath = resolve(fullPath, '..');
+      if (!existsSync(dirPath)) {
+        await mkdir(dirPath, { recursive: true });
+      }
+      
+      if (existsSync(fullPath)) return { success: false, error: 'File already exists' };
+      await writeFile(fullPath, content, 'utf8');
+      return { success: true };
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  async createProjectDirectory(projectDir: string, relativePath: string): Promise<{ success: boolean, error?: string }> {
+    try {
+      const fullPath = resolve(projectDir, relativePath);
+      if (!fullPath.startsWith(resolve(projectDir))) return { success: false, error: 'Invalid path' };
+      
+      if (existsSync(fullPath)) return { success: false, error: 'Directory already exists' };
+      await mkdir(fullPath, { recursive: true });
+      return { success: true };
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  async deleteProjectPath(projectDir: string, relativePath: string): Promise<{ success: boolean, error?: string }> {
+    try {
+      const fullPath = resolve(projectDir, relativePath);
+      if (!fullPath.startsWith(resolve(projectDir))) return { success: false, error: 'Invalid path' };
+      
+      if (!existsSync(fullPath)) return { success: false, error: 'Path not found' };
+      await rm(fullPath, { recursive: true, force: true });
+      return { success: true };
+    } catch (e: any) {
+      return { success: false, error: e.message };
+    }
+  }
+
+  async renameProjectPath(projectDir: string, oldRelativePath: string, newRelativePath: string): Promise<{ success: boolean, error?: string }> {
+    try {
+      const oldPath = resolve(projectDir, oldRelativePath);
+      const newPath = resolve(projectDir, newRelativePath);
+      
+      if (!oldPath.startsWith(resolve(projectDir)) || !newPath.startsWith(resolve(projectDir))) {
+        return { success: false, error: 'Invalid path' };
+      }
+      
+      if (!existsSync(oldPath)) return { success: false, error: 'Source path not found' };
+      if (existsSync(newPath)) return { success: false, error: 'Target path already exists' };
+      
+      const { rename } = require('node:fs/promises');
+      await rename(oldPath, newPath);
+      return { success: true };
+    } catch (e: any) {
+      return { success: false, error: e.message };
     }
   }
 

@@ -43,7 +43,7 @@ export function analyzeJavaExecution(originalCode: string): JavaCodeAnalysisResu
 
   // 3. 클래스도 없고 main도 없지만, 다른 메서드 선언이 있는 경우
   // 예: int add(int a, int b) { return a + b; }
-  const methodRegex = /(?:public|private|protected|static|final|native|synchronized|abstract|transient|\s)*[\w\<\>\[\]]+\s+[a-zA-Z_$][a-zA-Z\d_$]*\s*\([^\)]*\)\s*(?:throws\s+[a-zA-Z_$][a-zA-Z\d_$,\s]*)?\{/;
+  const methodRegex = /(?:public|private|protected|static|final|native|synchronized|abstract|transient|\s)*[\w<>\[\]]+\s+[a-zA-Z_$][a-zA-Z\d_$]*\s*\([^)]*\)\s*(?:throws\s+[a-zA-Z_$][a-zA-Z\d_$,\s]*)?\{/;
   // 코드에 중괄호 블록이 있고, 세미콜론으로만 끝나는 단순 문장(Statement)이 아닐 때 메서드로 추정
   if (methodRegex.test(code) && code.includes('{') && !code.startsWith('import ')) {
     // 메서드만 있는 경우 실행 진입점(main)이 없으므로 JShell을 사용하여 평가(Evaluate)하는 것이 가장 이상적입니다.

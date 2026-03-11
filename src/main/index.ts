@@ -8,12 +8,13 @@ import {
   type IpcMainInvokeEvent,
 } from 'electron';
 import { writeFile, mkdtemp, rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
-import { exec } from 'node:child_process';
+import { spawn, exec } from 'node:child_process';
 import { promisify } from 'node:util';
 
 const execAsync = promisify(exec);
+import { analyzeJavaExecution } from './services/javaExecutionAnalyzer';
 import type {
   ProjectConversationCollectionResult,
   ProjectConversationImportProgress,
@@ -594,15 +595,6 @@ const resolveChatGptImageAssetWithWorker = async (
   safeMainInfoLog(
     `[gptviewer][chatgpt-image:resolve-start] key=${cacheKey} fileId=${extractedFileId || '-'} conversationId=${conversationId || '-'}`,
   );
-
-  const bootstrapUrl = (() => {
-    try {
-      const parsedUrl = new URL(normalizedChatUrl);
-      return `${parsedUrl.origin}/`;
-    } catch {
-      return 'https://chatgpt.com/';
-    }
-  })();
 
   const checkLogin = async () => {
     try {
@@ -2335,13 +2327,17 @@ ipcMain.handle(
   },
 );
 
-ipcMain.handle('java:lsp-start', async (_event, code: string) => {
+ipcMain.handle('java:lsp-start', async (_event, code: string, snapshot?: Record<string, string>) => {
   const serverRes = await javaLspService.startServer();
   if (serverRes.success) {
-    const { projectDir, filePath } = await javaLspService.prepareProject(code);
+    const { projectDir, filePath } = await javaLspService.prepareProject(code, snapshot);
     return { ...serverRes, projectDir, filePath };
   }
   return serverRes;
+});
+
+ipcMain.handle('java:get-project-snapshot', async (_event, projectDir: string) => {
+  return await javaLspService.getProjectSnapshot(projectDir);
 });
 
 ipcMain.handle('java:update-file', async (_event, filePath: string, code: string) => {
@@ -2357,6 +2353,25 @@ ipcMain.handle('java:get-project-tree', async (_event, projectDir: string) => {
 
 ipcMain.handle('java:read-file', async (_event, filePath: string) => {
   return await javaLspService.readProjectFile(filePath);
+});
+
+ipcMain.handle('java:create-file', async (_event, projectDir: string, relativePath: string, content?: string) => {
+  console.log(`[IPC] java:create-file requested -> dir: ${projectDir}, rel: ${relativePath}`);
+  return await javaLspService.createProjectFile(projectDir, relativePath, content);
+});
+
+ipcMain.handle('java:create-directory', async (_event, projectDir: string, relativePath: string) => {
+  console.log(`[IPC] java:create-directory requested -> dir: ${projectDir}, rel: ${relativePath}`);
+  return await javaLspService.createProjectDirectory(projectDir, relativePath);
+});
+
+ipcMain.handle('java:delete-path', async (_event, projectDir: string, relativePath: string) => {
+  console.log(`[IPC] java:delete-path requested -> dir: ${projectDir}, rel: ${relativePath}`);
+  return await javaLspService.deleteProjectPath(projectDir, relativePath);
+});
+
+ipcMain.handle('java:rename-path', async (_event, projectDir: string, oldRelativePath: string, newRelativePath: string) => {
+  return await javaLspService.renameProjectPath(projectDir, oldRelativePath, newRelativePath);
 });
 
 ipcMain.handle('java:lsp-stop', async () => {
@@ -2538,15 +2553,6 @@ ipcMain.handle(
   async (event, sessionId: string, code: string) => {
     let tempDir = '';
     try {
-      const { mkdtemp, writeFile, rm } = require('fs/promises');
-      const { tmpdir } = require('os');
-      const { join, dirname } = require('path');
-      const { spawn, exec } = require('child_process');
-      const util = require('util');
-      const execAsync = util.promisify(exec);
-      const { analyzeJavaExecution } = require('./services/javaExecutionAnalyzer');
-      const { javaLspService } = require('./services/javaLspService');
-
       // javaLspService에서 찾아낸 Java 21 실행 파일 경로를 가져옴
       const javaBinPath = javaLspService.findJavaExecutable();
       const jdkBinDir = dirname(javaBinPath); // /opt/homebrew/.../bin
@@ -2599,10 +2605,10 @@ ipcMain.handle(
         event.sender.send('java:run-error', sessionId, data.toString());
       });
 
-      javaProcess.on('close', (exitCode) => {
+      javaProcess.on('close', (exitCode: number | null) => {
         event.sender.send('java:run-exit', sessionId, exitCode);
         runningJavaProcesses.delete(sessionId);
-        rm(tempDir, { recursive: true, force: true }).catch(() => {});
+        rm(tempDir, { recursive: true, force: true }).catch((): void => undefined);
       });
 
       runningJavaProcesses.set(sessionId, { process: javaProcess, tempDir });

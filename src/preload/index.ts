@@ -71,8 +71,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
   startJavaServer: (code: string) => ipcRenderer.invoke('java:lsp-start', code),
   updateJavaFile: (filePath: string, code: string) =>
     ipcRenderer.invoke('java:update-file', filePath, code),
+  createJavaFile: (projectDir: string, relativePath: string, content?: string) =>
+    ipcRenderer.invoke('java:create-file', projectDir, relativePath, content),
+  createJavaDirectory: (projectDir: string, relativePath: string) =>
+    ipcRenderer.invoke('java:create-directory', projectDir, relativePath),
+  deleteJavaPath: (projectDir: string, relativePath: string) =>
+    ipcRenderer.invoke('java:delete-path', projectDir, relativePath),
+  renameJavaPath: (projectDir: string, oldRelativePath: string, newRelativePath: string) =>
+    ipcRenderer.invoke('java:rename-path', projectDir, oldRelativePath, newRelativePath),
   getJavaProjectTree: (projectDir: string) =>
     ipcRenderer.invoke('java:get-project-tree', projectDir),
+  getJavaProjectSnapshot: (projectDir: string) =>
+    ipcRenderer.invoke('java:get-project-snapshot', projectDir),
   readJavaFile: (filePath: string) =>
     ipcRenderer.invoke('java:read-file', filePath),
   stopJavaServer: () => ipcRenderer.invoke('java:lsp-stop'),

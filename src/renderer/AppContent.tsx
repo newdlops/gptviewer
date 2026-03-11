@@ -70,7 +70,6 @@ function AppContent() {
         conversations={workspaceState.conversations}
         expandedFolderState={workspaceState.expandedFolderState}
         googleDrivePanelProps={{
-          googleDriveAutoSyncIntervalLabel: googleDriveSync.googleDriveAutoSyncIntervalLabel,
           googleDriveErrorLink: googleDriveSync.googleDriveErrorLink,
           googleDriveErrorMessage: googleDriveSync.googleDriveErrorMessage,
           googleDriveSyncStatus: googleDriveSync.googleDriveSyncStatus,

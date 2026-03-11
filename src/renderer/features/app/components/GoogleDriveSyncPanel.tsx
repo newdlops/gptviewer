@@ -2,7 +2,6 @@ import { Button } from '../../../components/ui/Button';
 import type { GoogleDriveSyncStatus } from '../../../../shared/sync/googleDriveSync';
 
 type GoogleDriveSyncPanelProps = {
-  googleDriveAutoSyncIntervalLabel: string;
   googleDriveErrorLink: string | null;
   googleDriveErrorMessage: string;
   googleDriveSyncStatus: GoogleDriveSyncStatus | null;
@@ -16,7 +15,6 @@ type GoogleDriveSyncPanelProps = {
 };
 
 export function GoogleDriveSyncPanel({
-  googleDriveAutoSyncIntervalLabel,
   googleDriveErrorLink,
   googleDriveErrorMessage,
   googleDriveSyncStatus,

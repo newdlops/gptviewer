@@ -164,7 +164,7 @@ export class SemanticTokensBuilder {
     push(line: number, char: number, length: number, tokenType: number, tokenModifiers: number) {
         this._data.push(line, char, length, tokenType, tokenModifiers);
     }
-    build() { return { resultId: undefined, data: new Uint32Array(this._data) }; }
+    build() { return { resultId: undefined as string | undefined, data: new Uint32Array(this._data) }; }
 }
 export const CodeActionKind = { Empty: { value: '' }, QuickFix: { value: 'quickfix' }, Refactor: { value: 'refactor' }, RefactorExtract: { value: 'refactor.extract' }, RefactorInline: { value: 'refactor.inline' }, RefactorRewrite: { value: 'refactor.rewrite' }, Source: { value: 'source' }, SourceOrganizeImports: { value: 'source.organizeImports' }, SourceFixAll: { value: 'source.fixAll' } };
 export const Services = {

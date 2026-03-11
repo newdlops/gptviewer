@@ -8,6 +8,12 @@ import {
   loadCustomJavaSourceFromCache,
   saveCustomJavaSourceToCache,
 } from '../lib/customJavaSourceCache';
+import {
+  buildCustomJavaProjectCacheKey,
+  loadCustomJavaProjectFromCache,
+  saveCustomJavaProjectToCache,
+  clearCustomJavaProjectFromCache,
+} from '../lib/customJavaProjectCache';
 import { MarkdownCodeSourcePanel } from './MarkdownCodeSourcePanel';
 import Editor, { loader, OnMount } from '@monaco-editor/react';
 import { createJavaLanguageClient } from '../lib/javaLspClient';
@@ -64,6 +70,18 @@ export function MarkdownJavaBlock({
   const [javaTerminalInput, setJavaTerminalInput] = useState('');
   const terminalContainerRef = useRef<HTMLDivElement>(null);
 
+  // --- 추가된 파일/폴더 관리 상태 ---
+  const [creatingItemState, setCreatingItemState] = useState<{ parentPath: string, type: 'file' | 'directory' } | null>(null);
+  const [newItemName, setNewItemName] = useState('');
+  const newItemInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (creatingItemState && newItemInputRef.current) {
+      newItemInputRef.current.focus();
+    }
+  }, [creatingItemState]);
+
+
   // 출력 발생 시 터미널 내부만 스크롤을 맨 아래로 이동
   useEffect(() => {
     if (terminalContainerRef.current) {
@@ -109,6 +127,19 @@ export function MarkdownJavaBlock({
   useEffect(() => { javaFilePathRef.current = javaFilePath; }, [javaFilePath]);
 
   const activeJavaSource = customJavaSource !== null ? customJavaSource : code;
+
+  // 프로젝트 스냅샷 저장 헬퍼
+  const saveCurrentProjectSnapshot = async (currentDir: string) => {
+    if (!currentDir) return;
+    try {
+      const snapshot = await window.electronAPI?.getJavaProjectSnapshot(currentDir);
+      if (snapshot && Object.keys(snapshot).length > 0) {
+        saveCustomJavaProjectToCache(sharedCustomJavaCacheKey, snapshot);
+      }
+    } catch (e) {
+      console.error('[JavaBlock] Failed to save project snapshot', e);
+    }
+  };
 
   const refreshProjectTree = async (dir: string) => {
     try {
@@ -172,7 +203,8 @@ export function MarkdownJavaBlock({
       (async () => {
         try {
           console.log('[JavaBlock] Calling window.electronAPI.startJavaServer...');
-          const res = await window.electronAPI?.startJavaServer(activeJavaSource);
+          const cachedProject = loadCustomJavaProjectFromCache(sharedCustomJavaCacheKey);
+          const res = await window.electronAPI?.startJavaServer(activeJavaSource, cachedProject || undefined);
           console.log('[JavaBlock] startJavaServer Response:', res);
 
           if (res?.success && isMounted) {
@@ -532,30 +564,134 @@ export function MarkdownJavaBlock({
     document.body.style.cursor = 'ns-resize';
   };
 
-  const renderTree = (nodes: any[], depth = 0) => (
+  const handleCreateItemSubmit = async (e: React.KeyboardEvent | React.FocusEvent) => {
+    if ((e.type === 'keydown' && (e as React.KeyboardEvent).key !== 'Enter') || !creatingItemState) return;
+    
+    const name = newItemName.trim();
+    if (!name) {
+      setCreatingItemState(null);
+      setNewItemName('');
+      return;
+    }
+
+    // Windows와 Unix 환경의 경로 구분자 차이를 안전하게 처리
+    let relativePath = creatingItemState.parentPath.replace(projectDir!, '');
+    relativePath = relativePath.replace(/^[/\\]+/, ''); // 맨 앞의 슬래시 제거
+    if (relativePath) {
+      relativePath = relativePath + '/' + name;
+    } else {
+      relativePath = name;
+    }
+    
+    try {
+      console.log(`[JavaBlock] Creating ${creatingItemState.type}: ${relativePath}`);
+      if (creatingItemState.type === 'file') {
+        const className = name.replace('.java', '');
+        const defaultContent = name.endsWith('.java') ? `public class ${className} {\n    \n}\n` : '';
+        const res = await window.electronAPI?.createJavaFile(projectDir!, relativePath, defaultContent);
+        if (!res?.success) console.error('[JavaBlock] File creation failed:', res?.error);
+      } else {
+        const res = await window.electronAPI?.createJavaDirectory(projectDir!, relativePath);
+        if (!res?.success) console.error('[JavaBlock] Dir creation failed:', res?.error);
+      }
+      refreshProjectTree(projectDir!);
+      await saveCurrentProjectSnapshot(projectDir!);
+    } catch (err) {
+      console.error('[JavaBlock] Failed to create item', err);
+    }
+    
+    setCreatingItemState(null);
+    setNewItemName('');
+  };
+
+  const handleDeleteItem = async (e: React.MouseEvent, nodePath: string) => {
+    e.stopPropagation();
+    if (!confirm('정말 삭제하시겠습니까?')) return;
+    
+    let relativePath = nodePath.replace(projectDir!, '');
+    relativePath = relativePath.replace(/^[/\\]+/, '');
+    
+    try {
+      console.log(`[JavaBlock] Deleting: ${relativePath}`);
+      const res = await window.electronAPI?.deleteJavaPath(projectDir!, relativePath);
+      if (!res?.success) console.error('[JavaBlock] Deletion failed:', res?.error);
+      
+      if (javaFilePath === nodePath) {
+        setJavaFilePath(null);
+        setCurrentFileContent('');
+      }
+      refreshProjectTree(projectDir!);
+      await saveCurrentProjectSnapshot(projectDir!);
+    } catch (err) {
+      console.error('[JavaBlock] Failed to delete item', err);
+    }
+  };
+
+  const renderTree = (nodes: any[], depth = 0, parentPath = projectDir!) => (
     <div style={{ marginLeft: depth > 0 ? '12px' : '0' }}>
       {nodes.map(node => (
         <div key={node.path}>
           <div
+            className="tree-node-row"
             onClick={() => handleFileClick(node)}
             style={{
               fontSize: '12px', padding: '4px 8px', display: 'flex', alignItems: 'center',
               color: isDark ? '#ccc' : '#333', cursor: 'pointer',
               backgroundColor: javaFilePath === node.path ? (isDark ? '#37373d' : '#e4e6f1') : 'transparent',
-              borderRadius: '3px', whiteSpace: 'nowrap', userSelect: 'none'
-            }}>
+              borderRadius: '3px', whiteSpace: 'nowrap', userSelect: 'none',
+              position: 'relative'
+            }}
+            onMouseEnter={(e) => {
+              const actions = e.currentTarget.querySelector('.tree-node-actions');
+              if (actions) (actions as HTMLElement).style.display = 'flex';
+            }}
+            onMouseLeave={(e) => {
+              const actions = e.currentTarget.querySelector('.tree-node-actions');
+              if (actions) (actions as HTMLElement).style.display = 'none';
+            }}
+          >
             <span style={{ marginRight: '6px', fontSize: '14px' }}>
               {node.type === 'directory' ? (expandedPaths.has(node.path) ? '📂' : '📁') : '📄'}
             </span>
-            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{node.name}</span>
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', flexGrow: 1 }}>{node.name}</span>
+            
             {node.path === originalJavaFilePath && (
-              <span style={{
-                marginLeft: '4px', fontSize: '10px', color: '#007acc',
-                fontWeight: 'bold', flexShrink: 0
-              }}>(ORIGINAL)</span>
+              <span style={{ marginLeft: '4px', fontSize: '10px', color: '#007acc', fontWeight: 'bold' }}>(ORIGINAL)</span>
             )}
+
+            <div className="tree-node-actions" style={{ display: 'none', alignItems: 'center', gap: '4px', paddingLeft: '8px' }}>
+              {node.type === 'directory' && (
+                <>
+                  <span title="새 파일" onClick={(e) => { e.stopPropagation(); setExpandedPaths(new Set(expandedPaths).add(node.path)); setCreatingItemState({ parentPath: node.path, type: 'file' }); }} style={{ fontSize: '14px', opacity: 0.7, padding: '0 2px' }}>📄+</span>
+                  <span title="새 폴더" onClick={(e) => { e.stopPropagation(); setExpandedPaths(new Set(expandedPaths).add(node.path)); setCreatingItemState({ parentPath: node.path, type: 'directory' }); }} style={{ fontSize: '14px', opacity: 0.7, padding: '0 2px' }}>📁+</span>
+                </>
+              )}
+              {node.path !== originalJavaFilePath && (
+                <span title="삭제" onClick={(e) => handleDeleteItem(e, node.path)} style={{ fontSize: '14px', opacity: 0.7, color: '#f44336', padding: '0 2px' }}>🗑</span>
+              )}
+            </div>
           </div>
-          {node.type === 'directory' && node.children && expandedPaths.has(node.path) && renderTree(node.children, depth + 1)}
+          
+          {/* 새 항목 입력 UI */}
+          {creatingItemState?.parentPath === node.path && expandedPaths.has(node.path) && (
+            <div style={{ marginLeft: '12px', padding: '4px 8px', display: 'flex', alignItems: 'center' }}>
+              <span style={{ marginRight: '6px', fontSize: '14px' }}>{creatingItemState.type === 'file' ? '📄' : '📁'}</span>
+              <input
+                ref={newItemInputRef}
+                value={newItemName}
+                onChange={e => setNewItemName(e.target.value)}
+                onKeyDown={handleCreateItemSubmit}
+                onBlur={handleCreateItemSubmit}
+                style={{
+                  fontSize: '12px', padding: '2px 4px', border: `1px solid ${isDark ? '#555' : '#ccc'}`,
+                  backgroundColor: isDark ? '#1e1e1e' : '#fff', color: isDark ? '#fff' : '#000', outline: 'none', flexGrow: 1
+                }}
+                placeholder={creatingItemState.type === 'file' ? '파일명.java' : '폴더명'}
+              />
+            </div>
+          )}
+
+          {node.type === 'directory' && node.children && expandedPaths.has(node.path) && renderTree(node.children, depth + 1, node.path)}
         </div>
       ))}
     </div>
@@ -639,6 +775,19 @@ export function MarkdownJavaBlock({
             }}>
             {isJavaRunning ? '⏹ 중지' : '▶ 실행'}
           </button>
+          {isJavaEditMode && (
+            <button className="code-block__action-button" type="button" onClick={() => {
+              if (confirm('모든 추가된 파일과 변경 사항이 삭제되고 원본 코드로 초기화됩니다. 계속하시겠습니까?')) {
+                clearCustomJavaSourceFromCache(sharedCustomJavaCacheKey);
+                clearCustomJavaProjectFromCache(sharedCustomJavaCacheKey);
+                setCustomJavaSource(null);
+                setIsJavaEditMode(false);
+                setProjectTree([]);
+              }
+            }}>
+              원본 복원
+            </button>
+          )}
           <button className={`code-block__action-button${isJavaEditMode ? ' is-active' : ''}`} type="button" onClick={() => setIsJavaEditMode(!isJavaEditMode)}>
             {isJavaEditMode ? '편집 종료' : '편집'}
           </button>
@@ -657,7 +806,35 @@ export function MarkdownJavaBlock({
             width: '200px', borderRight: isDark ? '1px solid #333' : '1px solid #ddd',
             padding: '10px 0', overflowY: 'auto', backgroundColor: isDark ? '#252526' : '#f3f3f3', flexShrink: 0
           }}>
-            <div style={{ fontSize: '11px', fontWeight: 'bold', padding: '0 10px 8px', color: isDark ? '#858585' : '#666', textTransform: 'uppercase' }}>EXPLORER</div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 10px 8px' }}>
+              <div style={{ fontSize: '11px', fontWeight: 'bold', color: isDark ? '#858585' : '#666', textTransform: 'uppercase' }}>EXPLORER</div>
+              {projectDir && (
+                <div style={{ display: 'flex', gap: '6px' }}>
+                  <span title="새 파일" onClick={() => setCreatingItemState({ parentPath: projectDir, type: 'file' })} style={{ fontSize: '13px', cursor: 'pointer', opacity: 0.7 }}>📄+</span>
+                  <span title="새 폴더" onClick={() => setCreatingItemState({ parentPath: projectDir, type: 'directory' })} style={{ fontSize: '13px', cursor: 'pointer', opacity: 0.7 }}>📁+</span>
+                </div>
+              )}
+            </div>
+            
+            {/* 최상위 루트 생성 UI */}
+            {creatingItemState?.parentPath === projectDir && (
+              <div style={{ marginLeft: '12px', padding: '4px 8px', display: 'flex', alignItems: 'center', marginBottom: '4px' }}>
+                <span style={{ marginRight: '6px', fontSize: '14px' }}>{creatingItemState.type === 'file' ? '📄' : '📁'}</span>
+                <input
+                  ref={newItemInputRef}
+                  value={newItemName}
+                  onChange={e => setNewItemName(e.target.value)}
+                  onKeyDown={handleCreateItemSubmit}
+                  onBlur={handleCreateItemSubmit}
+                  style={{
+                    fontSize: '12px', padding: '2px 4px', border: `1px solid ${isDark ? '#555' : '#ccc'}`,
+                    backgroundColor: isDark ? '#1e1e1e' : '#fff', color: isDark ? '#fff' : '#000', outline: 'none', flexGrow: 1
+                  }}
+                  placeholder={creatingItemState.type === 'file' ? '파일명.java' : '폴더명'}
+                />
+              </div>
+            )}
+
             {renderTree(projectTree)}
           </div>
         )}
@@ -700,8 +877,15 @@ export function MarkdownJavaBlock({
                 beforeMount={handleEditorWillMount}
                 onChange={(value) => {
                   setCurrentFileContent(value || '');
-                  if (javaFilePath === originalJavaFilePath) setCustomJavaSource(value || '');
-                  if (javaFilePath) window.electronAPI?.updateJavaFile(javaFilePath, value || '').then(() => refreshProjectTree(projectDir!));
+                  if (javaFilePath === originalJavaFilePath) {
+                    setCustomJavaSource(value || '');
+                    saveCustomJavaSourceToCache(sharedCustomJavaCacheKey, value || '');
+                  }
+                  if (javaFilePath) {
+                    window.electronAPI?.updateJavaFile(javaFilePath, value || '')
+                      .then(() => refreshProjectTree(projectDir!))
+                      .then(() => saveCurrentProjectSnapshot(projectDir!));
+                  }
                 }}
                 onMount={handleEditorDidMount}
                 options={{
