@@ -179,7 +179,7 @@ export class ChatGptConversationNetworkMonitor {
 
     if (method === 'Network.requestWillBeSent') {
       const requestId = String(params.requestId || '');
-      const request = params.request as { method?: string; url?: string; postData?: string } | undefined;
+      const request = params.request as { method?: string; url?: string; postData?: string; hasPostData?: boolean } | undefined;
       if (!requestId || !request?.url) return;
 
       const url = request.url;
@@ -194,19 +194,41 @@ export class ChatGptConversationNetworkMonitor {
         const isSentinel = url.includes('/sentinel/chat-requirements');
         const isConversation = url.includes('/backend-api/f/conversation');
         if (isSentinel || isConversation) {
-          try {
-            const payload = request.postData ? JSON.parse(request.postData) : null;
-            if (payload) console.info(`Request Body (${url}):`, JSON.stringify(payload, null, 2));
+          // Log Request Body even if it's empty to show the flow
+          let bodyToLog = request.postData || '';
+          
+          if (request.hasPostData && !bodyToLog) {
+              // Try to fetch it via debugger if not provided initially
+              const debuggerApi = this.webContents.debugger;
+              if (debuggerApi.isAttached()) {
+                  debuggerApi.sendCommand('Network.getRequestPostData', { requestId })
+                      .then((res: any) => {
+                          if (res?.postData) {
+                              console.info(`Request Body (${url}):`, res.postData);
+                          }
+                      })
+                      .catch(() => {});
+              }
+          }
 
-            if (url.includes('/sentinel/chat-requirements/finalize') && payload) {
-              const reqToken = payload.prepare_token || payload.token;
-              if (reqToken) this.sentinelHeaders['openai-sentinel-chat-requirements-token'] = reqToken;
-              const pToken = payload.proofofwork || payload.p || payload.proof;
-              if (pToken) this.sentinelHeaders['openai-sentinel-proof-token'] = pToken;
-              if (payload.turnstile?.token) this.sentinelHeaders['openai-sentinel-turnstile-token'] = payload.turnstile.token;
-              console.info(`[MAPPING] Sentinel tokens mapped from ${url}`);
+          if (bodyToLog) {
+            try {
+              const payload = JSON.parse(bodyToLog);
+              console.info(`Request Body (${url}):`, JSON.stringify(payload, null, 2));
+
+              // Step 3 (Finalize) Payload Mapping
+              if (url.includes('/sentinel/chat-requirements/finalize')) {
+                const reqToken = payload.prepare_token || payload.token;
+                if (reqToken) this.sentinelHeaders['openai-sentinel-chat-requirements-token'] = reqToken;
+                const pToken = payload.proofofwork || payload.p || payload.proof;
+                if (pToken) this.sentinelHeaders['openai-sentinel-proof-token'] = pToken;
+                if (payload.turnstile?.token) this.sentinelHeaders['openai-sentinel-turnstile-token'] = payload.turnstile.token;
+                console.info(`[MAPPING] Sentinel tokens mapped from ${url}`);
+              }
+            } catch (e) {
+              console.info(`Request Body (${url}):`, bodyToLog);
             }
-          } catch (e) {}
+          }
         }
       }
     }
