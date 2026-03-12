@@ -557,6 +557,24 @@ export class ChatGptAutomationView {
     this.view.webContents.on('console-message', logHandler);
 
     try {
+        // --- PRE-STEP: Wait for Authorization header (max 5s) ---
+        let initialHeaders = this.conversationNetworkMonitor.getLatestBackendApiHeaders();
+        let retryCount = 0;
+        while ((!initialHeaders || !initialHeaders.headers['authorization']) && retryCount < 10) {
+            console.warn(`[gptviewer][sentinel-flow] Waiting for Authorization header... (${retryCount + 1}/10)`);
+            await new Promise(r => setTimeout(r, 500));
+            initialHeaders = this.conversationNetworkMonitor.getLatestBackendApiHeaders();
+            retryCount++;
+        }
+
+        if (!initialHeaders || !initialHeaders.headers['authorization']) {
+            console.error('[gptviewer][sentinel-flow] FAILED to capture Authorization header after 5s.');
+            this.view.webContents.removeListener('console-message', logHandler);
+            return { success: false, error: 'auth_capture_timeout' };
+        }
+
+        console.info('[gptviewer][sentinel-flow] Authorization header secured. Proceeding to Step 1.');
+
         // --- STEP 1: Conversation Prepare ---
         console.info('[gptviewer][sentinel-flow] Executing Step 1: /conversation/prepare');
         const step1Result = await this.execute<{ success: boolean; conduitToken?: string; error?: string; status?: number }>(`
@@ -584,13 +602,24 @@ export class ChatGptAutomationView {
                         client_contextual_info: { app_name: "chatgpt.com" }
                     };
 
+                    const headers = {
+                        'Content-Type': 'application/json',
+                        ...${JSON.stringify(initialHeaders.headers)}
+                    };
+
+                    console.log('[gptviewer-script][API] Step 1 Requesting with Auth Header Presence:', !!headers['authorization']);
+
                     const response = await fetch('https://chatgpt.com/backend-api/f/conversation/prepare', {
                         method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
+                        headers: headers,
                         body: JSON.stringify(payload)
                     });
 
-                    if (!response.ok) return { success: false, error: 'api_fail', status: response.status };
+                    if (!response.ok) {
+                        const err = await response.text();
+                        console.error('[gptviewer-script][API] /prepare failed!', response.status, err);
+                        return { success: false, error: 'api_fail', status: response.status };
+                    }
                     const data = await response.json();
                     return { success: data.status === 'ok', conduitToken: data.conduit_token };
                 } catch (e) { return { success: false, error: e.message }; }
@@ -624,14 +653,15 @@ export class ChatGptAutomationView {
         await new Promise(r => setTimeout(r, 2000));
         
         // --- STEP 4: Actual Conversation ---
-        let capturedHeaders = this.conversationNetworkMonitor.getLatestBackendApiHeaders();
-        if (!capturedHeaders || !capturedHeaders.headers['authorization']) {
-            console.warn('[gptviewer][sentinel-flow] No valid auth headers found.');
+        // Get fresh headers (this will include the newly mapped sentinel tokens)
+        let finalHeaders = this.conversationNetworkMonitor.getLatestBackendApiHeaders();
+        if (!finalHeaders || !finalHeaders.headers['authorization']) {
+            console.warn('[gptviewer][sentinel-flow] No valid auth headers found for Step 4.');
             this.view.webContents.removeListener('console-message', logHandler);
             return { success: false, error: 'auth_headers_missing' };
         }
 
-        console.info('[gptviewer][sentinel-flow] Executing Step 4: /conversation with full headers');
+        console.info('[gptviewer][sentinel-flow] Executing Step 4: /conversation with full sentinel headers');
         const result = await this.execute<{ success: boolean; error?: string; status?: number }>(`
             (async () => {
                 try {
@@ -641,12 +671,14 @@ export class ChatGptAutomationView {
                     const parentMessageId = lastMessageElement ? lastMessageElement.getAttribute('data-message-id') : null;
 
                     const headers = {
-                        ...${JSON.stringify(capturedHeaders.headers)},
+                        ...${JSON.stringify(finalHeaders.headers)},
                         'Content-Type': 'application/json',
                         'Accept': 'text/event-stream',
                         'x-conduit-token': ${JSON.stringify(step1Result.conduitToken)},
                         'x-openai-target-path': '/backend-api/f/conversation'
                     };
+
+                    console.log('[gptviewer-script][API] Step 4 Headers:', Object.keys(headers));
 
                     const payload = {
                         action: "next",
@@ -671,7 +703,7 @@ export class ChatGptAutomationView {
 
                     if (!response.ok) {
                         const txt = await response.text();
-                        console.error('[gptviewer-script][API] /conversation failed!', txt);
+                        console.error('[gptviewer-script][API] /conversation failed!', JSON.stringify({ status: response.status, body: txt }));
                         return { success: false, error: 'api_fail', status: response.status };
                     }
                     return { success: true };

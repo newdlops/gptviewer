@@ -258,7 +258,14 @@ export class ChatGptConversationNetworkMonitor {
 
       if (url.startsWith(BACKEND_API_PREFIX) && (methodName === 'GET' || methodName === 'POST')) {
         const normalized = normalizeHeaders(headers);
-        if (!!normalized['authorization'] || !!normalized['openai-sentinel-chat-requirements-token'] || !this.lastSuccessfulBackendApiHeaders) {
+        const hasAuth = !!normalized['authorization'];
+        
+        if (hasAuth) {
+            console.info(`[gptviewer][monitor] Authorization header CAPTURED from ${url}`);
+        }
+
+        // Always update if new headers have Authorization, or if we have nothing yet.
+        if (hasAuth || !this.lastSuccessfulBackendApiHeaders) {
           this.lastSuccessfulBackendApiHeaders = {
             headers: sanitizeHeadersForReplay(normalized),
             method: methodName,
