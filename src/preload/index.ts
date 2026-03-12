@@ -39,6 +39,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   refreshSharedConversation: (request: SharedConversationRefreshRequest) =>
     ipcRenderer.invoke('shared-conversation:refresh', request),
+  sendMessageToSharedConversation: (request: SharedConversationRefreshRequest, message: string) =>
+    ipcRenderer.invoke('shared-conversation:send-message', request, message),
   importChatGptConversation: (request: SharedConversationRefreshRequest) =>
     ipcRenderer.invoke('chatgpt-conversation:import', request),
   fetchSourcePreview: (url: string) =>

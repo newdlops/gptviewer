@@ -624,6 +624,48 @@ input {
   background: color-mix(in srgb, var(--panel-bg-soft) 56%, transparent);
 }
 
+.conversation-input {
+  display: flex;
+  gap: 12px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border-soft);
+  background: transparent;
+}
+
+.conversation-input__textarea {
+  flex: 1;
+  min-height: 44px;
+  max-height: 160px;
+  padding: 10px 14px;
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  background: var(--input-bg);
+  color: var(--text-primary);
+  resize: vertical;
+  line-height: 1.5;
+  font-size: 0.94rem;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.conversation-input__textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.conversation-input__textarea:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.conversation-input__send {
+  align-self: flex-end;
+  min-height: 44px;
+  padding: 0 20px;
+  border-radius: 12px;
+  font-weight: 600;
+}
+
 .sr-only {
   position: absolute;
   width: 1px;

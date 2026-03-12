@@ -1,5 +1,6 @@
 import { Button } from '../../../components/ui/Button';
 import { MessageList } from '../../messages/components/MessageList';
+import { ConversationInput } from './ConversationInput';
 import { isRefreshableSharedConversation } from '../lib/appTypes';
 import { isChatUrlImportedConversation } from '../lib/sharedConversationUtils';
 import type { Conversation, SourcePreview, ThemeMode } from '../../../types/chat';
@@ -8,10 +9,12 @@ type ConversationViewerProps = {
   activeConversation: Conversation | null;
   initialMessageHeights?: Record<string, number>;
   initialScrollTop?: number;
+  isSendingMessage?: boolean;
   onClearConversation: (conversationId: string) => void;
   onMessageHeightChange: (conversationId: string, messageId: string, height: number) => void;
   onOpenRefreshSettings: (conversationId: string) => void;
   onRefreshConversation: () => void;
+  onSendMessage: (message: string) => void;
   onRerenderConversation: () => void;
   onScrollPositionChange: (conversationId: string, scrollTop: number) => void;
   onSourcePreviewNeeded: Parameters<typeof MessageList>[0]['onSourcePreviewNeeded'];
@@ -29,10 +32,12 @@ export function ConversationViewer({
   activeConversation,
   initialMessageHeights,
   initialScrollTop,
+  isSendingMessage,
   onClearConversation,
   onMessageHeightChange,
   onOpenRefreshSettings,
   onRefreshConversation,
+  onSendMessage,
   onRerenderConversation,
   onScrollPositionChange,
   onSourcePreviewNeeded,
@@ -135,6 +140,13 @@ export function ConversationViewer({
                   <p>새로고침하기 전까지는 이 대화가 빈 상태로 유지됩니다.</p>
                 </div>
               )}
+
+              {(isChatUrlImportedConversation(activeConversation) || activeConversation.refreshRequest?.chatUrl) ? (
+                <ConversationInput 
+                  onSendMessage={onSendMessage} 
+                  disabled={isSendingMessage || refreshingConversationId === activeConversation.id} 
+                />
+              ) : null}
             </>
           ) : (
             <div className="viewer-empty">

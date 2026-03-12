@@ -293,3 +293,103 @@ export const buildGetHoverPointForSelectorsScript = (selectors: string[]) => `
   return null;
 })()
 `;
+
+export const buildSendMessageScript = (message: string) => `
+(async () => {
+  console.log('[gptviewer-script] buildSendMessageScript started');
+  const textarea = document.getElementById('prompt-textarea');
+  if (!textarea) {
+    console.error('[gptviewer-script] Textarea not found');
+    return { success: false, error: 'Textarea not found' };
+  }
+
+  console.log('[gptviewer-script] Setting textarea value');
+  textarea.value = ${JSON.stringify(message)};
+  textarea.dispatchEvent(new Event('input', { bubbles: true }));
+  textarea.dispatchEvent(new Event('change', { bubbles: true }));
+  
+  // React often needs a tick to enable the button based on textarea input
+  await new Promise(resolve => setTimeout(resolve, 300));
+
+  console.log('[gptviewer-script] Searching for send button');
+  const isVisible = (element) => {
+    if (!(element instanceof HTMLElement)) return false;
+    const style = window.getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0' && rect.width > 0 && rect.height > 0;
+  };
+
+  // 1. Try explicit data-testid
+  const sendButton = document.querySelector('button[data-testid="send-button"]');
+  if (sendButton && isVisible(sendButton) && !sendButton.disabled) {
+      console.log('[gptviewer-script] Clicking primary send button');
+      sendButton.click();
+      return { success: true };
+  }
+
+  // 2. Try aria-label
+  const ariaSendButton = document.querySelector('button[aria-label*="Send"]');
+  if (ariaSendButton && isVisible(ariaSendButton) && !ariaSendButton.disabled) {
+      console.log('[gptviewer-script] Clicking aria-label send button');
+      ariaSendButton.click();
+      return { success: true };
+  }
+
+  // 3. Try hitting Enter in textarea
+  console.log('[gptviewer-script] Buttons not found/disabled, trying Enter keydown');
+  textarea.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter', code: 'Enter' }));
+  
+  // Wait a bit to see if form resets
+  await new Promise(resolve => setTimeout(resolve, 500));
+  if (textarea.value === '') {
+      console.log('[gptviewer-script] Enter keydown succeeded (textarea cleared)');
+      return { success: true };
+  }
+
+  console.error('[gptviewer-script] Failed to send message through any DOM method');
+  return { success: false, error: 'Send button disabled or not found, Enter key failed' };
+})()
+`;
+
+export const buildIsRespondingScript = () => `
+(() => {
+  const isVisible = (element) => {
+    if (!(element instanceof HTMLElement)) return false;
+    const style = window.getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return style.display !== 'none' && 
+           style.visibility !== 'hidden' && 
+           style.opacity !== '0' &&
+           !element.hasAttribute('hidden') && 
+           rect.width > 0 && 
+           rect.height > 0;
+  };
+
+  // 1. Primary check: The Stop generating button usually has a clear aria-label or testid
+  const stopButtons = Array.from(document.querySelectorAll('button[data-testid="stop-button"], button[aria-label*="Stop generating"], button[aria-label*="Stop"]'));
+  if (stopButtons.some(b => isVisible(b))) return true;
+  
+  // 2. Fallback check: only check buttons that don't have aria labels (to avoid false positives on media player stops etc)
+  const buttons = Array.from(document.querySelectorAll('button'));
+  return buttons.some(b => {
+    if (!isVisible(b) || b.disabled) return false;
+    
+    // If it has an aria label but wasn't caught above, it's not our stop button
+    if (b.hasAttribute('aria-label')) return false;
+    
+    // The stop button typically has a square rect inside its SVG
+    const svg = b.querySelector('svg');
+    if (svg) {
+       const rect = svg.querySelector('rect');
+       if (rect) {
+           const width = parseInt(rect.getAttribute('width'));
+           const height = parseInt(rect.getAttribute('height'));
+           if (width === height && width > 5 && width < 24) {
+               return true;
+           }
+       }
+    }
+    return false;
+  });
+})()
+`;

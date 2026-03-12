@@ -53,6 +53,10 @@ interface ElectronAPI {
   refreshSharedConversation(
     request: SharedConversationRefreshRequest,
   ): Promise<SharedConversationRefreshResult>;
+  sendMessageToSharedConversation(
+    request: SharedConversationRefreshRequest,
+    message: string,
+  ): Promise<SharedConversationRefreshResult>;
   importChatGptConversation(
     request: SharedConversationRefreshRequest,
   ): Promise<SharedConversationImport>;

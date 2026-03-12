@@ -6,6 +6,8 @@ import type {
 import { DirectChatConversationImportStrategy } from './strategies/DirectChatConversationImportStrategy';
 import { ChatGptShareFlowRefreshStrategy } from './strategies/ChatGptShareFlowRefreshStrategy';
 import { DirectSharedConversationRefreshStrategy } from './strategies/DirectSharedConversationRefreshStrategy';
+import { runWithLoginResume } from './chatgpt/chatGptLoginState';
+import { SharedConversationRefreshError } from './SharedConversationRefreshError';
 
 const hasUsableSharedConversationUrl = (value: string): boolean => {
   const trimmedValue = value.trim();
@@ -82,5 +84,53 @@ export class SharedConversationRefreshService {
     request: SharedConversationRefreshRequest,
   ): Promise<SharedConversationImport> {
     return this.directChatConversationImportStrategy.importFromChatUrl(request);
+  }
+
+  async sendMessageToConversation(
+    request: SharedConversationRefreshRequest,
+    message: string,
+  ): Promise<SharedConversationRefreshResult> {
+    if (!request.chatUrl) {
+      throw new SharedConversationRefreshError('chat_url_missing', '대화를 보낼 원본 링크가 없습니다.');
+    }
+
+    console.info(`[gptviewer] sendMessageToConversation initiated for URL: ${request.chatUrl}`);
+
+    const result = await runWithLoginResume({
+      initialMode: 'visible', // User explicitly wants a secondary window
+      runAttempt: async (automationView) => {
+        console.info(`[gptviewer] Loading URL in automation view: ${request.chatUrl}`);
+        await automationView.load(request.chatUrl!);
+        
+        console.info('[gptviewer] Waiting for page to settle before sending message...');
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+        
+        console.info('[gptviewer] Enabling network monitoring...');
+        // We enable it so we can observe the 2-step process (/prepare -> /conversation)
+        await automationView.enableConversationNetworkMonitoring().catch(() => {});
+
+        console.info('[gptviewer] Attempting to send message via script...');
+        const sendResult = await automationView.sendMessage(message);
+        console.info(`[gptviewer] Send message result: ${JSON.stringify(sendResult)}`);
+        
+        if (!sendResult.success) {
+          throw new SharedConversationRefreshError('unknown', `메시지 전송 실패: ${sendResult.error || '알 수 없는 오류'}`);
+        }
+
+        // Wait for completion (our improved logic that checks network and visibility)
+        console.info('[gptviewer] Waiting for ChatGPT response to complete...');
+        const completionResult = await automationView.waitForResponseCompletion();
+        console.info(`[gptviewer] Wait for response completion finished. Result: ${completionResult}`);
+
+        console.info('[gptviewer] Proceeding to refresh conversation data after sending message...');
+        return this.refreshConversation({
+          ...request,
+          mode: 'direct-chat-page',
+        });
+      },
+    });
+
+    console.info('[gptviewer] sendMessageToConversation fully completed.');
+    return result as SharedConversationRefreshResult;
   }
 }

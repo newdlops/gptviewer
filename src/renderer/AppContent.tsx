@@ -130,6 +130,8 @@ function AppContent() {
         onScrollPositionChange={sourceState.handleMessageListScrollPositionChange}
         onSourcePreviewNeeded={sourceState.loadSourcePreview}
         onToggleSourceDrawer={sourceState.toggleSourceDrawer}
+        onSendMessage={workspaceActions.handleSendMessageToActiveConversation}
+        isSendingMessage={workspaceActions.isSendingMessage}
         refreshError={workspaceActions.refreshError}
         refreshingConversationId={workspaceActions.refreshingConversationId}
         renderNonce={conversationRenderNonce}

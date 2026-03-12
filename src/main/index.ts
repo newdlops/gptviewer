@@ -2426,6 +2426,34 @@ ipcMain.handle(
   },
 );
 
+ipcMain.handle(
+  'shared-conversation:send-message',
+  async (_event, request: SharedConversationRefreshRequest, message: string) => {
+    if (!request || typeof request !== 'object') {
+      throw new Error('메시지 전송 요청이 올바르지 않습니다.');
+    }
+
+    try {
+      return await sharedConversationRefreshService.sendMessageToConversation(request, message);
+    } catch (error) {
+      if (error instanceof SharedConversationRefreshError) {
+        throw new Error(
+          encodeSharedConversationRefreshError({
+            code: error.code,
+            detail: error.detail,
+            message: error.message,
+          }),
+        );
+      }
+      throw new Error(
+        error instanceof Error
+          ? error.message
+          : '메시지를 전송하지 못했습니다.',
+      );
+    }
+  },
+);
+
 
 ipcMain.handle(
   'chatgpt-conversation:import',

@@ -63,6 +63,7 @@ export function useSharedConversationActions({
   const [importError, setImportError] = useState('');
   const [refreshError, setRefreshError] = useState('');
   const [refreshingConversationId, setRefreshingConversationId] = useState<string | null>(null);
+  const [isSendingMessage, setIsSendingMessage] = useState(false);
   const [refreshConfigState, setRefreshConfigState] =
     useState<SharedConversationRefreshConfigState | null>(null);
 
@@ -367,6 +368,53 @@ export function useSharedConversationActions({
     }
   };
 
+  const handleSendMessageToActiveConversation = async (message: string) => {
+    if (!activeConversation || isSendingMessage) return;
+    
+    const chatUrl = activeConversation.refreshRequest?.chatUrl || 
+                   (isChatUrlImportedConversation(activeConversation) ? activeConversation.sourceUrl : null);
+    
+    if (!chatUrl) {
+      setRefreshError('메시지를 보낼 원본 ChatGPT 링크가 없습니다. 새로고침 설정에서 원본 링크를 연결해 주세요.');
+      return;
+    }
+
+    setIsSendingMessage(true);
+    setRefreshError('');
+    
+    try {
+      const refreshRequest = activeConversation.refreshRequest ?? {
+        chatUrl,
+        conversationTitle: activeConversation.title,
+        helperWindowMode: 'visible',
+        mode: 'direct-chat-page',
+        shareUrl: activeConversation.sourceUrl,
+      };
+
+      const result = await window.electronAPI?.sendMessageToSharedConversation(
+        refreshRequest,
+        message
+      );
+      const importedConversation = normalizeImportedConversation(result);
+
+      if (!importedConversation) throw new Error('메시지 전송 후 대화를 갱신하지 못했습니다.');
+
+      messageHeightCacheRef.current[activeConversation.id] = {};
+      setConversations((currentConversations) =>
+        currentConversations.map((conversation) =>
+          conversation.id === activeConversation.id
+            ? buildConversationFromImport(conversation.id, importedConversation)
+            : conversation
+        )
+      );
+      setSourceDrawer(null);
+    } catch (error) {
+      setRefreshError(formatRefreshErrorMessage(error));
+    } finally {
+      setIsSendingMessage(false);
+    }
+  };
+
   const openRefreshConfigModal = (conversationId: string) => {
     const conversation = conversations.find((item) => item.id === conversationId);
     if (!conversation?.sourceUrl) {
@@ -427,12 +475,14 @@ export function useSharedConversationActions({
     handleImportSharedConversation,
     handleRefreshConfigSubmit,
     handleRefreshActiveConversation,
+    handleSendMessageToActiveConversation,
     importChatUrl,
     importError,
     importFolderId,
     importProjectUrl,
     isImportModalOpen,
     isImportingSharedConversation,
+    isSendingMessage,
     openRefreshConfigModal,
     refreshError,
     refreshConfigState,

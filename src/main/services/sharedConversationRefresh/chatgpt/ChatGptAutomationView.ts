@@ -8,6 +8,8 @@ import {
   buildHasButtonScript,
   buildHasTextMarkersScript,
   buildHasVisibleDialogScript,
+  buildIsRespondingScript,
+  buildSendMessageScript,
   type HoverPoint,
 } from './chatGptAutomationScripts';
 import {
@@ -47,6 +49,8 @@ const DEFAULT_WINDOW_BOUNDS = { height: 920, width: 1280 };
 const BACKGROUND_WINDOW_OPACITY = 0.01;
 const BACKGROUND_WINDOW_VISIBLE_PEEK = 1;
 export type ChatGptAutomationVisibilityMode = 'background' | 'visible';
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function getBackgroundWindowBounds(anchorWindow: BrowserWindow | null) {
   const display = anchorWindow && !anchorWindow.isDestroyed()
@@ -506,6 +510,72 @@ export class ChatGptAutomationView {
 
   async getPageSnapshot() {
     return this.execute<ChatGptPageSnapshot>(buildGetPageSnapshotScript());
+  }
+
+  async sendMessage(message: string) {
+    return this.execute<{ success: boolean; error?: string }>(buildSendMessageScript(message));
+  }
+
+  async isResponding() {
+    return this.execute<boolean>(buildIsRespondingScript());
+  }
+
+  async waitForResponseCompletion(timeoutMs = 120_000, intervalMs = 1_000) {
+    console.info('[gptviewer] waitForResponseCompletion started');
+    const deadline = Date.now() + timeoutMs;
+    
+    console.info('[gptviewer] Waiting for response to start...');
+    let hasStarted = false;
+    let startCheckCount = 0;
+    while (Date.now() < deadline && !this.isClosed() && !hasStarted) {
+      startCheckCount++;
+      const responding = await this.isResponding();
+      
+      if (startCheckCount % 2 === 0) {
+          console.info(`[gptviewer] Start check ${startCheckCount}: isResponding=${responding}`);
+      }
+
+      if (responding) {
+        hasStarted = true;
+        console.info('[gptviewer] Response started generating.');
+        break;
+      }
+      await sleep(intervalMs / 2);
+      
+      if (startCheckCount > 30) { // 15 seconds max wait for start
+          console.warn('[gptviewer] Response did not start after 15s. Proceeding to finish check.');
+          break;
+      }
+    }
+
+    console.info('[gptviewer] Waiting for response to finish...');
+    let finishCheckCount = 0;
+    while (Date.now() < deadline && !this.isClosed()) {
+      finishCheckCount++;
+      const responding = await this.isResponding();
+      
+      if (finishCheckCount % 2 === 0) {
+          console.info(`[gptviewer] Finish check ${finishCheckCount}: isResponding=${responding}`);
+      }
+
+      if (!responding) {
+        console.info('[gptviewer] No longer responding (DOM), double checking in 2s...');
+        await sleep(2000);
+        const stillResponding = await this.isResponding();
+        console.info(`[gptviewer] Double check: isResponding=${stillResponding}`);
+        
+        if (!stillResponding) {
+          console.info('[gptviewer] waitForResponseCompletion confirmed finished (DOM).');
+          await sleep(2000); // Buffer for UI to settle
+          return true;
+        }
+      }
+      
+      await sleep(intervalMs);
+    }
+    
+    console.warn(`[gptviewer] waitForResponseCompletion timed out after ${timeoutMs}ms or window closed (closed=${this.isClosed()})`);
+    return false;
   }
 
   async getSharedUrlCandidate() {
