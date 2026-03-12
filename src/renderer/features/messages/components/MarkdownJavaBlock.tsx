@@ -149,9 +149,19 @@ export function MarkdownJavaBlock({
       setJavaTerminalOutput([{ type: 'out', text: '[디버그 세션을 준비하는 중...]\n' }]);
       setIsDebugging(true);
 
-      // 1. JDTLS에 디버그 세션 시작 요청 (포트 획득)
+      // 1. JDTLS 워크스페이스 빌드 및 디버그 세션 시작 요청 (포트 획득)
       let port = null;
       try {
+        window.electronAPI?.log('info', '[JavaDebug] Compiling workspace before debugging...');
+        try {
+          await languageClientInstanceRef.current.sendRequest('workspace/executeCommand', {
+            command: 'java.workspace.compile',
+            arguments: [false]
+          });
+        } catch (compileErr: any) {
+          window.electronAPI?.log('error', '[JavaDebug] Workspace compile failed', compileErr?.message);
+        }
+
         window.electronAPI?.log('info', '[JavaDebug] Attempting to start debug session...');
         port = await languageClientInstanceRef.current.sendRequest('workspace/executeCommand', {
           command: 'vscode.java.startDebugSession',
@@ -306,7 +316,7 @@ export function MarkdownJavaBlock({
                   projectName: 'temp-java-project',
                   cwd: projectDir,
                   console: 'internalConsole',
-                  stopOnEntry: true,
+                  stopOnEntry: false,
                   classPaths: [projectDir + '/bin'],
                   modulePaths: [],
                   vmArgs: '--enable-preview'
@@ -317,7 +327,14 @@ export function MarkdownJavaBlock({
               } else if (msg.command === 'stackTrace' && msg.body?.stackFrames) {
                 setStackFrames(msg.body.stackFrames);
                 if (msg.body.stackFrames.length > 0) {
-                  sendDapRequest('scopes', { frameId: msg.body.stackFrames[0].id });
+                  const topFrame = msg.body.stackFrames[0];
+                  if (topFrame.source && topFrame.source.path) {
+                    setPausedLocation({
+                      filePath: topFrame.source.path,
+                      lineNumber: topFrame.line
+                    });
+                  }
+                  sendDapRequest('scopes', { frameId: topFrame.id });
                 }
               } else if (msg.command === 'scopes' && msg.body?.scopes) {
                 // 가장 첫 번째 scope (보통 Local)의 변수 요청
@@ -380,7 +397,11 @@ export function MarkdownJavaBlock({
     const currentPath = javaFilePathRef.current;
     
     let newDecorations: any[] = [];
-    if (location && location.filePath === currentPath) {
+    
+    const isSamePath = location && currentPath && 
+      location.filePath.replace(/\\/g, '/').toLowerCase() === currentPath.replace(/\\/g, '/').toLowerCase();
+
+    if (isSamePath && location) {
       newDecorations = [{
         range: new monaco.Range(location.lineNumber, 1, location.lineNumber, 1),
         options: {
@@ -394,7 +415,7 @@ export function MarkdownJavaBlock({
     currentLineDecorationRef.current = editor.deltaDecorations(currentLineDecorationRef.current, newDecorations);
     
     // 일치하는 파일이라면 해당 위치로 스크롤
-    if (location && location.filePath === currentPath) {
+    if (isSamePath && location) {
       editor.revealLineInCenter(location.lineNumber);
     }
   };
