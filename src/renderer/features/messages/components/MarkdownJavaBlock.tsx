@@ -192,31 +192,45 @@ export function MarkdownJavaBlock({
         });
       };
 
-      let buffer = '';
+      let buffer = new Uint8Array(0);
       socket.onmessage = async (event) => {
-        // 웹소켓 데이터가 Blob이나 Buffer 형태로 올 수도 있으므로 문자열로 변환
-        let dataStr = event.data;
-        if (dataStr instanceof Blob) {
-            dataStr = await dataStr.text();
-        } else if (dataStr instanceof ArrayBuffer) {
-            dataStr = new TextDecoder().decode(dataStr);
+        let newData: Uint8Array;
+        if (event.data instanceof Blob) {
+            newData = new Uint8Array(await event.data.arrayBuffer());
+        } else if (event.data instanceof ArrayBuffer) {
+            newData = new Uint8Array(event.data);
+        } else if (typeof event.data === 'string') {
+            newData = new TextEncoder().encode(event.data);
+        } else {
+            newData = new Uint8Array(0);
         }
-        // console.log('[JavaDebug] Raw incoming data length:', dataStr.length);
-        buffer += dataStr;
+        
+        const newBuffer = new Uint8Array(buffer.length + newData.length);
+        newBuffer.set(buffer, 0);
+        newBuffer.set(newData, buffer.length);
+        buffer = newBuffer;
 
         let keepReading = true;
         while (keepReading) {
-          const headerEndIdx = buffer.indexOf('\r\n\r\n');
+          let headerEndIdx = -1;
+          for (let i = 0; i < buffer.length - 3; i++) {
+            if (buffer[i] === 13 && buffer[i+1] === 10 && buffer[i+2] === 13 && buffer[i+3] === 10) {
+              headerEndIdx = i;
+              break;
+            }
+          }
+
           if (headerEndIdx === -1) {
             keepReading = false;
             break;
           }
 
-          const headerStr = buffer.substring(0, headerEndIdx);
+          const headerBytes = buffer.slice(0, headerEndIdx);
+          const headerStr = new TextDecoder().decode(headerBytes);
           const match = headerStr.match(/Content-Length:\s*(\d+)/i);
           if (!match) {
             console.error('[JavaDebug] Invalid DAP header (No Content-Length):', headerStr);
-            buffer = ''; // 헤더 파싱 실패 시 버퍼 비움
+            buffer = new Uint8Array(0); // 헤더 파싱 실패 시 버퍼 비움
             break;
           }
 
@@ -228,15 +242,18 @@ export function MarkdownJavaBlock({
             break; // 데이터가 아직 덜 옴
           }
 
-          const body = buffer.substring(headerEndIdx + 4, totalLength);
-          buffer = buffer.substring(totalLength);
+          const bodyBytes = buffer.slice(headerEndIdx + 4, totalLength);
+          buffer = buffer.slice(totalLength);
+          
+          const body = new TextDecoder().decode(bodyBytes);
 
           try {
             const msg = JSON.parse(body);
             console.log('[JavaDebug <- SERVER]', msg);
+            window.electronAPI?.log('info', `[JavaDebug <- SERVER Raw]`, JSON.stringify(msg));
 
             if (msg.type === 'event') {
-              window.electronAPI?.log('info', `[JavaDebug] EVENT: ${msg.event}`, msg.body);
+              window.electronAPI?.log('info', `[JavaDebug] EVENT: ${msg.event}`, JSON.stringify(msg.body));
               if (msg.event === 'initialized') {
                 console.log('[JavaDebug] Server Initialized Event received, sending breakpoints...');
                 window.electronAPI?.log('info', '[JavaDebug] Sending breakpoints...');
@@ -292,7 +309,7 @@ export function MarkdownJavaBlock({
                   stopOnEntry: true,
                   classPaths: [projectDir + '/bin'],
                   modulePaths: [],
-                  vmArgs: ''
+                  vmArgs: '--enable-preview'
                 });
               } else if (msg.command === 'launch' && msg.success) {
                 console.log('[JavaDebug] Launch successful.');
