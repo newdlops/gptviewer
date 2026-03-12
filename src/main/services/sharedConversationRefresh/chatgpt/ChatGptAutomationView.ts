@@ -547,9 +547,8 @@ export class ChatGptAutomationView {
         return { success: false, error: 'Network monitor not initialized' };
     }
 
-    console.info('[gptviewer][automation-view] Sending message via 2-step API...');
+    console.info('[gptviewer][automation-view] Sending message via 4-step Sentinel flow...');
     
-    // Temporarily attach console-message listener to see logs in main process
     const logHandler = (event: any, level: number, message: string, line: number, sourceId: string) => {
         if (message.includes('[gptviewer-script][API]')) {
             console.log(`[Browser Console] ${message}`);
@@ -558,9 +557,54 @@ export class ChatGptAutomationView {
     this.view.webContents.on('console-message', logHandler);
 
     try {
-        // STEP 1: Wake up Sentinel BEFORE we capture headers.
-        // We inject a tiny script to trigger 'input' so ChatGPT generates openai-sentinel-* tokens.
-        console.info('[gptviewer][automation-view] Waking up Sentinel...');
+        // --- STEP 1: Conversation Prepare ---
+        console.info('[gptviewer][sentinel-flow] Executing Step 1: /conversation/prepare');
+        const step1Result = await this.execute<{ success: boolean; conduitToken?: string; error?: string; status?: number }>(`
+            (async () => {
+                try {
+                    const urlParts = window.location.pathname.split('/');
+                    const conversationId = urlParts[urlParts.length - 1];
+                    const lastMessageElement = document.querySelector('div[data-message-id]:last-of-type');
+                    const parentMessageId = lastMessageElement ? lastMessageElement.getAttribute('data-message-id') : null;
+                    
+                    if (!conversationId || conversationId === 'c' || !parentMessageId) {
+                        return { success: false, error: 'context_missing' };
+                    }
+
+                    const payload = {
+                        action: "next",
+                        conversation_id: conversationId,
+                        parent_message_id: parentMessageId,
+                        model: "auto",
+                        partial_query: {
+                            id: crypto.randomUUID(),
+                            author: { role: "user" },
+                            content: { content_type: "text", parts: [${JSON.stringify(message)}] }
+                        },
+                        client_contextual_info: { app_name: "chatgpt.com" }
+                    };
+
+                    const response = await fetch('https://chatgpt.com/backend-api/f/conversation/prepare', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+
+                    if (!response.ok) return { success: false, error: 'api_fail', status: response.status };
+                    const data = await response.json();
+                    return { success: data.status === 'ok', conduitToken: data.conduit_token };
+                } catch (e) { return { success: false, error: e.message }; }
+            })()
+        `);
+
+        if (!step1Result.success || !step1Result.conduitToken) {
+            console.error('[gptviewer][sentinel-flow] Step 1 failed:', step1Result.error);
+            this.view.webContents.removeListener('console-message', logHandler);
+            return { success: false, error: 'step1_failed' };
+        }
+
+        // --- STEP 2 & 3: Trigger Sentinel Wakeup ---
+        console.info('[gptviewer][sentinel-flow] Executing Step 2 & 3: Waking up Sentinel...');
         await this.execute(`
             (() => {
                 const textarea = document.getElementById('prompt-textarea');
@@ -576,21 +620,65 @@ export class ChatGptAutomationView {
             })()
         `);
 
-        // Wait a bit for the background fetch (requirements/turnstile) to complete and be caught by NetworkMonitor
-        await new Promise(r => setTimeout(r, 1500));
+        // Wait for the background finalize to complete and be caught by NetworkMonitor
+        await new Promise(r => setTimeout(r, 2000));
         
-        // STEP 2: Now grab the freshly generated headers
+        // --- STEP 4: Actual Conversation ---
         let capturedHeaders = this.conversationNetworkMonitor.getLatestBackendApiHeaders();
-        if (!capturedHeaders || !capturedHeaders.headers || !capturedHeaders.headers['authorization']) {
-            console.warn('[gptviewer][automation-view] No valid auth headers found even after Sentinel wakeup.');
+        if (!capturedHeaders || !capturedHeaders.headers['authorization']) {
+            console.warn('[gptviewer][sentinel-flow] No valid auth headers found.');
             this.view.webContents.removeListener('console-message', logHandler);
             return { success: false, error: 'auth_headers_missing' };
         }
 
-        // STEP 3: Build and execute the real API script with the rich headers
-        const result = await this.execute<{ success: boolean; error?: string; status?: number }>(
-            buildSendMessageViaApiScript(message, capturedHeaders.headers)
-        );
+        console.info('[gptviewer][sentinel-flow] Executing Step 4: /conversation with full headers');
+        const result = await this.execute<{ success: boolean; error?: string; status?: number }>(`
+            (async () => {
+                try {
+                    const urlParts = window.location.pathname.split('/');
+                    const conversationId = urlParts[urlParts.length - 1];
+                    const lastMessageElement = document.querySelector('div[data-message-id]:last-of-type');
+                    const parentMessageId = lastMessageElement ? lastMessageElement.getAttribute('data-message-id') : null;
+
+                    const headers = {
+                        ...${JSON.stringify(capturedHeaders.headers)},
+                        'Content-Type': 'application/json',
+                        'Accept': 'text/event-stream',
+                        'x-conduit-token': ${JSON.stringify(step1Result.conduitToken)},
+                        'x-openai-target-path': '/backend-api/f/conversation'
+                    };
+
+                    const payload = {
+                        action: "next",
+                        conversation_id: conversationId,
+                        parent_message_id: parentMessageId,
+                        model: "auto",
+                        partial_query: {
+                            id: crypto.randomUUID(),
+                            author: { role: "user" },
+                            content: { content_type: "text", parts: [${JSON.stringify(message)}] }
+                        },
+                        supports_buffering: true,
+                        supported_encodings: ["v1"],
+                        client_contextual_info: { app_name: "chatgpt.com" }
+                    };
+
+                    const response = await fetch('https://chatgpt.com/backend-api/f/conversation', {
+                        method: 'POST',
+                        headers: headers,
+                        body: JSON.stringify(payload)
+                    });
+
+                    if (!response.ok) {
+                        const txt = await response.text();
+                        console.error('[gptviewer-script][API] /conversation failed!', txt);
+                        return { success: false, error: 'api_fail', status: response.status };
+                    }
+                    return { success: true };
+                } catch (e) { return { success: false, error: e.message }; }
+            })()
+        `);
+
         this.view.webContents.removeListener('console-message', logHandler);
         return result;
     } catch (e) {

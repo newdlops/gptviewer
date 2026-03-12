@@ -435,7 +435,8 @@ export const buildSendMessageViaApiScript = (
 
     if (!prepareResponse.ok) {
        const errText = await prepareResponse.text();
-       console.error('[gptviewer-script][API] /prepare failed!', { status: prepareResponse.status, error: errText });
+       const errInfo = { status: prepareResponse.status, statusText: prepareResponse.statusText, error: errText };
+       console.error('[gptviewer-script][API] /prepare failed!', JSON.stringify(errInfo, null, 2));
        return { success: false, error: 'prepare_api_failed', status: prepareResponse.status };
     }
 
@@ -457,12 +458,15 @@ export const buildSendMessageViaApiScript = (
       'x-openai-target-path': '/backend-api/f/conversation'
     };
     
-    console.log('[gptviewer-script][API] ==== /conversation REQUEST ====');
-    console.log('[gptviewer-script][API] Conversation URL: https://chatgpt.com/backend-api/f/conversation');
-    console.log('[gptviewer-script][API] Conversation Headers:', JSON.stringify(conversationHeaders, null, 2));
-    console.log('[gptviewer-script][API] Conversation Payload:', JSON.stringify(messagePayload, null, 2));
+    // EXPLICIT URL to prevent any unwanted /init suffix
+    const conversationUrl = 'https://chatgpt.com/backend-api/f/conversation';
 
-    const conversationResponse = await fetch('https://chatgpt.com/backend-api/f/conversation', {
+    console.log('[gptviewer-script][API] ==== /conversation REQUEST ====');
+    console.log('[gptviewer-script][API] TARGET URL:', conversationUrl);
+    console.log('[gptviewer-script][API] Headers:', JSON.stringify(conversationHeaders, null, 2));
+    console.log('[gptviewer-script][API] Payload:', JSON.stringify(messagePayload, null, 2));
+
+    const conversationResponse = await fetch(conversationUrl, {
       method: 'POST',
       headers: conversationHeaders,
       body: JSON.stringify(messagePayload) 
@@ -470,7 +474,8 @@ export const buildSendMessageViaApiScript = (
 
     if (!conversationResponse.ok) {
        const errText = await conversationResponse.text();
-       console.error('[gptviewer-script][API] /conversation failed!', { status: conversationResponse.status, error: errText });
+       const errInfo = { status: conversationResponse.status, statusText: conversationResponse.statusText, error: errText };
+       console.error('[gptviewer-script][API] /conversation failed!', JSON.stringify(errInfo, null, 2));
        return { success: false, error: 'conversation_api_failed', status: conversationResponse.status };
     }
 
