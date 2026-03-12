@@ -39,38 +39,30 @@ const RELEVANT_HOST_PATTERNS = [
 
 const normalizeHeaders = (headers: Record<string, string | string[]>) => {
   const normalized: Record<string, string> = {};
-
   Object.entries(headers).forEach(([key, value]) => {
     const normalizedKey = key.toLowerCase();
     normalized[normalizedKey] = Array.isArray(value) ? value.join(', ') : value;
   });
-
   return normalized;
 };
 
 const sanitizeHeadersForReplay = (headers: Record<string, string>) => {
   const sanitized: Record<string, string> = {};
-  // Allow all oai-* and openai-* headers. Block only standard browser-managed headers.
+  // Block standard browser-managed headers and HTTP/2 pseudo-headers (starting with :)
   const blockedHeaderPattern =
-    /^(host|connection|content-length|origin|referer|accept-encoding|priority|sec-fetch-.*|sec-ch-.*)$/i;
+    /^(host|connection|content-length|origin|referer|accept-encoding|priority|sec-fetch-.*|sec-ch-.*|:.*)$/i;
 
   Object.entries(headers).forEach(([key, value]) => {
-    // Note: We keep cookies because they are handled by the browser fetch automatically,
-    // but some fetch implementations might conflict if 'cookie' is manually set.
-    // Usually it's safer to let the browser handle cookies and just pass the Authorization and custom headers.
-    if (!value || blockedHeaderPattern.test(key) || key.startsWith(':') || key.toLowerCase() === 'cookie') {
+    if (!value || blockedHeaderPattern.test(key) || key.toLowerCase() === 'cookie') {
       return;
     }
-
     sanitized[key] = value;
   });
-
   return sanitized;
 };
 
 const isRelevantContentType = (mimeType?: string): boolean => {
   const normalizedMimeType = (mimeType || '').toLowerCase();
-
   return (
     !normalizedMimeType ||
     normalizedMimeType.includes('json') ||
@@ -85,11 +77,9 @@ const isRelevantResponse = (responseMeta: PendingResponseMeta): boolean => {
   if (!RELEVANT_HOST_PATTERNS.some((pattern) => responseMeta.url.includes(pattern))) {
     return false;
   }
-
   if (!isRelevantContentType(responseMeta.mimeType)) {
     return false;
   }
-
   return ['Document', 'Fetch', 'XHR', 'Other'].includes(
     responseMeta.resourceType || 'Other',
   );
@@ -125,6 +115,7 @@ export class ChatGptConversationNetworkMonitor {
 
   getLatestBackendApiHeaders() {
     if (!this.lastSuccessfulBackendApiHeaders) return null;
+    
     return {
       ...this.lastSuccessfulBackendApiHeaders,
       headers: {
@@ -152,6 +143,25 @@ export class ChatGptConversationNetworkMonitor {
         new Promise((_, reject) => setTimeout(() => reject(new Error('debugger_timeout')), 5000))
       ]);
     } catch (error) {}
+  }
+
+  private mapSentinelTokens(url: string, payloadStr: string) {
+    try {
+      const payload = JSON.parse(payloadStr);
+      if (!payload || typeof payload !== 'object') return;
+
+      const reqToken = payload.prepare_token || payload.token;
+      if (reqToken) this.sentinelHeaders['openai-sentinel-chat-requirements-token'] = reqToken;
+      
+      const pToken = payload.proofofwork || payload.p || payload.proof;
+      if (pToken) this.sentinelHeaders['openai-sentinel-proof-token'] = pToken;
+      
+      if (payload.turnstile?.token) {
+        this.sentinelHeaders['openai-sentinel-turnstile-token'] = payload.turnstile.token;
+      }
+      
+      console.info(`[MAPPING] Sentinel tokens mapped from ${url}`);
+    } catch (e) {}
   }
 
   private readonly handleDebuggerMessage = async (_event: Event, method: string, params: Record<string, unknown>) => {
@@ -194,40 +204,20 @@ export class ChatGptConversationNetworkMonitor {
         const isSentinel = url.includes('/sentinel/chat-requirements');
         const isConversation = url.includes('/backend-api/f/conversation');
         if (isSentinel || isConversation) {
-          // Log Request Body even if it's empty to show the flow
-          let bodyToLog = request.postData || '';
-          
-          if (request.hasPostData && !bodyToLog) {
-              // Try to fetch it via debugger if not provided initially
-              const debuggerApi = this.webContents.debugger;
-              if (debuggerApi.isAttached()) {
-                  debuggerApi.sendCommand('Network.getRequestPostData', { requestId })
-                      .then((res: any) => {
-                          if (res?.postData) {
-                              console.info(`Request Body (${url}):`, res.postData);
-                          }
-                      })
-                      .catch(() => {});
-              }
-          }
-
-          if (bodyToLog) {
-            try {
-              const payload = JSON.parse(bodyToLog);
-              console.info(`Request Body (${url}):`, JSON.stringify(payload, null, 2));
-
-              // Step 3 (Finalize) Payload Mapping
-              if (url.includes('/sentinel/chat-requirements/finalize')) {
-                const reqToken = payload.prepare_token || payload.token;
-                if (reqToken) this.sentinelHeaders['openai-sentinel-chat-requirements-token'] = reqToken;
-                const pToken = payload.proofofwork || payload.p || payload.proof;
-                if (pToken) this.sentinelHeaders['openai-sentinel-proof-token'] = pToken;
-                if (payload.turnstile?.token) this.sentinelHeaders['openai-sentinel-turnstile-token'] = payload.turnstile.token;
-                console.info(`[MAPPING] Sentinel tokens mapped from ${url}`);
-              }
-            } catch (e) {
-              console.info(`Request Body (${url}):`, bodyToLog);
+          if (request.hasPostData && !request.postData) {
+            const debuggerApi = this.webContents.debugger;
+            if (debuggerApi.isAttached()) {
+              debuggerApi.sendCommand('Network.getRequestPostData', { requestId })
+                .then((res: any) => {
+                  if (res?.postData) {
+                    console.info(`Request Body (${url}):`, res.postData);
+                    if (url.includes('/finalize')) this.mapSentinelTokens(url, res.postData);
+                  }
+                }).catch(() => {});
             }
+          } else if (request.postData) {
+            console.info(`Request Body (${url}):`, request.postData);
+            if (url.includes('/finalize')) this.mapSentinelTokens(url, request.postData);
           }
         }
       }
@@ -242,8 +232,9 @@ export class ChatGptConversationNetworkMonitor {
 
       if (!requestId || !url) return;
 
+      const normalized = normalizeHeaders(headers);
       this.pendingRequests.set(requestId, {
-        headers: sanitizeHeadersForReplay(normalizeHeaders(headers)),
+        headers: sanitizeHeadersForReplay(normalized),
         method: methodName,
         url: url,
       });
@@ -256,16 +247,17 @@ export class ChatGptConversationNetworkMonitor {
         }
       }
 
-      if (url.startsWith(BACKEND_API_PREFIX) && (methodName === 'GET' || methodName === 'POST')) {
-        const normalized = normalizeHeaders(headers);
-        const hasAuth = !!normalized['authorization'];
-        
-        if (hasAuth) {
-            console.info(`[gptviewer][monitor] Authorization header CAPTURED from ${url}`);
-        }
-
-        // Always update if new headers have Authorization, or if we have nothing yet.
-        if (hasAuth || !this.lastSuccessfulBackendApiHeaders) {
+      // Authorization header capture reinforcement
+      if (url.startsWith(BACKEND_API_PREFIX)) {
+        if (normalized['authorization']) {
+          console.info(`[gptviewer][monitor] Authorization CAPTURED from ${url}`);
+          this.lastSuccessfulBackendApiHeaders = {
+            headers: sanitizeHeadersForReplay(normalized),
+            method: methodName,
+            statusCode: 0,
+            url: url,
+          };
+        } else if (!this.lastSuccessfulBackendApiHeaders) {
           this.lastSuccessfulBackendApiHeaders = {
             headers: sanitizeHeadersForReplay(normalized),
             method: methodName,
@@ -286,7 +278,9 @@ export class ChatGptConversationNetworkMonitor {
       if (!requestId || !responseMeta || !isRelevantResponse(responseMeta)) return;
 
       if (requestMeta && responseMeta.url.startsWith(BACKEND_API_PREFIX) && requestMeta.method === 'GET' && responseMeta.status >= 200 && responseMeta.status < 300) {
-        this.lastSuccessfulBackendApiHeaders = { headers: requestMeta.headers, method: requestMeta.method, statusCode: responseMeta.status, url: responseMeta.url };
+        if (requestMeta.headers['authorization']) {
+           this.lastSuccessfulBackendApiHeaders = { headers: requestMeta.headers, method: requestMeta.method, statusCode: responseMeta.status, url: responseMeta.url };
+        }
       }
 
       const debuggerApi = this.webContents.debugger;
@@ -303,6 +297,17 @@ export class ChatGptConversationNetworkMonitor {
           const isConversation = url.includes('/backend-api/f/conversation');
           if (isSentinel || isConversation) {
             console.info(`Response Body (${url}):`, bodyText);
+            
+            // Extract tokens from Step 2 Response Body as a fallback/reinforcement
+            if (url.includes('/sentinel/chat-requirements/prepare')) {
+                try {
+                    const payload = JSON.parse(bodyText);
+                    if (payload.prepare_token) {
+                        this.sentinelHeaders['openai-sentinel-chat-requirements-token'] = payload.prepare_token;
+                        console.info(`[MAPPING] prepare_token captured from Step 2 Response`);
+                    }
+                } catch(e) {}
+            }
           }
         }
 
