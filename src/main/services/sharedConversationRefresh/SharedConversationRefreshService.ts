@@ -99,15 +99,16 @@ export class SharedConversationRefreshService {
     const result = await runWithLoginResume({
       initialMode: 'visible', // User explicitly wants a secondary window
       runAttempt: async (automationView) => {
+        console.info('[gptviewer] Enabling network monitoring...');
+        // We enable it first so we can observe initial requests and capture auth headers
+        await automationView.enableConversationNetworkMonitoring().catch(() => {});
+
         console.info(`[gptviewer] Loading URL in automation view: ${request.chatUrl}`);
         await automationView.load(request.chatUrl!);
         
         console.info('[gptviewer] Waiting for page to settle before sending message...');
         await new Promise((resolve) => setTimeout(resolve, 3000));
-        
-        console.info('[gptviewer] Enabling network monitoring...');
-        // We enable it so we can observe the 2-step process (/prepare -> /conversation)
-        await automationView.enableConversationNetworkMonitoring().catch(() => {});
+
 
         console.info('[gptviewer] Attempting to send message via script...');
         const sendResult = await automationView.sendMessage(message);

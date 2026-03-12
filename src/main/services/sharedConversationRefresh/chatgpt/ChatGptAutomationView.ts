@@ -10,6 +10,7 @@ import {
   buildHasVisibleDialogScript,
   buildIsRespondingScript,
   buildSendMessageScript,
+  buildSendMessageViaApiScript,
   type HoverPoint,
 } from './chatGptAutomationScripts';
 import {
@@ -513,7 +514,89 @@ export class ChatGptAutomationView {
   }
 
   async sendMessage(message: string) {
-    return this.execute<{ success: boolean; error?: string }>(buildSendMessageScript(message));
+    console.info('[gptviewer][automation-view] Attempting to send message via API (Primary)...');
+    try {
+      const apiResult = await this.sendMessageViaApi(message);
+      if (apiResult.success) {
+        console.info('[gptviewer][automation-view] Message sent successfully via API.');
+        return apiResult;
+      }
+      console.warn(`[gptviewer][automation-view] API send failed: ${apiResult.error}. Falling back to DOM...`);
+    } catch (err) {
+      console.error(`[gptviewer][automation-view] API send exception: ${err}. Falling back to DOM...`);
+    }
+
+    // DOM Fallback
+    console.info('[gptviewer][automation-view] Attempting to send message via DOM (Fallback)...');
+    try {
+      const domResult = await this.execute<{ success: boolean; error?: string }>(buildSendMessageScript(message));
+      if (domResult.success) {
+        console.info('[gptviewer][automation-view] Message sent successfully via DOM.');
+      } else {
+        console.error(`[gptviewer][automation-view] DOM send also failed: ${domResult.error}`);
+      }
+      return domResult;
+    } catch (err) {
+      console.error(`[gptviewer][automation-view] DOM send exception: ${err}`);
+      return { success: false, error: 'Both API and DOM send methods failed' };
+    }
+  }
+
+  async sendMessageViaApi(message: string) {
+    if (!this.conversationNetworkMonitor) {
+        return { success: false, error: 'Network monitor not initialized' };
+    }
+
+    console.info('[gptviewer][automation-view] Sending message via 2-step API...');
+    
+    // Temporarily attach console-message listener to see logs in main process
+    const logHandler = (event: any, level: number, message: string, line: number, sourceId: string) => {
+        if (message.includes('[gptviewer-script][API]')) {
+            console.log(`[Browser Console] ${message}`);
+        }
+    };
+    this.view.webContents.on('console-message', logHandler);
+
+    try {
+        // STEP 1: Wake up Sentinel BEFORE we capture headers.
+        // We inject a tiny script to trigger 'input' so ChatGPT generates openai-sentinel-* tokens.
+        console.info('[gptviewer][automation-view] Waking up Sentinel...');
+        await this.execute(`
+            (() => {
+                const textarea = document.getElementById('prompt-textarea');
+                if (textarea) {
+                    textarea.dispatchEvent(new Event('focus', { bubbles: true }));
+                    textarea.value = ' '; 
+                    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+                    setTimeout(() => {
+                        textarea.value = '';
+                        textarea.dispatchEvent(new Event('input', { bubbles: true }));
+                    }, 100);
+                }
+            })()
+        `);
+
+        // Wait a bit for the background fetch (requirements/turnstile) to complete and be caught by NetworkMonitor
+        await new Promise(r => setTimeout(r, 1500));
+        
+        // STEP 2: Now grab the freshly generated headers
+        let capturedHeaders = this.conversationNetworkMonitor.getLatestBackendApiHeaders();
+        if (!capturedHeaders || !capturedHeaders.headers || !capturedHeaders.headers['authorization']) {
+            console.warn('[gptviewer][automation-view] No valid auth headers found even after Sentinel wakeup.');
+            this.view.webContents.removeListener('console-message', logHandler);
+            return { success: false, error: 'auth_headers_missing' };
+        }
+
+        // STEP 3: Build and execute the real API script with the rich headers
+        const result = await this.execute<{ success: boolean; error?: string; status?: number }>(
+            buildSendMessageViaApiScript(message, capturedHeaders.headers)
+        );
+        this.view.webContents.removeListener('console-message', logHandler);
+        return result;
+    } catch (e) {
+        this.view.webContents.removeListener('console-message', logHandler);
+        throw e;
+    }
   }
 
   async isResponding() {

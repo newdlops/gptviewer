@@ -294,7 +294,9 @@ export const buildGetHoverPointForSelectorsScript = (selectors: string[]) => `
 })()
 `;
 
-export const buildSendMessageScript = (message: string) => `
+export const buildSendMessageScript = (message: string) => {
+  const messageJson = JSON.stringify(message || '');
+  return `
 (async () => {
   console.log('[gptviewer-script] buildSendMessageScript started');
   const textarea = document.getElementById('prompt-textarea');
@@ -304,7 +306,7 @@ export const buildSendMessageScript = (message: string) => `
   }
 
   console.log('[gptviewer-script] Setting textarea value');
-  textarea.value = ${JSON.stringify(message)};
+  textarea.value = ` + messageJson + `;
   textarea.dispatchEvent(new Event('input', { bubbles: true }));
   textarea.dispatchEvent(new Event('change', { bubbles: true }));
   
@@ -350,6 +352,137 @@ export const buildSendMessageScript = (message: string) => `
   return { success: false, error: 'Send button disabled or not found, Enter key failed' };
 })()
 `;
+};
+
+export const buildSendMessageViaApiScript = (
+  message: string,
+  authHeaders: Record<string, string>,
+) => {
+  // Double-serialize to ensure it's a completely safe string literal in the JS script
+  const payloadData = JSON.stringify({
+    message: message || '',
+    authHeaders: authHeaders || {}
+  });
+  const safePayloadStr = JSON.stringify(payloadData);
+
+  return `
+(async () => {
+  try {
+    console.log('[gptviewer-script][API] ==== sendMessageViaApi started ====');
+    
+    // 1. Context extraction
+    const urlParts = window.location.pathname.split('/');
+    const conversationId = urlParts[urlParts.length - 1];
+    
+    if (!conversationId || conversationId === 'c' || conversationId.length < 10) {
+       console.error('[gptviewer-script][API] Invalid conversationId:', window.location.pathname);
+       return { success: false, error: 'invalid_conversation_id' };
+    }
+
+    const lastMessageElement = document.querySelector('div[data-message-id]:last-of-type');
+    const parentMessageId = lastMessageElement ? lastMessageElement.getAttribute('data-message-id') : null;
+    
+    if (!parentMessageId) {
+       console.error('[gptviewer-script][API] Could not find parentMessageId in DOM');
+       return { success: false, error: 'parent_message_id_missing' };
+    }
+
+    console.log('[gptviewer-script][API] Context ready:', { conversationId, parentMessageId });
+
+    // Safely unpack the injected data
+    const payload = JSON.parse(${safePayloadStr});
+    const injectedHeaders = payload.authHeaders;
+    const injectedMessage = payload.message;
+    
+    const commonHeaders = {
+      'Content-Type': 'application/json',
+      'Accept': 'text/event-stream',
+      ...injectedHeaders
+    };
+
+    console.log('[gptviewer-script][API] Extracted Auth Headers Keys:', Object.keys(commonHeaders));
+
+    const messagePayload = {
+      action: "next",
+      fork_from_shared_post: false,
+      conversation_id: conversationId,
+      parent_message_id: parentMessageId,
+      model: "auto", 
+      timezone_offset_min: -540,
+      timezone: "Asia/Seoul",
+      conversation_mode: { kind: "primary_assistant" },
+      system_hints: [],
+      partial_query: {
+        id: crypto.randomUUID(),
+        author: { role: "user" },
+        content: { content_type: "text", parts: [injectedMessage] }
+      },
+      supports_buffering: true,
+      supported_encodings: ["v1"],
+      client_contextual_info: { app_name: "chatgpt.com" }
+    };
+
+    console.log('[gptviewer-script][API] ==== /prepare REQUEST ====');
+    console.log('[gptviewer-script][API] Prepare URL: https://chatgpt.com/backend-api/f/conversation/prepare');
+    console.log('[gptviewer-script][API] Prepare Headers:', JSON.stringify(commonHeaders, null, 2));
+    console.log('[gptviewer-script][API] Prepare Payload:', JSON.stringify(messagePayload, null, 2));
+
+    const prepareResponse = await fetch('https://chatgpt.com/backend-api/f/conversation/prepare', {
+      method: 'POST',
+      headers: commonHeaders,
+      body: JSON.stringify(messagePayload)
+    });
+
+    if (!prepareResponse.ok) {
+       const errText = await prepareResponse.text();
+       console.error('[gptviewer-script][API] /prepare failed!', { status: prepareResponse.status, error: errText });
+       return { success: false, error: 'prepare_api_failed', status: prepareResponse.status };
+    }
+
+    const prepareResult = await prepareResponse.json();
+    console.log('[gptviewer-script][API] ==== /prepare RESPONSE ====');
+    console.log('[gptviewer-script][API] Result:', JSON.stringify(prepareResult, null, 2));
+
+    if (prepareResult.status !== 'ok' || !prepareResult.conduit_token) {
+       console.error('[gptviewer-script][API] /prepare response invalid missing conduit_token');
+       return { success: false, error: 'prepare_response_invalid' };
+    }
+
+    // 3. Step 2: /conversation
+    const conversationHeaders = {
+      ...injectedHeaders, // explicitly inject ALL captured headers including sentinel
+      'Content-Type': 'application/json',
+      'Accept': 'text/event-stream',
+      'x-conduit-token': prepareResult.conduit_token,
+      'x-openai-target-path': '/backend-api/f/conversation'
+    };
+    
+    console.log('[gptviewer-script][API] ==== /conversation REQUEST ====');
+    console.log('[gptviewer-script][API] Conversation URL: https://chatgpt.com/backend-api/f/conversation');
+    console.log('[gptviewer-script][API] Conversation Headers:', JSON.stringify(conversationHeaders, null, 2));
+    console.log('[gptviewer-script][API] Conversation Payload:', JSON.stringify(messagePayload, null, 2));
+
+    const conversationResponse = await fetch('https://chatgpt.com/backend-api/f/conversation', {
+      method: 'POST',
+      headers: conversationHeaders,
+      body: JSON.stringify(messagePayload) 
+    });
+
+    if (!conversationResponse.ok) {
+       const errText = await conversationResponse.text();
+       console.error('[gptviewer-script][API] /conversation failed!', { status: conversationResponse.status, error: errText });
+       return { success: false, error: 'conversation_api_failed', status: conversationResponse.status };
+    }
+
+    console.log('[gptviewer-script][API] ==== /conversation initiated successfully! ====');
+    return { success: true };
+  } catch (err) {
+    console.error('[gptviewer-script][API] Exception caught:', err);
+    return { success: false, error: err.message };
+  }
+})()
+`;
+};
 
 export const buildIsRespondingScript = () => `
 (() => {

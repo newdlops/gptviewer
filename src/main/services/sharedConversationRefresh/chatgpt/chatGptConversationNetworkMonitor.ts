@@ -50,11 +50,15 @@ const normalizeHeaders = (headers: Record<string, string | string[]>) => {
 
 const sanitizeHeadersForReplay = (headers: Record<string, string>) => {
   const sanitized: Record<string, string> = {};
+  // Allow all oai-* and openai-* headers. Block only standard browser-managed headers.
   const blockedHeaderPattern =
-    /^(cookie|host|connection|content-length|origin|referer|user-agent|accept-encoding|priority|sec-fetch-.*|sec-ch-.*)$/i;
+    /^(host|connection|content-length|origin|referer|accept-encoding|priority|sec-fetch-.*|sec-ch-.*)$/i;
 
   Object.entries(headers).forEach(([key, value]) => {
-    if (!value || blockedHeaderPattern.test(key) || key.startsWith(':')) {
+    // Note: We keep cookies because they are handled by the browser fetch automatically,
+    // but some fetch implementations might conflict if 'cookie' is manually set.
+    // Usually it's safer to let the browser handle cookies and just pass the Authorization and custom headers.
+    if (!value || blockedHeaderPattern.test(key) || key.startsWith(':') || key.toLowerCase() === 'cookie') {
       return;
     }
 
@@ -149,9 +153,9 @@ export class ChatGptConversationNetworkMonitor {
         console.info('[gptviewer][network-monitor] attaching debugger...');
         debuggerApi.attach('1.3');
       }
-      
+
       debuggerApi.on('message', this.handleDebuggerMessage);
-      
+
       console.info('[gptviewer][network-monitor] enabling network domain...');
       // 5초 타임아웃 추가
       await Promise.race([
@@ -176,12 +180,22 @@ export class ChatGptConversationNetworkMonitor {
             mimeType?: string;
             status?: number;
             url?: string;
+            headers?: Record<string, string>;
           }
         | undefined;
       const requestId = String(params.requestId || '');
 
       if (!requestId || !response?.url) {
         return;
+      }
+
+      // --- Sentinel Flow Response Logging ---
+      const isSentinel = response.url.includes('/sentinel/chat-requirements');
+      const isConversation = response.url.includes('/backend-api/conversation');
+      if (isSentinel || isConversation) {
+          const typeLabel = response.url.includes('/finalize') ? 'FINALIZE' : (isSentinel ? 'PREPARE' : 'CONVERSATION');
+          console.info(`[gptviewer][sentinel-flow][${typeLabel}] Response Status: ${response.status}`);
+          console.info(`[gptviewer][sentinel-flow][${typeLabel}] Response Headers:`, JSON.stringify(response.headers, null, 2));
       }
 
       this.pendingResponses.set(requestId, {
@@ -199,7 +213,7 @@ export class ChatGptConversationNetworkMonitor {
       const requestId = String(params.requestId || '');
       const request =
         params.request && typeof params.request === 'object'
-          ? (params.request as { method?: string; url?: string })
+          ? (params.request as { method?: string; url?: string; postData?: string })
           : undefined;
 
       if (!requestId || !request?.url) {
@@ -212,14 +226,56 @@ export class ChatGptConversationNetworkMonitor {
         method: String(request.method || existingRequestMeta?.method || 'GET').toUpperCase(),
         url: request.url,
       });
+
+      // --- Sentinel Flow Logging & Mapping ---
+      const isSentinel = request.url.includes('/sentinel/chat-requirements');
+      const isFinalize = request.url.includes('/finalize');
+      const isConversation = request.url.includes('/backend-api/conversation') && request.method === 'POST';
+
+      if (isSentinel || isConversation) {
+        const typeLabel = isFinalize ? 'FINALIZE' : (isSentinel ? 'PREPARE' : 'CONVERSATION');
+        try {
+          const payload = request.postData ? JSON.parse(request.postData) : null;
+          console.info(`[gptviewer][sentinel-flow][${typeLabel}] Request URL: ${request.url}`);
+          if (payload) {
+             console.info(`[gptviewer][sentinel-flow][${typeLabel}] Payload:`, JSON.stringify(payload, null, 2));
+          }
+
+          // Finalize 단계에서 토큰 추출 및 헤더 매핑 (Conversation 요청 준비)
+          if (isFinalize && payload && typeof payload === 'object') {
+            if (!this.lastSuccessfulBackendApiHeaders) {
+               this.lastSuccessfulBackendApiHeaders = { headers: {}, method: 'POST', statusCode: 0, url: '' };
+            }
+
+            // Mapping: prepare_token (or token) -> openai-sentinel-chat-requirements-token
+            const requirementsToken = payload.prepare_token || payload.token;
+            if (requirementsToken) {
+               this.lastSuccessfulBackendApiHeaders.headers['openai-sentinel-chat-requirements-token'] = requirementsToken;
+            }
+
+            // Mapping: proofofwork (or p, proof) -> openai-sentinel-proof-token
+            const proofToken = payload.proofofwork || payload.p || payload.proof;
+            if (proofToken) {
+               this.lastSuccessfulBackendApiHeaders.headers['openai-sentinel-proof-token'] = proofToken;
+            }
+
+            // Mapping: turnstile -> openai-sentinel-turnstile-token
+            if (payload.turnstile && payload.turnstile.token) {
+               this.lastSuccessfulBackendApiHeaders.headers['openai-sentinel-turnstile-token'] = payload.turnstile.token;
+            }
+
+            console.info('[gptviewer][sentinel-flow][MAPPING] Sentinel headers mapped for next conversation.');
+          }
+        } catch (e) {
+          console.warn(`[gptviewer][sentinel-flow][${typeLabel}] Failed to parse payload`, e);
+        }
+      }
+
       return;
     }
 
     if (method === 'Network.requestWillBeSentExtraInfo') {
       const requestId = String(params.requestId || '');
-      const associatedCookies = Array.isArray(params.associatedCookies)
-        ? params.associatedCookies
-        : [];
       const headers =
         params.headers && typeof params.headers === 'object'
           ? (params.headers as Record<string, string | string[]>)
@@ -245,17 +301,32 @@ export class ChatGptConversationNetworkMonitor {
         url: requestUrl,
       });
 
+      // --- Sentinel Flow Headers Logging ---
+      const isSentinel = requestUrl.includes('/sentinel/chat-requirements');
+      const isConversation = requestUrl.includes('/backend-api/conversation') && methodName === 'POST';
+      if (isSentinel || isConversation) {
+          const typeLabel = requestUrl.includes('/finalize') ? 'FINALIZE' : (isSentinel ? 'PREPARE' : 'CONVERSATION');
+          console.info(`[gptviewer][sentinel-flow][${typeLabel}] Request Headers:`, JSON.stringify(headers, null, 2));
+      }
+
       if (
         requestUrl.startsWith(BACKEND_API_PREFIX) &&
-        methodName === 'GET' &&
-        associatedCookies.length > 0
+        (methodName === 'GET' || methodName === 'POST')
       ) {
-        this.lastSuccessfulBackendApiHeaders = {
-          headers: sanitizeHeadersForReplay(normalizeHeaders(headers)),
-          method: methodName,
-          statusCode: 0,
-          url: requestUrl,
-        };
+        const normalized = normalizeHeaders(headers);
+
+        // We only want to capture headers if they contain the vital auth/sentinel info.
+        // Once we have a good set, we only replace it if the new one is also "rich".
+        const isRichHeader = !!normalized['authorization'] || !!normalized['openai-sentinel-chat-requirements-token'];
+
+        if (isRichHeader || !this.lastSuccessfulBackendApiHeaders) {
+            this.lastSuccessfulBackendApiHeaders = {
+              headers: sanitizeHeadersForReplay(normalized),
+              method: methodName,
+              statusCode: 0,
+              url: requestUrl,
+            };
+        }
       }
 
       return;
