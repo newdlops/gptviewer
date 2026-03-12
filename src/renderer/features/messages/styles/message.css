@@ -1372,3 +1372,34 @@
 .monaco-editor .monaco-hover p {
   margin: 0 0 8px 0 !important;
 }
+
+/* --- Monaco Editor Debug Styles --- */
+.debug-breakpoint {
+  background: #e51400;
+  width: 10px !important;
+  height: 10px !important;
+  border-radius: 50%;
+  cursor: pointer;
+  z-index: 10;
+  display: block;
+  margin-left: 10px;
+  margin-top: 5px;
+  transition: transform 0.1s;
+}
+
+.debug-breakpoint:hover {
+  transform: scale(1.2);
+}
+
+.debug-current-line {
+  background: rgba(255, 255, 0, 0.25);
+  border-top: 1px solid rgba(255, 255, 0, 0.5);
+  border-bottom: 1px solid rgba(255, 255, 0, 0.5);
+}
+
+.debug-current-line-margin {
+  background: #f1c40f;
+  width: 5px !important;
+}
+
+

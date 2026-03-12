@@ -73,7 +73,7 @@ interface ElectronAPI {
   onJavaRunOutput(listener: (sessionId: string, data: string) => void): () => void;
   onJavaRunError(listener: (sessionId: string, data: string) => void): () => void;
   onJavaRunExit(listener: (sessionId: string, code: number) => void): () => void;
-  startJavaServer(code: string, snapshot?: Record<string, string>): Promise<{ success: boolean; port: number; projectDir: string; filePath: string; error?: string }>;
+  startJavaServer(code: string, snapshot?: Record<string, string>): Promise<{ success: boolean; port: number; projectDir: string; filePath: string; bundles?: string[]; error?: string }>;
   updateJavaFile(filePath: string, code: string): Promise<{ success: boolean }>;
   createJavaFile(projectDir: string, relativePath: string, content?: string): Promise<{ success: boolean, error?: string }>;
   createJavaDirectory(projectDir: string, relativePath: string): Promise<{ success: boolean, error?: string }>;
@@ -83,6 +83,8 @@ interface ElectronAPI {
   getJavaProjectSnapshot(projectDir: string): Promise<Record<string, string>>;
   readJavaFile(filePath: string): Promise<string>;
   stopJavaServer(): Promise<{ success: boolean }>;
+  startJavaDebugBridge(tcpPort: number): Promise<number>;
+  log(level: 'info' | 'warn' | 'error', ...args: any[]): void;
   fetchSourcePreview(url: string): Promise<SourcePreviewImport>;
   getGoogleDriveConfig(): Promise<GoogleDriveConfigSummary>;
   getGoogleDriveSyncStatus(): Promise<GoogleDriveSyncStatus>;

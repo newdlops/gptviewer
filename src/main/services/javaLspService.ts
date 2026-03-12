@@ -1,16 +1,16 @@
 import { spawn, ChildProcess, execSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
-import { mkdtemp, rm, mkdir, writeFile, readdir, readFile } from 'node:fs/promises';
+import { mkdtemp, rm, mkdir, writeFile, readdir, readFile, realpath } from 'node:fs/promises';
 import { existsSync, statSync } from 'node:fs';
 import { app } from 'electron';
 import * as WS from 'ws';
-// @ts-ignore
-import * as serverRpc from 'vscode-ws-jsonrpc/server';
+const serverRpc = require('vscode-ws-jsonrpc/server');
 
 export class JavaLspService {
   private lspProcesses: Set<ChildProcess> = new Set();
   private wss: WS.Server | null = null;
+  private debugBridges: Map<number, WS.Server> = new Map(); // tcpPort -> WSS
   private workspaceStateDirs: Set<string> = new Set();
 
   public findJavaExecutable(): string {
@@ -18,72 +18,64 @@ export class JavaLspService {
     const isMac = process.platform === 'darwin';
     const javaExe = isWin ? 'java.exe' : 'java';
 
+    // 1. Homebrew openjdk@21 (macOS)
     if (isMac) {
-        const brewJava21 = '/opt/homebrew/opt/openjdk@21/bin/java';
-        if (existsSync(brewJava21)) {
-            console.info(`[JavaLspService] Using Homebrew Java 21: ${brewJava21}`);
-            return brewJava21;
-        }
+      const brewJava = '/opt/homebrew/opt/openjdk@21/bin/java';
+      if (existsSync(brewJava)) {
+        console.info(`[JavaLspService] Using Homebrew Java 21: ${brewJava}`);
+        return brewJava;
+      }
     }
 
-    try {
-        const { execSync } = require('node:child_process');
-        const systemJava = execSync(isWin ? 'where java' : 'which java').toString().trim().split('\n')[0];
-        if (systemJava && existsSync(systemJava)) {
-            const fs = require('node:fs');
-            const stats = fs.statSync(systemJava);
-            if (stats.size > 1024) {
-                console.info(`[JavaLspService] Using system Java: ${systemJava}`);
-                return systemJava;
-            }
-        }
-    } catch (e) {
-        // ignore
-    }
-
-    const resPath = app.isPackaged ? process.resourcesPath : app.getAppPath();
-    let embeddedJdkPath = join(resPath, 'resources', 'bin', 'jdk');
-
-    if (isMac && existsSync(join(embeddedJdkPath, 'Contents', 'Home'))) {
-      embeddedJdkPath = join(embeddedJdkPath, 'Contents', 'Home');
-    }
-
-    const javaBin = join(embeddedJdkPath, 'bin', javaExe);
-    if (existsSync(javaBin)) {
-        const fs = require('node:fs');
-        const stats = fs.statSync(javaBin);
-        if (stats.size > 1024) return javaBin;
-    }
-
+    // 2. JAVA_HOME 환경변수
     if (process.env.JAVA_HOME) {
-      const homeJava = join(process.env.JAVA_HOME, 'bin', javaExe);
-      if (existsSync(homeJava)) return homeJava;
+      const javaHomeExe = join(process.env.JAVA_HOME, 'bin', javaExe);
+      if (existsSync(javaHomeExe)) return javaHomeExe;
     }
 
-    return javaExe;
+    // 3. 기본 PATH
+    try {
+      const pathJava = execSync(isWin ? 'where java' : 'which java').toString().trim().split('\n')[0];
+      if (existsSync(pathJava)) return pathJava;
+    } catch {
+      // ignore
+    }
+
+    throw new Error('Java 21 실행 파일을 찾을 수 없습니다. (Homebrew openjdk@21 권장)');
   }
 
-  private async getJdtlsLaunchArgs(javaBin: string, workspaceDir: string): Promise<string[]> {
+  private async getJdtlsLaunchArgs(javaBin: string, stateDir: string): Promise<string[]> {
     const resPath = app.isPackaged ? process.resourcesPath : app.getAppPath();
     const jdtlsRoot = join(resPath, 'resources', 'bin', 'jdtls');
     const pluginsDir = join(jdtlsRoot, 'plugins');
 
-    if (!existsSync(pluginsDir)) throw new Error(`JDT.LS plugins directory not found at ${pluginsDir}`);
-
     const files = await readdir(pluginsDir);
-    const launcherJar = files.find(f => f.startsWith('org.eclipse.equinox.launcher_') && f.endsWith('.jar'));
-    if (!launcherJar) throw new Error('JDT.LS launcher jar not found');
+    const launcherJar = files.find(f => f.includes('org.eclipse.equinox.launcher_') && f.endsWith('.jar'));
+    if (!launcherJar) throw new Error('JDTLS Launcher JAR not found');
 
     let configFolderName = 'config_mac';
     if (process.platform === 'win32') configFolderName = 'config_win';
     else if (process.platform === 'linux') configFolderName = 'config_linux';
 
-    if (process.platform === 'darwin' && process.arch === 'arm64') {
-        const armConfig = 'config_mac_arm';
-        if (existsSync(join(jdtlsRoot, armConfig))) configFolderName = armConfig;
+    // ARM 아키텍처 대응
+    if (process.arch === 'arm64') {
+      const armConfig = `${configFolderName}_arm`;
+      if (existsSync(join(jdtlsRoot, armConfig))) configFolderName = armConfig;
     }
 
     const jdkHome = resolve(javaBin, '..', '..');
+
+    // 확장(extensions) 폴더에서 추가번들(예: java-debug) JAR들을 찾음
+    const extensionsDir = join(jdtlsRoot, 'extensions');
+    if (existsSync(extensionsDir)) {
+      const extFiles = await readdir(extensionsDir);
+      const bundles = extFiles.filter(f => f.endsWith('.jar')).map(f => join(extensionsDir, f));
+      if (bundles.length > 0) {
+        // bundles는 쉼표로 구분된 문자열이어야 함
+        // 참고: JDTLS에서 번들을 로드할 때 사용하는 옵션이 있는지 확인 필요
+        // 보통 VS Code에서는 initializationOptions.bundles 에 넣어서 보냄
+      }
+    }
 
     return [
       '-Declipse.application=org.eclipse.jdt.ls.core.id1',
@@ -95,46 +87,42 @@ export class JavaLspService {
       '--add-modules=ALL-SYSTEM',
       '--add-opens', 'java.base/java.util=ALL-UNNAMED',
       '--add-opens', 'java.base/java.lang=ALL-UNNAMED',
-      `-Dorg.eclipse.jdt.ls.vm.home=${jdkHome}`,
       '-jar', join(pluginsDir, launcherJar),
       '-configuration', join(jdtlsRoot, configFolderName),
-      '-data', workspaceDir
+      '-data', stateDir
     ];
   }
 
-  async prepareProject(code: string, snapshot?: Record<string, string>): Promise<{ projectDir: string; filePath: string }> {
-    const projectDir = await mkdtemp(join(tmpdir(), 'java-proj-'));
+  async prepareProject(code: string, snapshot?: Record<string, string>): Promise<{ projectDir: string, filePath: string }> {
+    const tempDir = await mkdtemp(join(tmpdir(), 'java-proj-'));
+    const projectDir = await realpath(tempDir).catch(() => tempDir);
     const srcDir = join(projectDir, 'src');
     await mkdir(srcDir, { recursive: true });
 
-    let mainFilePath = '';
+    let targetRelPath = '';
 
     if (snapshot && Object.keys(snapshot).length > 0) {
-      // 스냅샷이 있는 경우 전체 파일 복원
       for (const [relPath, content] of Object.entries(snapshot)) {
         const fullPath = join(projectDir, relPath);
-        const dirPath = resolve(fullPath, '..');
-        if (!existsSync(dirPath)) {
-          await mkdir(dirPath, { recursive: true });
-        }
+        await mkdir(resolve(fullPath, '..'), { recursive: true });
         await writeFile(fullPath, content, 'utf8');
         
-        // 원본 코드와 일치하는 파일이거나 Main.java 형태인 것을 초기 파일로 잡음
-        if (relPath.endsWith('.java') && !mainFilePath) {
-          mainFilePath = fullPath;
+        if (!targetRelPath && relPath.endsWith('.java')) {
+          targetRelPath = relPath;
         }
       }
     } else {
-      // 스냅샷이 없는 경우 기존처럼 단일 파일 생성
-      const classMatch = code.match(/public\s+class\s+([a-zA-Z0-9_$]+)/);
-      const className = classMatch ? classMatch[1] : 'Main';
-      mainFilePath = join(srcDir, `${className}.java`);
-      await writeFile(mainFilePath, code, 'utf8');
+      const match = code.match(/public\s+class\s+([a-zA-Z_$][a-zA-Z\d_$]*)/);
+      const className = match ? match[1] : 'Main';
+      targetRelPath = join('src', `${className}.java`);
+      await writeFile(join(projectDir, targetRelPath), code, 'utf8');
     }
+
+    const mainFilePath = join(projectDir, targetRelPath);
 
     await writeFile(join(projectDir, '.project'), `<?xml version="1.0" encoding="UTF-8"?>
 <projectDescription>
-	<name>temp-java-project-${Date.now()}</name>
+	<name>temp-java-project</name>
 	<natures><nature>org.eclipse.jdt.core.javanature</nature></natures>
 </projectDescription>`, 'utf8');
 
@@ -146,9 +134,8 @@ export class JavaLspService {
 </classpath>`, 'utf8');
 
     // macOS 등에서 /var -> /private/var 심볼릭 링크 문제 방지를 위해 realpath 사용
-    const { realpath } = require('node:fs/promises');
-    const realProjectDir = await realpath(projectDir);
-    const realFilePath = await realpath(mainFilePath);
+    const realProjectDir = await realpath(projectDir).catch(() => projectDir);
+    const realFilePath = await realpath(mainFilePath).catch(() => mainFilePath);
 
     return { projectDir: realProjectDir, filePath: realFilePath };
   }
@@ -156,7 +143,6 @@ export class JavaLspService {
   async getProjectSnapshot(projectDir: string): Promise<Record<string, string>> {
     const { realpath } = require('node:fs/promises');
     const realProjDir = await realpath(projectDir);
-    const srcDir = join(realProjDir, 'src');
     
     const snapshot: Record<string, string> = {};
     const walk = async (dir: string) => {
@@ -166,11 +152,13 @@ export class JavaLspService {
         const realFullPath = await realpath(fullPath);
         
         if (entry.isDirectory()) {
-          if (!['.metadata', 'bin'].includes(entry.name)) {
+          // .metadata, bin, .settings 등 불필요한 폴더는 제외
+          if (!['.metadata', 'bin', '.settings'].includes(entry.name)) {
             await walk(realFullPath);
           }
         } else {
-          if (!['.project', '.classpath'].includes(entry.name) && realFullPath.startsWith(srcDir)) {
+          // 사용자 소스코드 및 설정 파일 포함 (단, IDE 전용 메타데이터 제외)
+          if (!['.project', '.classpath'].includes(entry.name)) {
             const relPath = realFullPath.replace(realProjDir, '').replace(/^[/\\]/, '');
             snapshot[relPath] = await readFile(realFullPath, 'utf8');
           }
@@ -178,9 +166,7 @@ export class JavaLspService {
       }
     };
     try {
-      if (existsSync(projectDir)) {
-        await walk(projectDir);
-      }
+      await walk(realProjDir);
     } catch (e) {
       console.error('[JavaLspService] Failed to create project snapshot', e);
     }
@@ -204,17 +190,50 @@ export class JavaLspService {
     }
   }
 
-  async createProjectFile(projectDir: string, relativePath: string, content: string = ''): Promise<{ success: boolean, error?: string }> {
-    try {
-      const fullPath = resolve(projectDir, relativePath);
-      if (!fullPath.startsWith(resolve(projectDir))) return { success: false, error: 'Invalid path' };
-      
-      const dirPath = resolve(fullPath, '..');
-      if (!existsSync(dirPath)) {
-        await mkdir(dirPath, { recursive: true });
+  async getProjectTree(projectDir: string): Promise<any[]> {
+    const buildTree = async (dir: string): Promise<any[]> => {
+      const nodes: any[] = [];
+      const entries = await readdir(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.name === '.metadata' || entry.name === 'bin' || entry.name === '.settings') continue;
+        const fullPath = join(dir, entry.name);
+        if (entry.isDirectory()) {
+          nodes.push({
+            name: entry.name,
+            path: fullPath,
+            type: 'directory',
+            children: await buildTree(fullPath)
+          });
+        } else {
+          nodes.push({ name: entry.name, path: fullPath, type: 'file' });
+        }
       }
-      
-      if (existsSync(fullPath)) return { success: false, error: 'File already exists' };
+      return nodes.sort((a, b) => {
+        if (a.type === b.type) return a.name.localeCompare(b.name);
+        return a.type === 'directory' ? -1 : 1;
+      });
+    };
+    try {
+      return await buildTree(projectDir);
+    } catch (e) {
+      console.error('[JavaLspService] Failed to get project tree', e);
+      return [];
+    }
+  }
+
+  async readProjectFile(filePath: string): Promise<string | null> {
+    try {
+      return await readFile(filePath, 'utf8');
+    } catch (e) {
+      console.error('[JavaLspService] Failed to read project file', e);
+      return null;
+    }
+  }
+
+  async createProjectFile(projectDir: string, relativePath: string, content: string = ''): Promise<{ success: boolean; error?: string }> {
+    try {
+      const fullPath = join(projectDir, relativePath);
+      await mkdir(resolve(fullPath, '..'), { recursive: true });
       await writeFile(fullPath, content, 'utf8');
       return { success: true };
     } catch (e: any) {
@@ -222,12 +241,9 @@ export class JavaLspService {
     }
   }
 
-  async createProjectDirectory(projectDir: string, relativePath: string): Promise<{ success: boolean, error?: string }> {
+  async createProjectDirectory(projectDir: string, relativePath: string): Promise<{ success: boolean; error?: string }> {
     try {
-      const fullPath = resolve(projectDir, relativePath);
-      if (!fullPath.startsWith(resolve(projectDir))) return { success: false, error: 'Invalid path' };
-      
-      if (existsSync(fullPath)) return { success: false, error: 'Directory already exists' };
+      const fullPath = join(projectDir, relativePath);
       await mkdir(fullPath, { recursive: true });
       return { success: true };
     } catch (e: any) {
@@ -235,12 +251,9 @@ export class JavaLspService {
     }
   }
 
-  async deleteProjectPath(projectDir: string, relativePath: string): Promise<{ success: boolean, error?: string }> {
+  async deleteProjectPath(projectDir: string, relativePath: string): Promise<{ success: boolean; error?: string }> {
     try {
-      const fullPath = resolve(projectDir, relativePath);
-      if (!fullPath.startsWith(resolve(projectDir))) return { success: false, error: 'Invalid path' };
-      
-      if (!existsSync(fullPath)) return { success: false, error: 'Path not found' };
+      const fullPath = join(projectDir, relativePath);
       await rm(fullPath, { recursive: true, force: true });
       return { success: true };
     } catch (e: any) {
@@ -248,58 +261,38 @@ export class JavaLspService {
     }
   }
 
-  async renameProjectPath(projectDir: string, oldRelativePath: string, newRelativePath: string): Promise<{ success: boolean, error?: string }> {
+  async renameProjectPath(projectDir: string, oldRelativePath: string, newRelativePath: string): Promise<{ success: boolean; error?: string }> {
     try {
-      const oldPath = resolve(projectDir, oldRelativePath);
-      const newPath = resolve(projectDir, newRelativePath);
-      
-      if (!oldPath.startsWith(resolve(projectDir)) || !newPath.startsWith(resolve(projectDir))) {
-        return { success: false, error: 'Invalid path' };
-      }
-      
-      if (!existsSync(oldPath)) return { success: false, error: 'Source path not found' };
-      if (existsSync(newPath)) return { success: false, error: 'Target path already exists' };
-      
-      const { rename } = require('node:fs/promises');
-      await rename(oldPath, newPath);
+      const fs = require('node:fs/promises');
+      const oldPath = join(projectDir, oldRelativePath);
+      const newPath = join(projectDir, newRelativePath);
+      await mkdir(resolve(newPath, '..'), { recursive: true });
+      await fs.rename(oldPath, newPath);
       return { success: true };
     } catch (e: any) {
       return { success: false, error: e.message };
     }
   }
 
-  async readProjectFile(filePath: string): Promise<string> {
-    try {
-      console.info(`[JavaLspService] Reading file: ${filePath}`);
-      if (!existsSync(filePath)) {
-        console.error(`[JavaLspService] File does not exist: ${filePath}`);
-        return '';
-      }
-      return await readFile(filePath, 'utf8');
-    } catch (e) {
-      console.error('[JavaLspService] Failed to read project file:', e);
-      return '';
+  public async getBundleJars(): Promise<string[]> {
+    const { realpath } = require('node:fs/promises');
+    const path = require('node:path');
+    const resPath = app.isPackaged ? process.resourcesPath : app.getAppPath();
+    const extensionsDir = await realpath(path.join(resPath, 'resources', 'bin', 'jdtls', 'extensions')).catch(() => path.join(resPath, 'resources', 'bin', 'jdtls', 'extensions'));
+    
+    console.info(`[JavaLspService] Searching for bundles in: ${extensionsDir}`);
+    if (existsSync(extensionsDir)) {
+      const files = await readdir(extensionsDir);
+      // We are providing a plain absolute path because JDTLS failed with 'file:/' prefix.
+      const bundles = files
+        .filter(f => f.endsWith('.jar'))
+        .map(f => path.join(extensionsDir, f));
+      
+      console.info(`[JavaLspService] Found ${bundles.length} bundles:`, JSON.stringify(bundles, null, 2));
+      return bundles;
     }
-  }
-
-  async getProjectTree(projectDir: string): Promise<any[]> {
-    const walk = async (dir: string): Promise<any[]> => {
-      const entries = await readdir(dir, { withFileTypes: true });
-      const nodes = await Promise.all(entries.map(async (entry) => {
-        const fullPath = join(dir, entry.name);
-        const relativePath = fullPath.replace(projectDir, '').replace(/^\//, '');
-        if (entry.isDirectory()) {
-          return { name: entry.name, type: 'directory', path: fullPath, relativePath, children: await walk(fullPath) };
-        }
-        return { name: entry.name, type: 'file', path: fullPath, relativePath };
-      }));
-      return nodes.sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === 'directory' ? -1 : 1));
-    };
-    try {
-      return await walk(projectDir);
-    } catch (e) {
-      return [];
-    }
+    console.warn(`[JavaLspService] Extensions directory not found: ${extensionsDir}`);
+    return [];
   }
 
   async startServer(port = 5007) {
@@ -332,6 +325,14 @@ export class JavaLspService {
             const args = await this.getJdtlsLaunchArgs(javaBin, uniqueStateDir);
             localLspProcess = spawn(javaBin, args, { env, stdio: 'pipe' });
             this.lspProcesses.add(localLspProcess);
+
+            // JDTLS 출력 로깅 (디버그 용도) - 로깅 길이 대폭 증가
+            localLspProcess.stdout?.on('data', (data) => {
+              console.log('[JDTLS STDOUT]', data.toString().substring(0, 10000));
+            });
+            localLspProcess.stderr?.on('data', (data) => {
+              console.error('[JDTLS STDERR]', data.toString().substring(0, 10000));
+            });
 
             localLspProcess.on('exit', () => {
               this.workspaceStateDirs.delete(uniqueStateDir);
@@ -370,6 +371,11 @@ export class JavaLspService {
   async stopServer() {
     if (this.wss) this.wss.close();
     
+    for (const bridge of this.debugBridges.values()) {
+      bridge.close();
+    }
+    this.debugBridges.clear();
+
     for (const proc of this.lspProcesses) {
       proc.kill();
     }
@@ -381,6 +387,55 @@ export class JavaLspService {
     this.workspaceStateDirs.clear();
 
     return { success: true };
+  }
+
+  /**
+   * TCP 디버그 포트를 WebSocket으로 브릿징합니다.
+   * @param tcpPort Java 디버그 서버가 리스닝 중인 TCP 포트
+   * @returns 브릿징된 WebSocket 포트
+   */
+  async startDebugBridge(tcpPort: number): Promise<number> {
+    if (this.debugBridges.has(tcpPort)) {
+      return (this.debugBridges.get(tcpPort) as any)._server.address().port;
+    }
+
+    const wsPort = tcpPort + 1000; // 단순 규칙: TCP 포트 + 1000
+    const bridgeWss = new WS.Server({ port: wsPort, host: '127.0.0.1' });
+    
+    bridgeWss.on('connection', (ws) => {
+      const net = require('node:net');
+      const tcpClient = net.createConnection({ port: tcpPort, host: '127.0.0.1' });
+
+      // DAP는 Content-Length 헤더가 포함된 프로토콜이거나 생 JSON일 수 있음.
+      // 여기서는 바이너리 브릿징을 수행.
+      ws.on('message', (data: any) => {
+        const length = data.length || data.byteLength || 0;
+        console.log(`[DAP Bridge] WS -> TCP (${length} bytes)`);
+        if (typeof data === 'string') {
+          tcpClient.write(Buffer.from(data, 'utf8'));
+        } else if (Buffer.isBuffer(data)) {
+          tcpClient.write(data);
+        } else {
+          tcpClient.write(Buffer.from(data as any));
+        }
+      });
+
+      tcpClient.on('data', (data: Buffer) => {
+        console.log(`[DAP Bridge] TCP -> WS (${data.length} bytes)`);
+        if (ws.readyState === WS.OPEN) {
+          ws.send(data);
+        }
+      });
+
+      ws.on('close', () => tcpClient.destroy());
+      tcpClient.on('close', () => ws.close());
+      ws.on('error', () => tcpClient.destroy());
+      tcpClient.on('error', () => ws.close());
+    });
+
+    this.debugBridges.set(tcpPort, bridgeWss);
+    console.info(`[JavaDebug] DAP Bridge started: TCP ${tcpPort} -> WS ${wsPort}`);
+    return wsPort;
   }
 }
 

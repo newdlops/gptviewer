@@ -30,15 +30,15 @@ const getLanguageFromFile = (filename: string) => {
 };
 
 const getJavaFullClassName = (filePath: string, projectDir: string) => {
-  if (!filePath || !projectDir) return 'Main.java';
+  if (!filePath || !projectDir) return 'Main';
   const normalizedPath = filePath.replace(/\\/g, '/');
   const normalizedProjectDir = projectDir.replace(/\\/g, '/');
   const relPath = normalizedPath.replace(normalizedProjectDir, '').replace(/^\/+/, '');
   
-  if (!relPath.startsWith('src/')) return relPath.split('/').pop() || '';
+  if (!relPath.startsWith('src/')) return relPath.split('/').pop()?.replace(/\.java$/, '') || 'Main';
   
   const pathAfterSrc = relPath.replace(/^src\//, '');
-  if (!pathAfterSrc) return 'Main.java';
+  if (!pathAfterSrc) return 'Main';
   
   // com/example/Main.java -> com.example.Main
   return pathAfterSrc.replace(/\.java$/, '').replace(/\//g, '.');
@@ -73,10 +73,27 @@ export function MarkdownJavaBlock({
   const [editorInstance, setEditorInstance] = useState<any>(null);
   const [languageClientInstance, setLanguageClientInstance] = useState<any>(null);
   const [isJavaRunning, setIsJavaRunning] = useState(false);
+  
+  // --- 추가된 디버깅 상태 ---
+  const [isDebugging, setIsDebugging] = useState(false);
+  const [javaDebugPort, setJavaDebugPort] = useState<number | null>(null);
+  const [breakpoints, setBreakpoints] = useState<Map<string, number[]>>(new Map()); // filePath -> lines[]
+  const breakpointDecorationsRef = useRef<Map<string, string[]>>(new Map()); // modelId -> decorationIds[]
+  const [stackFrames, setStackFrames] = useState<any[]>([]);
+  const [variables, setVariables] = useState<any[]>([]);
+  const [editingVariable, setEditingVariable] = useState<{ name: string, value: string, ref: number } | null>(null);
+  const [pausedLocation, setPausedLocation] = useState<{ filePath: string, lineNumber: number } | null>(null);
+  const debugSocketRef = useRef<WebSocket | null>(null);
+  const debugSequenceRef = useRef(1);
+  const currentLineDecorationRef = useRef<string[]>([]);
+  const docVersionRef = useRef(1);
+
   const [javaFilePath, setJavaFilePath] = useState<string | null>(null);
   const [projectDir, setProjectDir] = useState<string | null>(null);
   const [projectTree, setProjectTree] = useState<any[]>([]);
   const [showDrawer, setShowDrawer] = useState(true);
+  const [drawerMode, setDrawerMode] = useState<'files' | 'debug'>('files');
+
   const [lspStatus, setLspStatus] = useState<'idle' | 'starting' | 'connected' | 'error'>('idle');
   const [manualHeight, setManualHeight] = useState<number | null>(null);
   const [originalJavaFilePath, setOriginalJavaFilePath] = useState<string | null>(null);
@@ -93,6 +110,324 @@ export function MarkdownJavaBlock({
   const [javaTerminalOutput, setJavaTerminalOutput] = useState<{ type: 'out' | 'err'; text: string }[]>([]);
   const [javaTerminalInput, setJavaTerminalInput] = useState('');
   const terminalContainerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (isDebugging) {
+      setShowDrawer(true);
+      setDrawerMode('debug');
+    } else {
+      setDrawerMode('files');
+    }
+  }, [isDebugging]);
+
+  const sendDapRequest = (command: string, args?: any) => {
+    if (!debugSocketRef.current || debugSocketRef.current.readyState !== WebSocket.OPEN) return;
+    const seq = debugSequenceRef.current++;
+    const payload = JSON.stringify({
+      seq,
+      type: 'request',
+      command,
+      arguments: args
+    });
+    
+    // 브라우저에서 정확한 UTF-8 바이트 크기를 구함
+    const byteLength = new TextEncoder().encode(payload).length;
+    const message = `Content-Length: ${byteLength}\r\n\r\n${payload}`;
+    
+    console.log(`[JavaDebug -> SERVER] seq=${seq}, cmd=${command}`);
+    debugSocketRef.current.send(message);
+    return seq;
+  };
+
+  const startDebugging = async () => {
+    if (!languageClientInstanceRef.current || !projectDir) {
+      alert('Java 서버가 준비되지 않았습니다.');
+      return;
+    }
+
+    try {
+      setJavaTerminalOutput([{ type: 'out', text: '[디버그 세션을 준비하는 중...]\n' }]);
+      setIsDebugging(true);
+
+      // 1. JDTLS에 디버그 세션 시작 요청 (포트 획득)
+      let port = null;
+      try {
+        window.electronAPI?.log('info', '[JavaDebug] Attempting to start debug session...');
+        port = await languageClientInstanceRef.current.sendRequest('workspace/executeCommand', {
+          command: 'vscode.java.startDebugSession',
+          arguments: []
+        });
+      } catch (e: any) {
+        window.electronAPI?.log('error', `[JavaDebug] startDebugSession failed`, e.message);
+        throw e;
+      }
+
+      if (!port) {
+        window.electronAPI?.log('error', '[JavaDebug] Failed to start debug: Server port not received.');
+        throw new Error('디버그 서버 포트를 받지 못했습니다. java-debug 번들이 설치되어 있는지 확인하세요.');
+      }
+
+      setJavaDebugPort(port);
+      window.electronAPI?.log('info', `[JavaDebug] Debug Server TCP Port: ${port}`);
+
+      // 2. 디버그 서버 브릿징 요청 (TCP -> WebSocket)
+      const wsPort = await window.electronAPI?.startJavaDebugBridge(port);
+      if (!wsPort) throw new Error('디버그 브릿지 생성에 실패했습니다.');
+
+      console.log(`[JavaDebug] Debug Server WS Port: ${wsPort}`);
+
+      const wsUrl = `ws://127.0.0.1:${wsPort}`;
+      const socket = new WebSocket(wsUrl);
+      debugSocketRef.current = socket;
+      socket.onopen = () => {
+        console.log('[JavaDebug] Connected to Debug Server');
+        // 3. DAP 초기화 시퀀스
+        sendDapRequest('initialize', {
+          clientID: 'gptviewer',
+          clientName: 'GPT Viewer Debugger',
+          adapterID: 'java',
+          linesStartAt1: true,
+          columnsStartAt1: true,
+          pathFormat: 'path'
+        });
+      };
+
+      let buffer = '';
+      socket.onmessage = async (event) => {
+        // 웹소켓 데이터가 Blob이나 Buffer 형태로 올 수도 있으므로 문자열로 변환
+        let dataStr = event.data;
+        if (dataStr instanceof Blob) {
+            dataStr = await dataStr.text();
+        } else if (dataStr instanceof ArrayBuffer) {
+            dataStr = new TextDecoder().decode(dataStr);
+        }
+        // console.log('[JavaDebug] Raw incoming data length:', dataStr.length);
+        buffer += dataStr;
+
+        let keepReading = true;
+        while (keepReading) {
+          const headerEndIdx = buffer.indexOf('\r\n\r\n');
+          if (headerEndIdx === -1) {
+            keepReading = false;
+            break;
+          }
+
+          const headerStr = buffer.substring(0, headerEndIdx);
+          const match = headerStr.match(/Content-Length:\s*(\d+)/i);
+          if (!match) {
+            console.error('[JavaDebug] Invalid DAP header (No Content-Length):', headerStr);
+            buffer = ''; // 헤더 파싱 실패 시 버퍼 비움
+            break;
+          }
+
+          const contentLength = parseInt(match[1], 10);
+          const totalLength = headerEndIdx + 4 + contentLength;
+
+          if (buffer.length < totalLength) {
+            keepReading = false;
+            break; // 데이터가 아직 덜 옴
+          }
+
+          const body = buffer.substring(headerEndIdx + 4, totalLength);
+          buffer = buffer.substring(totalLength);
+
+          try {
+            const msg = JSON.parse(body);
+            console.log('[JavaDebug <- SERVER]', msg);
+
+            if (msg.type === 'event') {
+              window.electronAPI?.log('info', `[JavaDebug] EVENT: ${msg.event}`, msg.body);
+              if (msg.event === 'initialized') {
+                console.log('[JavaDebug] Server Initialized Event received, sending breakpoints...');
+                window.electronAPI?.log('info', '[JavaDebug] Sending breakpoints...');
+                // 브레이크포인트 설정
+                for (const [path, lines] of breakpoints.entries()) {
+                  sendDapRequest('setBreakpoints', {
+                    source: { path },
+                    breakpoints: lines.map(l => ({ line: l }))
+                  });
+                }
+                
+                // JDTLS 디버그 서버는 configurationDone을 기다림
+                setTimeout(() => {
+                  console.log('[JavaDebug] Sending configurationDone...');
+                  window.electronAPI?.log('info', '[JavaDebug] Sending configurationDone...');
+                  sendDapRequest('configurationDone');
+                }, 500);
+              } else if (msg.event === 'stopped') {
+                console.log('[JavaDebug] Program Paused', msg.body);
+                window.electronAPI?.log('info', '[JavaDebug] Program Paused', msg.body);
+                setPausedLocation({
+                  filePath: msg.body.source?.path || '',
+                  lineNumber: msg.body.line
+                });
+                // 스택 프레임 및 변수 요청
+                sendDapRequest('stackTrace', { threadId: msg.body.threadId });
+              } else if (msg.event === 'output') {
+                const text = msg.body.output;
+                const category = msg.body.category === 'stderr' ? 'err' : 'out';
+                if (text && !text.includes('java.compiler system property is obsolete')) {
+                  setJavaTerminalOutput(prev => [...prev, { type: category, text }]);
+                }
+              } else if (msg.event === 'terminated') {
+                window.electronAPI?.log('info', '[JavaDebug] Session Terminated');
+                setIsDebugging(false);
+                setPausedLocation(null);
+                setStackFrames([]);
+                setVariables([]);
+                setJavaTerminalOutput(prev => [...prev, { type: 'out', text: '\n[디버그 세션이 종료되었습니다.]\n' }]);
+              }
+            } else if (msg.type === 'response') {
+              console.log(`[JavaDebug] Response for command: ${msg.command}`, msg);
+              window.electronAPI?.log('info', `[JavaDebug] RESPONSE: ${msg.command} (success: ${msg.success})`, msg.body || msg.message);
+              if (msg.command === 'initialize' && msg.success) {
+                // DAP 표준: initialize 응답 후 launch 또는 attach 요청 전송
+                console.log('[JavaDebug] Initialize successful. Triggering launch...');
+                window.electronAPI?.log('info', '[JavaDebug] Initialize successful. Triggering launch...');
+                sendDapRequest('launch', {
+                  mainClass: getJavaFullClassName(javaFilePathRef.current || '', projectDir),
+                  projectName: 'temp-java-project',
+                  cwd: projectDir,
+                  console: 'internalConsole',
+                  stopOnEntry: true,
+                  classPaths: [projectDir + '/bin'],
+                  modulePaths: [],
+                  vmArgs: ''
+                });
+              } else if (msg.command === 'launch' && msg.success) {
+                console.log('[JavaDebug] Launch successful.');
+                window.electronAPI?.log('info', '[JavaDebug] Launch successful.');
+              } else if (msg.command === 'stackTrace' && msg.body?.stackFrames) {
+                setStackFrames(msg.body.stackFrames);
+                if (msg.body.stackFrames.length > 0) {
+                  sendDapRequest('scopes', { frameId: msg.body.stackFrames[0].id });
+                }
+              } else if (msg.command === 'scopes' && msg.body?.scopes) {
+                // 가장 첫 번째 scope (보통 Local)의 변수 요청
+                const localScope = msg.body.scopes[0];
+                if (localScope) {
+                  sendDapRequest('variables', { variablesReference: localScope.variablesReference });
+                }
+              } else if (msg.command === 'variables' && msg.body?.variables) {
+                setVariables(msg.body.variables);
+              }
+            }
+          } catch (e) {
+            console.error('[JavaDebug] Failed to parse message', e);
+          }
+        }
+      };
+
+      socket.onerror = (err) => {
+        console.error('[JavaDebug] WebSocket Error', err);
+        setJavaTerminalOutput(prev => [...prev, { type: 'err', text: '디버그 서버 연결에 실패했습니다. (WebSocket 브릿지가 필요할 수 있습니다.)\n' }]);
+        setIsDebugging(false);
+      };
+
+      socket.onclose = () => {
+        console.log('[JavaDebug] Connection Closed');
+        setIsDebugging(false);
+      };
+
+    } catch (err: any) {
+      console.error('[JavaDebug] Failed to start debug', err);
+      setJavaTerminalOutput(prev => [...prev, { type: 'err', text: `디버그 시작 실패: ${err.message}\n` }]);
+      setIsDebugging(false);
+    }
+  };
+
+  const stopDebugging = () => {
+    sendDapRequest('disconnect', { restart: false });
+    if (debugSocketRef.current) {
+      debugSocketRef.current.close();
+    }
+    setIsDebugging(false);
+    setPausedLocation(null);
+    setStackFrames([]);
+    setVariables([]);
+    setEditingVariable(null);
+  };
+
+  const handleVariableValueChange = async (name: string, value: string, variablesReference: number) => {
+    sendDapRequest('setVariable', {
+      variablesReference,
+      name,
+      value
+    });
+    setEditingVariable(null);
+    // 변경 후 즉시 갱신을 위해 다시 요청할 수도 있지만, 일단 응답 대기
+  };
+
+  const updatePausedLocationDecoration = (editor: any, location: { filePath: string, lineNumber: number } | null) => {
+    if (!editor) return;
+    const currentPath = javaFilePathRef.current;
+    
+    let newDecorations: any[] = [];
+    if (location && location.filePath === currentPath) {
+      newDecorations = [{
+        range: new monaco.Range(location.lineNumber, 1, location.lineNumber, 1),
+        options: {
+          isWholeLine: true,
+          className: 'debug-current-line',
+          marginClassName: 'debug-current-line-margin'
+        }
+      }];
+    }
+
+    currentLineDecorationRef.current = editor.deltaDecorations(currentLineDecorationRef.current, newDecorations);
+    
+    // 일치하는 파일이라면 해당 위치로 스크롤
+    if (location && location.filePath === currentPath) {
+      editor.revealLineInCenter(location.lineNumber);
+    }
+  };
+
+  useEffect(() => {
+    if (editorInstance) {
+      updatePausedLocationDecoration(editorInstance, pausedLocation);
+    }
+  }, [pausedLocation, editorInstance, javaFilePath]);
+
+  // --- 브레이크포인트 관리 ---
+  const toggleBreakpoint = (filePath: string, lineNumber: number) => {
+    setBreakpoints(prev => {
+      const next = new Map(prev);
+      const lines = next.get(filePath) || [];
+      if (lines.includes(lineNumber)) {
+        next.set(filePath, lines.filter(l => l !== lineNumber));
+      } else {
+        next.set(filePath, [...lines, lineNumber]);
+      }
+      return next;
+    });
+  };
+
+  const updateEditorBreakpoints = (editor: any, filePath: string) => {
+    if (!editor) return;
+    const model = editor.getModel();
+    if (!model) return;
+    const modelId = model.id;
+    
+    const currentLines = breakpoints.get(filePath) || [];
+    const newDecorations = currentLines.map(line => ({
+      range: new monaco.Range(line, 1, line, 1),
+      options: {
+        isWholeLine: true,
+        marginClassName: 'debug-breakpoint',
+        glyphMarginHoverMessage: { value: 'Breakpoint' }
+      }
+    }));
+
+    const oldDecorationIds = breakpointDecorationsRef.current.get(modelId) || [];
+    const nextDecorationIds = editor.deltaDecorations(oldDecorationIds, newDecorations);
+    breakpointDecorationsRef.current.set(modelId, nextDecorationIds);
+  };
+
+  useEffect(() => {
+    if (editorInstance && javaFilePath) {
+      updateEditorBreakpoints(editorInstance, javaFilePath);
+    }
+  }, [breakpoints, editorInstance, javaFilePath]);
 
   // --- 추가된 파일/폴더 관리 상태 ---
   const [creatingItemState, setCreatingItemState] = useState<{ parentPath: string, type: 'file' | 'directory' } | null>(null);
@@ -115,6 +450,8 @@ export function MarkdownJavaBlock({
 
   // IPC 이벤트 리스너 등록 (백엔드에서 오는 실시간 출력 및 종료 이벤트 수신)
   useEffect(() => {
+    if (!javaSessionId) return; // 실행 중인 세션이 없으면 리스너를 등록하지 않음
+
     let unsubOut: (() => void) | undefined;
     let unsubErr: (() => void) | undefined;
     let unsubExit: (() => void) | undefined;
@@ -124,7 +461,15 @@ export function MarkdownJavaBlock({
         if (sid === javaSessionId) setJavaTerminalOutput(prev => [...prev, { type: 'out', text: data }]);
       });
       unsubErr = window.electronAPI.onJavaRunError((sid, data) => {
-        if (sid === javaSessionId) setJavaTerminalOutput(prev => [...prev, { type: 'err', text: data }]);
+        if (sid === javaSessionId) {
+          const filtered = data
+            .split('\n')
+            .filter(line => !line.includes('java.compiler system property is obsolete'))
+            .join('\n');
+          if (filtered.trim()) {
+            setJavaTerminalOutput(prev => [...prev, { type: 'err', text: filtered }]);
+          }
+        }
       });
       unsubExit = window.electronAPI.onJavaRunExit((sid, code) => {
         if (sid === javaSessionId) {
@@ -166,7 +511,6 @@ export function MarkdownJavaBlock({
     return getLanguageFromFile(javaFilePath.split(/[/\\]/).pop() || '');
   }, [javaFilePath]);
 
-  // 프로젝트 스냅샷 저장 헬퍼
   const saveCurrentProjectSnapshot = async (currentDir: string) => {
     if (!currentDir) return;
     try {
@@ -176,6 +520,27 @@ export function MarkdownJavaBlock({
       }
     } catch (e) {
       console.error('[JavaBlock] Failed to save project snapshot', e);
+    }
+  };
+
+  // 내용 변경 시 자동 저장
+  const handleContentChange = (value: string | undefined) => {
+    const newContent = value || '';
+    setCurrentFileContent(newContent);
+    
+    if (javaFilePath) {
+      // 1. 즉시 메모리 상태 업데이트
+      if (javaFilePath === originalJavaFilePath) {
+        setCustomJavaSource(newContent);
+        saveCustomJavaSourceToCache(sharedCustomJavaCacheKey, newContent);
+      }
+      
+      // 2. 백엔드 파일 업데이트 (비동기)
+      window.electronAPI?.updateJavaFile(javaFilePath, newContent).then(() => {
+        // 3. 스냅샷 저장은 성능을 위해 여기서 매번 하지 않고, 
+        // handleCreateItemSubmit 이나 편집 종료 시점에 확실히 수행함.
+        // 혹은 필요한 경우 여기서 디바운스된 호출을 할 수 있음.
+      });
     }
   };
 
@@ -227,7 +592,7 @@ export function MarkdownJavaBlock({
         try {
           console.log('[JavaBlock] Calling window.electronAPI.startJavaServer...');
           const cachedProject = loadCustomJavaProjectFromCache(sharedCustomJavaCacheKey);
-          const res = await window.electronAPI?.startJavaServer(activeJavaSource, cachedProject || undefined);
+          const res = (await window.electronAPI?.startJavaServer(activeJavaSource, cachedProject || undefined)) as any;
           console.log('[JavaBlock] startJavaServer Response:', res);
 
           if (res?.success && isMounted) {
@@ -241,14 +606,20 @@ export function MarkdownJavaBlock({
             const srcPath = res.projectDir + (isWin ? '\\src' : '/src');
             setExpandedPaths(new Set([res.projectDir, srcPath]));
 
-            console.log(`[JavaBlock] Calling createJavaLanguageClient on port ${res.port}...`);
-            const client = await createJavaLanguageClient(res.port, res.projectDir, monacoInstance);
+            console.log(`[JavaBlock] Initializing LSP with projectDir: ${res.projectDir} and bundles:`, res.bundles);
+            const client = await createJavaLanguageClient(res.port, res.projectDir, monacoInstance, res.bundles);
             console.log('[JavaBlock] createJavaLanguageClient resolved:', !!client);
 
             if (isMounted) {
               languageClient = client;
               languageClientInstanceRef.current = client;
               setLspStatus('connected');
+
+              // 서버가 지원하는 명령어 목록 출력 (디버깅 진단용)
+              const caps = (client as any).initializeResult?.capabilities;
+              if (caps?.executeCommandProvider?.commands) {
+                console.log('[JavaBlock] Server Commands:', caps.executeCommandProvider.commands);
+              }
             } else {
               if (client && typeof client.isRunning === 'function' && client.isRunning()) {
                 client.stop();
@@ -457,6 +828,18 @@ export function MarkdownJavaBlock({
       // ignore
     }
 
+    // 마우스 클릭으로 브레이크포인트 토글 (Glyph Margin, Line Numbers, Decorations 클릭 시)
+    const mouseDownDisposable = editor.onMouseDown((e: any) => {
+      // 2: GLYPH_MARGIN, 3: LINE_NUMBERS, 4: LINE_DECORATIONS
+      if (e.target.type === 2 || e.target.type === 3 || e.target.type === 4) {
+        const line = e.target.position.lineNumber;
+        const currentPath = javaFilePathRef.current;
+        if (currentPath) {
+          toggleBreakpoint(currentPath, line);
+        }
+      }
+    });
+
     const sendLspRequest = async (method: string, params: any): Promise<any> => {
       const currentStatus = lspStatusRef.current;
       const currentFilePath = javaFilePathRef.current;
@@ -475,11 +858,11 @@ export function MarkdownJavaBlock({
 
         // 강제로 didOpen과 didChange를 보내서 LSP 서버가 현재 파일의 최신 텍스트를 인지하도록 함
         currentClient.sendNotification("textDocument/didOpen", {
-          textDocument: { uri: `file://${currentFilePath}`, languageId, version: 1, text: currentText }
+          textDocument: { uri: `file://${currentFilePath}`, languageId, version: docVersionRef.current++, text: currentText }
         });
 
         currentClient.sendNotification("textDocument/didChange", {
-          textDocument: { uri: `file://${currentFilePath}`, version: Date.now() },
+          textDocument: { uri: `file://${currentFilePath}`, version: docVersionRef.current++ },
           contentChanges: [{ text: currentText }]
         });
 
@@ -490,7 +873,7 @@ export function MarkdownJavaBlock({
     };
 
     const supportedLanguages = ['java', 'xml', 'plaintext'];
-    const disposables: any[] = [];
+    const disposables: any[] = [mouseDownDisposable];
 
     supportedLanguages.forEach(lang => {
       disposables.push(monaco.languages.registerCompletionItemProvider(lang, {
@@ -729,9 +1112,7 @@ export function MarkdownJavaBlock({
                   <span title="새 폴더" onClick={(e) => { e.stopPropagation(); setExpandedPaths(new Set(expandedPaths).add(node.path)); setCreatingItemState({ parentPath: node.path, type: 'directory' }); }} style={{ fontSize: '14px', opacity: 0.7, padding: '0 2px' }}>📁+</span>
                 </>
               )}
-              {node.path !== originalJavaFilePath && (
-                <span title="삭제" onClick={(e) => handleDeleteItem(e, node.path)} style={{ fontSize: '14px', opacity: 0.7, color: '#f44336', padding: '0 2px' }}>🗑</span>
-              )}
+              <span title="삭제" onClick={(e) => handleDeleteItem(e, node.path)} style={{ fontSize: '14px', opacity: 0.7, color: '#f44336', padding: '0 2px' }}>🗑</span>
             </div>
           </div>
           
@@ -845,6 +1226,26 @@ export function MarkdownJavaBlock({
             }}>
             {isJavaRunning ? '⏹ 중지' : '▶ 실행'}
           </button>
+
+          <button className={`code-block__action-button${isDebugging ? ' is-active' : ''}`} type="button"
+            onClick={async () => {
+              if (isDebugging) {
+                stopDebugging();
+                return;
+              }
+              startDebugging();
+            }}>
+            {isDebugging ? '⏹ 디버그 중지' : '🐞 디버그'}
+          </button>
+
+          {isDebugging && pausedLocation && (
+            <div style={{ display: 'flex', gap: '4px', marginLeft: '8px' }}>
+              <button className="code-block__action-button" title="Continue (F5)" onClick={() => { setPausedLocation(null); sendDapRequest('continue', { threadId: 1 }); }}>▶</button>
+              <button className="code-block__action-button" title="Step Over (F6)" onClick={() => { setPausedLocation(null); sendDapRequest('next', { threadId: 1 }); }}>↷</button>
+              <button className="code-block__action-button" title="Step Into (F7)" onClick={() => { setPausedLocation(null); sendDapRequest('stepIn', { threadId: 1 }); }}>↓</button>
+              <button className="code-block__action-button" title="Step Out (F8)" onClick={() => { setPausedLocation(null); sendDapRequest('stepOut', { threadId: 1 }); }}>↑</button>
+            </div>
+          )}
           {isJavaEditMode && (
             <button className="code-block__action-button" type="button" onClick={async () => {
               if (confirm('현재 편집 중인 메인 파일의 내용을 원본으로 초기화하시겠습니까? (추가한 다른 파일들은 유지됩니다.)')) {
@@ -897,39 +1298,119 @@ export function MarkdownJavaBlock({
       }}>
         {isJavaEditMode && showDrawer && (
           <div style={{
-            width: '200px', borderRight: isDark ? '1px solid #333' : '1px solid #ddd',
-            padding: '10px 0', overflowY: 'auto', backgroundColor: isDark ? '#252526' : '#f3f3f3', flexShrink: 0
+            width: '240px', borderRight: isDark ? '1px solid #333' : '1px solid #ddd',
+            padding: '0', overflowY: 'auto', backgroundColor: isDark ? '#252526' : '#f3f3f3', flexShrink: 0,
+            display: 'flex', flexDirection: 'column'
           }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 10px 8px' }}>
-              <div style={{ fontSize: '11px', fontWeight: 'bold', color: isDark ? '#858585' : '#666', textTransform: 'uppercase' }}>EXPLORER</div>
-              {projectDir && (
-                <div style={{ display: 'flex', gap: '6px' }}>
-                  <span title="새 파일" onClick={() => setCreatingItemState({ parentPath: projectDir, type: 'file' })} style={{ fontSize: '13px', cursor: 'pointer', opacity: 0.7 }}>📄+</span>
-                  <span title="새 폴더" onClick={() => setCreatingItemState({ parentPath: projectDir, type: 'directory' })} style={{ fontSize: '13px', cursor: 'pointer', opacity: 0.7 }}>📁+</span>
+            {/* 드로어 모드 탭 */}
+            <div style={{ display: 'flex', borderBottom: isDark ? '1px solid #333' : '1px solid #ddd', flexShrink: 0 }}>
+              <button 
+                onClick={() => setDrawerMode('files')}
+                style={{
+                  flex: 1, padding: '10px', border: 'none', background: drawerMode === 'files' ? (isDark ? '#1e1e1e' : '#fff') : 'transparent',
+                  color: drawerMode === 'files' ? (isDark ? '#fff' : '#000') : '#888', cursor: 'pointer', fontSize: '11px', fontWeight: 'bold',
+                  borderBottom: drawerMode === 'files' ? '2px solid #007acc' : 'none', outline: 'none'
+                }}>파일</button>
+              <button 
+                onClick={() => setDrawerMode('debug')}
+                style={{
+                  flex: 1, padding: '10px', border: 'none', background: drawerMode === 'debug' ? (isDark ? '#1e1e1e' : '#fff') : 'transparent',
+                  color: drawerMode === 'debug' ? (isDark ? '#fff' : '#000') : '#888', cursor: 'pointer', fontSize: '11px', fontWeight: 'bold',
+                  borderBottom: drawerMode === 'debug' ? '2px solid #007acc' : 'none', outline: 'none'
+                }}>🐞 디버그</button>
+            </div>
+
+            <div style={{ flex: 1, overflowY: 'auto' }}>
+              {drawerMode === 'files' ? (
+                <div style={{ padding: '10px 0' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 10px 8px' }}>
+                    <div style={{ fontSize: '11px', fontWeight: 'bold', color: isDark ? '#858585' : '#666', textTransform: 'uppercase' }}>EXPLORER</div>
+                    {projectDir && (
+                      <div style={{ display: 'flex', gap: '6px' }}>
+                        <span title="새 파일" onClick={() => setCreatingItemState({ parentPath: projectDir, type: 'file' })} style={{ fontSize: '13px', cursor: 'pointer', opacity: 0.7 }}>📄+</span>
+                        <span title="새 폴더" onClick={() => setCreatingItemState({ parentPath: projectDir, type: 'directory' })} style={{ fontSize: '13px', cursor: 'pointer', opacity: 0.7 }}>📁+</span>
+                      </div>
+                    )}
+                  </div>
+                  
+                  {/* 최상위 루트 생성 UI */}
+                  {creatingItemState?.parentPath === projectDir && (
+                    <div style={{ marginLeft: '12px', padding: '4px 8px', display: 'flex', alignItems: 'center', marginBottom: '4px' }}>
+                      <span style={{ marginRight: '6px', fontSize: '14px' }}>{creatingItemState.type === 'file' ? '📄' : '📁'}</span>
+                      <input
+                        ref={newItemInputRef}
+                        value={newItemName}
+                        onChange={e => setNewItemName(e.target.value)}
+                        onKeyDown={handleCreateItemSubmit}
+                        onBlur={handleCreateItemSubmit}
+                        style={{
+                          fontSize: '12px', padding: '2px 4px', border: `1px solid ${isDark ? '#555' : '#ccc'}`,
+                          backgroundColor: isDark ? '#1e1e1e' : '#fff', color: isDark ? '#fff' : '#000', outline: 'none', flexGrow: 1
+                        }}
+                        placeholder={creatingItemState.type === 'file' ? '파일명.java' : '폴더명'}
+                      />
+                    </div>
+                  )}
+
+                  {renderTree(projectTree)}
                 </div>
+              ) : (
+                <div style={{ padding: '10px', fontSize: '12px' }}>
+                  <div style={{ marginBottom: '16px' }}>
+                    <div style={{ fontWeight: 'bold', marginBottom: '8px', color: isDark ? '#858585' : '#666', fontSize: '11px', textTransform: 'uppercase' }}>STACK TRACE</div>
+                    {stackFrames.length > 0 ? (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                        {stackFrames.map(frame => (
+                          <div key={frame.id} style={{ 
+                            padding: '4px 8px', borderRadius: '4px', cursor: 'pointer',
+                            backgroundColor: pausedLocation?.lineNumber === frame.line ? (isDark ? '#37373d' : '#e4e6f1') : 'transparent',
+                            whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'
+                          }}>
+                            <span style={{ color: isDark ? '#dcdcaa' : '#795e26' }}>{frame.name}</span>
+                            <span style={{ opacity: 0.5, marginLeft: '4px' }}>:{frame.line}</span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : <div style={{ opacity: 0.5, fontStyle: 'italic', padding: '0 8px' }}>실행 중이 아닙니다.</div>}
+                  </div>
+                  
+                  <div>
+                    <div style={{ fontWeight: 'bold', marginBottom: '8px', color: isDark ? '#858585' : '#666', fontSize: '11px', textTransform: 'uppercase' }}>VARIABLES</div>
+                    {variables.length > 0 ? (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', padding: '0 8px' }}>
+                        {variables.map(v => (
+                          <div key={v.name} style={{ display: 'flex', gap: '6px', alignItems: 'baseline' }}>
+                            <span style={{ color: isDark ? '#9cdcfe' : '#001080', fontWeight: '500' }}>{v.name}</span>
+                            <span style={{ color: isDark ? '#cccccc' : '#333333' }}>=</span>
+                            {editingVariable?.name === v.name ? (
+                              <input
+                                autoFocus
+                                defaultValue={v.value}
+                                onBlur={(e) => handleVariableValueChange(v.name, e.target.value, editingVariable.ref)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') handleVariableValueChange(v.name, (e.target as HTMLInputElement).value, editingVariable.ref);
+                                  else if (e.key === 'Escape') setEditingVariable(null);
+                                }}
+                                style={{
+                                  fontSize: '12px', padding: '0 2px', border: '1px solid #007acc',
+                                  backgroundColor: isDark ? '#1e1e1e' : '#fff', color: isDark ? '#fff' : '#000', outline: 'none'
+                                }}
+                              />
+                            ) : (
+                              <span 
+                                title="클릭하여 값 변경"
+                                onClick={() => v.variablesReference === 0 && setEditingVariable({ name: v.name, value: v.value, ref: variables[0].variablesReference || 0 })}
+                                style={{ color: isDark ? '#ce9178' : '#a31515', wordBreak: 'break-all', cursor: v.variablesReference === 0 ? 'pointer' : 'default' }}>
+                                {v.value}
+                              </span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    ) : <div style={{ opacity: 0.5, fontStyle: 'italic', padding: '0 8px' }}>사용 가능한 변수가 없습니다.</div>}
+                  </div>                </div>
               )}
             </div>
-            
-            {/* 최상위 루트 생성 UI */}
-            {creatingItemState?.parentPath === projectDir && (
-              <div style={{ marginLeft: '12px', padding: '4px 8px', display: 'flex', alignItems: 'center', marginBottom: '4px' }}>
-                <span style={{ marginRight: '6px', fontSize: '14px' }}>{creatingItemState.type === 'file' ? '📄' : '📁'}</span>
-                <input
-                  ref={newItemInputRef}
-                  value={newItemName}
-                  onChange={e => setNewItemName(e.target.value)}
-                  onKeyDown={handleCreateItemSubmit}
-                  onBlur={handleCreateItemSubmit}
-                  style={{
-                    fontSize: '12px', padding: '2px 4px', border: `1px solid ${isDark ? '#555' : '#ccc'}`,
-                    backgroundColor: isDark ? '#1e1e1e' : '#fff', color: isDark ? '#fff' : '#000', outline: 'none', flexGrow: 1
-                  }}
-                  placeholder={creatingItemState.type === 'file' ? '파일명.java' : '폴더명'}
-                />
-              </div>
-            )}
-
-            {renderTree(projectTree)}
           </div>
         )}
 
@@ -966,18 +1447,7 @@ export function MarkdownJavaBlock({
                 theme={isDark ? 'vscode-dark-custom' : 'vscode-light-custom'}
                 value={currentFileContent}
                 beforeMount={handleEditorWillMount}
-                onChange={(value) => {
-                  setCurrentFileContent(value || '');
-                  if (javaFilePath === originalJavaFilePath) {
-                    setCustomJavaSource(value || '');
-                    saveCustomJavaSourceToCache(sharedCustomJavaCacheKey, value || '');
-                  }
-                  if (javaFilePath) {
-                    window.electronAPI?.updateJavaFile(javaFilePath, value || '')
-                      .then(() => refreshProjectTree(projectDir!))
-                      .then(() => saveCurrentProjectSnapshot(projectDir!));
-                  }
-                }}
+                onChange={handleContentChange}
                 onMount={handleEditorDidMount}
                 options={{
                   minimap: { enabled: false },
@@ -992,7 +1462,9 @@ export function MarkdownJavaBlock({
                   padding: { top: 10 },
                   scrollBeyondLastLine: false,
                   scrollbar: { alwaysConsumeMouseWheel: false, handleMouseWheel: true },
-                  'semanticHighlighting.enabled': true
+                  'semanticHighlighting.enabled': true,
+                  glyphMargin: true,
+                  lineNumbersMinChars: 3
                 }}
               />
             ) : (

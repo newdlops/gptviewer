@@ -2331,7 +2331,8 @@ ipcMain.handle('java:lsp-start', async (_event, code: string, snapshot?: Record<
   const serverRes = await javaLspService.startServer();
   if (serverRes.success) {
     const { projectDir, filePath } = await javaLspService.prepareProject(code, snapshot);
-    return { ...serverRes, projectDir, filePath };
+    const bundles = await javaLspService.getBundleJars();
+    return { ...serverRes, projectDir, filePath, bundles };
   }
   return serverRes;
 });
@@ -2376,6 +2377,10 @@ ipcMain.handle('java:rename-path', async (_event, projectDir: string, oldRelativ
 
 ipcMain.handle('java:lsp-stop', async () => {
   return javaLspService.stopServer();
+});
+
+ipcMain.handle('java:start-debug-bridge', async (_event, tcpPort: number) => {
+  return await javaLspService.startDebugBridge(tcpPort);
 });
 
 
@@ -2859,6 +2864,12 @@ const createWindow = (): void => {
 
   void mainWindow.loadURL(MAIN_WINDOW_WEBPACK_ENTRY);
 };
+
+ipcMain.on('renderer-log', (_event, level, ...args) => {
+  if (level === 'error') console.error('[Renderer Error]', ...args);
+  else if (level === 'warn') console.warn('[Renderer Warn]', ...args);
+  else console.log('[Renderer Log]', ...args);
+});
 
 app.on('ready', () => {
   createWindow();

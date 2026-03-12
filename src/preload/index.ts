@@ -5,7 +5,9 @@ import type {
 } from '../shared/import/projectConversationImport';
 import type { GoogleDriveConfigInput } from '../shared/sync/googleDriveSync';
 import type { SharedConversationRefreshRequest } from '../shared/refresh/sharedConversationRefresh';
-import type { WorkspaceSnapshot } from '../shared/sync/workspaceSnapshot';
+import { WorkspaceSnapshot } from '../shared/sync/workspaceSnapshot';
+
+ipcRenderer.setMaxListeners(100);
 
 contextBridge.exposeInMainWorld('electronAPI', {
   fetchSourceIcon: (iconUrl: string, refererUrl?: string) =>
@@ -87,6 +89,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   readJavaFile: (filePath: string) =>
     ipcRenderer.invoke('java:read-file', filePath),
   stopJavaServer: () => ipcRenderer.invoke('java:lsp-stop'),
+  startJavaDebugBridge: (tcpPort: number) => ipcRenderer.invoke('java:start-debug-bridge', tcpPort),
+  log: (level: 'info' | 'warn' | 'error', ...args: any[]) => ipcRenderer.send('renderer-log', level, ...args),
   getGoogleDriveConfig: () => ipcRenderer.invoke('google-drive-sync:get-config'),
   getGoogleDriveSyncStatus: () =>
     ipcRenderer.invoke('google-drive-sync:get-status'),
