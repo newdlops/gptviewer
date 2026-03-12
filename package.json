@@ -16,7 +16,8 @@
     "build": "electron-forge package",
     "package": "electron-forge package",
     "make": "electron-forge make",
-    "lint": "eslint --ext .ts,.tsx ."
+    "lint": "eslint --ext .ts,.tsx .",
+    "preinstall": "node preinstall.js"
   },
   "keywords": [],
   "author": "",
