@@ -80,11 +80,17 @@ export function MarkdownJavaBlock({
   const [breakpoints, setBreakpoints] = useState<Map<string, number[]>>(new Map()); // filePath -> lines[]
   const breakpointDecorationsRef = useRef<Map<string, string[]>>(new Map()); // modelId -> decorationIds[]
   const [stackFrames, setStackFrames] = useState<any[]>([]);
+  const stackFramesRef = useRef<any[]>([]);
   const [variables, setVariables] = useState<any[]>([]);
+  const [expandedVariables, setExpandedVariables] = useState<Record<number, any[]>>({});
+  const [expandedVarRefs, setExpandedVarRefs] = useState<Set<number>>(new Set());
   const [editingVariable, setEditingVariable] = useState<{ name: string, value: string, ref: number } | null>(null);
   const [pausedLocation, setPausedLocation] = useState<{ filePath: string, lineNumber: number } | null>(null);
+  const pausedLocationRef = useRef<{ filePath: string, lineNumber: number } | null>(null);
+  const isDebuggingRef = useRef(false);
   const debugSocketRef = useRef<WebSocket | null>(null);
   const debugSequenceRef = useRef(1);
+  const dapRequestsRef = useRef<Map<number, { resolve: (val: any) => void, reject: (err: any) => void }>>(new Map());
   const currentLineDecorationRef = useRef<string[]>([]);
   const docVersionRef = useRef(1);
 
@@ -112,6 +118,7 @@ export function MarkdownJavaBlock({
   const terminalContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    isDebuggingRef.current = isDebugging;
     if (isDebugging) {
       setShowDrawer(true);
       setDrawerMode('debug');
@@ -120,23 +127,37 @@ export function MarkdownJavaBlock({
     }
   }, [isDebugging]);
 
-  const sendDapRequest = (command: string, args?: any) => {
-    if (!debugSocketRef.current || debugSocketRef.current.readyState !== WebSocket.OPEN) return;
-    const seq = debugSequenceRef.current++;
-    const payload = JSON.stringify({
-      seq,
-      type: 'request',
-      command,
-      arguments: args
+  useEffect(() => {
+    pausedLocationRef.current = pausedLocation;
+  }, [pausedLocation]);
+
+  useEffect(() => {
+    stackFramesRef.current = stackFrames;
+  }, [stackFrames]);
+
+  const sendDapRequest = (command: string, args?: any): Promise<any> => {
+    return new Promise((resolve, reject) => {
+      if (!debugSocketRef.current || debugSocketRef.current.readyState !== WebSocket.OPEN) {
+        reject(new Error('Debug socket not open'));
+        return;
+      }
+      const seq = debugSequenceRef.current++;
+      const payload = JSON.stringify({
+        seq,
+        type: 'request',
+        command,
+        arguments: args
+      });
+      
+      dapRequestsRef.current.set(seq, { resolve, reject });
+
+      // 브라우저에서 정확한 UTF-8 바이트 크기를 구함
+      const byteLength = new TextEncoder().encode(payload).length;
+      const message = `Content-Length: ${byteLength}\r\n\r\n${payload}`;
+      
+      console.log(`[JavaDebug -> SERVER] seq=${seq}, cmd=${command}`);
+      debugSocketRef.current.send(message);
     });
-    
-    // 브라우저에서 정확한 UTF-8 바이트 크기를 구함
-    const byteLength = new TextEncoder().encode(payload).length;
-    const message = `Content-Length: ${byteLength}\r\n\r\n${payload}`;
-    
-    console.log(`[JavaDebug -> SERVER] seq=${seq}, cmd=${command}`);
-    debugSocketRef.current.send(message);
-    return seq;
   };
 
   const startDebugging = async () => {
@@ -302,11 +323,24 @@ export function MarkdownJavaBlock({
                 setPausedLocation(null);
                 setStackFrames([]);
                 setVariables([]);
+                setExpandedVariables({});
+                setExpandedVarRefs(new Set());
                 setJavaTerminalOutput(prev => [...prev, { type: 'out', text: '\n[디버그 세션이 종료되었습니다.]\n' }]);
               }
             } else if (msg.type === 'response') {
               console.log(`[JavaDebug] Response for command: ${msg.command}`, msg);
               window.electronAPI?.log('info', `[JavaDebug] RESPONSE: ${msg.command} (success: ${msg.success})`, msg.body || msg.message);
+              
+              const req = dapRequestsRef.current.get(msg.request_seq);
+              if (req) {
+                if (msg.success) {
+                  req.resolve(msg);
+                } else {
+                  req.reject(new Error(msg.message || 'Request failed'));
+                }
+                dapRequestsRef.current.delete(msg.request_seq);
+              }
+
               if (msg.command === 'initialize' && msg.success) {
                 // DAP 표준: initialize 응답 후 launch 또는 attach 요청 전송
                 console.log('[JavaDebug] Initialize successful. Triggering launch...');
@@ -319,7 +353,8 @@ export function MarkdownJavaBlock({
                   stopOnEntry: false,
                   classPaths: [projectDir + '/bin'],
                   modulePaths: [],
-                  vmArgs: '--enable-preview'
+                  vmArgs: '--enable-preview',
+                  showStaticVariables: true
                 });
               } else if (msg.command === 'launch' && msg.success) {
                 console.log('[JavaDebug] Launch successful.');
@@ -337,13 +372,97 @@ export function MarkdownJavaBlock({
                   sendDapRequest('scopes', { frameId: topFrame.id });
                 }
               } else if (msg.command === 'scopes' && msg.body?.scopes) {
-                // 가장 첫 번째 scope (보통 Local)의 변수 요청
-                const localScope = msg.body.scopes[0];
-                if (localScope) {
-                  sendDapRequest('variables', { variablesReference: localScope.variablesReference });
+                // 각 스코프(Local, Static 등)를 루트 변수 노드로 취급
+                const scopesAsVars = msg.body.scopes.map((scope: any) => ({
+                  name: `[${scope.name}]`,
+                  value: '',
+                  variablesReference: scope.variablesReference
+                }));
+                
+                // 편의를 위해 모든 스코프(Local, Static 등)를 자동 확장
+                const initialExpandedRefs = new Set<number>();
+                const initialExpandedVars: Record<number, any[]> = {};
+
+                const scopePromises = scopesAsVars.map(async (scopeVar: any) => {
+                  if (scopeVar.variablesReference > 0) {
+                    const ref = scopeVar.variablesReference;
+                    initialExpandedRefs.add(ref);
+                    try {
+                      const res = await sendDapRequest('variables', { variablesReference: ref });
+                      if (res?.body?.variables) {
+                        initialExpandedVars[ref] = res.body.variables;
+                      }
+                    } catch (e) {}
+                  }
+                });
+
+                // 전역/Static 변수 확인을 위해 현재 소스에서 단어 추출 후 개별 평가 (Brute-force)
+                let staticEvalPromise = Promise.resolve();
+                const frameId = stackFramesRef.current[0]?.id;
+                
+                if (frameId !== undefined) {
+                  staticEvalPromise = Promise.all(scopePromises).then(async () => {
+                    // Local 등에서 이미 수집된 변수명 모음
+                    const existingNames = new Set<string>();
+                    Object.values(initialExpandedVars).forEach(vars => {
+                      vars.forEach((v: any) => existingNames.add(v.name));
+                    });
+
+                    // 에디터/캐시에서 현재 코드 가져오기
+                    const code = currentFileContent || '';
+                    // 코드 내의 모든 식별자 추출
+                    const words = code.match(/[a-zA-Z_$][a-zA-Z0-9_$]*/g) || [];
+                    const keywords = new Set(['abstract','assert','boolean','break','byte','case','catch','char','class','const','continue','default','do','double','else','enum','extends','final','finally','float','for','goto','if','implements','import','instanceof','int','interface','long','native','new','package','private','protected','public','return','short','static','strictfp','super','switch','synchronized','this','throw','throws','transient','try','void','volatile','while','true','false','null','String','System','out','println','in','err','List','Map','Set','ArrayList','HashMap','HashSet']);
+                    
+                    const candidates = Array.from(new Set(words)).filter(w => !keywords.has(w) && !existingNames.has(w));
+                    
+                    const classVars: any[] = [];
+                    
+                    // 최대 100개까지만 평가 (DAP 서버 과부하 방지)
+                    const evalPromises = candidates.slice(0, 100).map(async (word) => {
+                      try {
+                        const evalRes = await sendDapRequest('evaluate', {
+                          expression: word,
+                          frameId: frameId,
+                          context: 'variables'
+                        });
+                        // 평가 성공하고, 에러 메시지나 클래스 타입 자체가 아닐 경우
+                        if (evalRes?.success && evalRes.body && evalRes.body.result && !evalRes.body.result.includes('cannot be resolved') && !evalRes.body.result.startsWith('class ') && !evalRes.body.result.includes('Syntax error')) {
+                          classVars.push({
+                            name: word,
+                            value: evalRes.body.result,
+                            type: evalRes.body.type || '',
+                            variablesReference: evalRes.body.variablesReference || 0
+                          });
+                        }
+                      } catch (e) {}
+                    });
+                    
+                    await Promise.all(evalPromises);
+                    
+                    if (classVars.length > 0) {
+                      classVars.sort((a, b) => a.name.localeCompare(b.name));
+                      const fakeRef = Math.floor(Math.random() * 100000) + 100000;
+                      scopesAsVars.push({
+                        name: '[Static / Member Variables]',
+                        value: '',
+                        variablesReference: fakeRef
+                      });
+                      initialExpandedRefs.add(fakeRef);
+                      initialExpandedVars[fakeRef] = classVars;
+                    }
+                  });
                 }
-              } else if (msg.command === 'variables' && msg.body?.variables) {
-                setVariables(msg.body.variables);
+
+                Promise.all([Promise.all(scopePromises), staticEvalPromise]).then(() => {
+                  setVariables([...scopesAsVars]); // Ensure react triggers re-render by passing new array reference.
+                  setExpandedVarRefs(prev => new Set([...prev, ...initialExpandedRefs]));
+                  setExpandedVariables(prev => ({ ...prev, ...initialExpandedVars }));
+                });
+              } else if (msg.command === 'variables' && msg.body?.variables && msg.request_seq) {
+                // 이 부분은 사실 dapRequestsRef.current.get(reqSeq).resolve()로 처리되지만,
+                // 만약 이벤트를 놓쳤을 경우를 대비하여 여기서도 처리할 수 있도록 보완.
+                // 보통은 toggleVariableNode에서 await sendDapRequest()의 결과로 직접 처리함.
               }
             }
           } catch (e) {
@@ -370,6 +489,28 @@ export function MarkdownJavaBlock({
     }
   };
 
+  const toggleVariableNode = async (vRef: number) => {
+    if (expandedVarRefs.has(vRef)) {
+      setExpandedVarRefs(prev => {
+        const next = new Set(prev);
+        next.delete(vRef);
+        return next;
+      });
+    } else {
+      setExpandedVarRefs(prev => new Set(prev).add(vRef));
+      if (!expandedVariables[vRef]) {
+        try {
+          const res = await sendDapRequest('variables', { variablesReference: vRef });
+          if (res?.body?.variables) {
+            setExpandedVariables(prev => ({ ...prev, [vRef]: res.body.variables }));
+          }
+        } catch (e) {
+          console.error(e);
+        }
+      }
+    }
+  };
+
   const stopDebugging = () => {
     sendDapRequest('disconnect', { restart: false });
     if (debugSocketRef.current) {
@@ -379,6 +520,8 @@ export function MarkdownJavaBlock({
     setPausedLocation(null);
     setStackFrames([]);
     setVariables([]);
+    setExpandedVariables({});
+    setExpandedVarRefs(new Set());
     setEditingVariable(null);
   };
 
@@ -464,6 +607,17 @@ export function MarkdownJavaBlock({
   useEffect(() => {
     if (editorInstance && javaFilePath) {
       updateEditorBreakpoints(editorInstance, javaFilePath);
+    }
+    
+    // 디버그 중이라면 서버에 변경된 브레이크포인트 전송
+    if (isDebuggingRef.current) {
+      breakpoints.forEach((lines, path) => {
+        // 백그라운드에서 실시간 동기화
+        sendDapRequest('setBreakpoints', {
+          source: { path },
+          breakpoints: lines.map(l => ({ line: l }))
+        }).catch(() => {});
+      });
     }
   }, [breakpoints, editorInstance, javaFilePath]);
 
@@ -939,6 +1093,73 @@ export function MarkdownJavaBlock({
 
       disposables.push(monaco.languages.registerHoverProvider(lang, {
         provideHover: async (model: any, position: any) => {
+          // 1. 디버그 중이고 일시정지 상태일 때 변수 값 평가 시도
+          if (isDebuggingRef.current && pausedLocationRef.current && stackFramesRef.current.length > 0) {
+            const wordInfo = model.getWordAtPosition(position);
+            if (wordInfo) {
+              try {
+                const frameId = stackFramesRef.current[0].id;
+                const evalResult = await sendDapRequest('evaluate', {
+                  expression: wordInfo.word,
+                  frameId: frameId,
+                  context: 'hover'
+                });
+                
+                if (evalResult && evalResult.success && evalResult.body && evalResult.body.result) {
+                  let htmlContent = `**${wordInfo.word}** = \`${evalResult.body.result}\``;
+                  
+                  // 객체나 배열인 경우 (variablesReference > 0), 하위 속성을 파고들어서 HTML <details>로 만들어줌
+                  if (evalResult.body.variablesReference > 0) {
+                    const buildVarTreeHtml = async (vRef: number, currentDepth: number): Promise<string> => {
+                      if (currentDepth > 3) return '<div style="margin-left:12px;opacity:0.6;">...</div>'; // 최대 깊이 제한
+                      try {
+                        const varsRes = await sendDapRequest('variables', { variablesReference: vRef });
+                        if (varsRes?.body?.variables) {
+                          let str = `<div style="margin-left: 12px; border-left: 1px solid rgba(128,128,128,0.3); padding-left: 8px; margin-top: 2px; margin-bottom: 2px;">`;
+                          for (const v of varsRes.body.variables) {
+                            if (v.variablesReference > 0 && currentDepth < 3) {
+                              const subTree = await buildVarTreeHtml(v.variablesReference, currentDepth + 1);
+                              str += `<details><summary><span class="tree-arrow">▶</span> <span style="color:#007acc; font-weight: bold;">${v.name}</span> = <code style="margin-left: 4px;">${v.value}</code></summary>${subTree}</details>`;
+                            } else {
+                              str += `<div style="padding: 1px 0;"><span style="color:#007acc;">${v.name}</span> = <code style="margin-left: 4px;">${v.value}</code></div>`;
+                            }
+                          }
+                          str += `</div>`;
+                          return str;
+                        }
+                      } catch (e) {}
+                      return '';
+                    };
+                    
+                    const treeHtml = await buildVarTreeHtml(evalResult.body.variablesReference, 0);
+                    if (treeHtml) {
+                      htmlContent = `<details open><summary><span class="tree-arrow">▶</span> <span style="color:#007acc;font-weight:bold;">${wordInfo.word}</span> = <code style="margin-left: 4px;">${evalResult.body.result}</code></summary>${treeHtml}</details>`;
+                    } else {
+                      htmlContent = `<div><span style="color:#007acc;font-weight:bold;">${wordInfo.word}</span> = <code style="margin-left: 4px;">${evalResult.body.result}</code></div>`;
+                    }
+                  } else {
+                    htmlContent = `<div><span style="color:#007acc;font-weight:bold;">${wordInfo.word}</span> = <code style="margin-left: 4px;">${evalResult.body.result}</code></div>`;
+                  }
+
+                  return {
+                    contents: [
+                      { value: htmlContent, isTrusted: true, supportHtml: true }
+                    ],
+                    range: {
+                      startLineNumber: position.lineNumber,
+                      startColumn: wordInfo.startColumn,
+                      endLineNumber: position.lineNumber,
+                      endColumn: wordInfo.endColumn
+                    }
+                  };
+                }
+              } catch (e) {
+                // 평가 실패 시 LSP Hover로 Fallback
+              }
+            }
+          }
+
+          // 2. 일반 LSP Hover
           const result = await sendLspRequest("textDocument/hover", {
             textDocument: { uri: `file://${javaFilePathRef.current}` },
             position: { line: position.lineNumber - 1, character: position.column - 1 }
@@ -1179,6 +1400,62 @@ export function MarkdownJavaBlock({
     </div>
   );
 
+  const renderVariableTree = (vars: any[], depth = 0) => {
+    return vars.map((v, i) => {
+      const hasChildren = v.variablesReference > 0;
+      const isExpanded = expandedVarRefs.has(v.variablesReference);
+      
+      return (
+        <div key={`${v.name}-${v.variablesReference}-${depth}-${i}`} style={{ paddingLeft: depth > 0 ? '12px' : '0', marginBottom: '2px' }}>
+          <div style={{ display: 'flex', gap: '6px', alignItems: 'baseline' }}>
+            {hasChildren ? (
+              <span 
+                onClick={() => toggleVariableNode(v.variablesReference)}
+                style={{ cursor: 'pointer', fontSize: '10px', width: '12px', display: 'inline-block', color: isDark ? '#ccc' : '#666' }}
+              >
+                {isExpanded ? '▼' : '▶'}
+              </span>
+            ) : (
+              <span style={{ width: '12px', display: 'inline-block' }}></span>
+            )}
+            <span style={{ color: isDark ? '#9cdcfe' : '#001080', fontWeight: '500' }}>{v.name}</span>
+            <span style={{ color: isDark ? '#cccccc' : '#333333' }}>=</span>
+            {editingVariable?.name === v.name ? (
+              <input
+                autoFocus
+                defaultValue={v.value}
+                onBlur={(e) => handleVariableValueChange(v.name, e.target.value, editingVariable.ref)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleVariableValueChange(v.name, (e.target as HTMLInputElement).value, editingVariable.ref);
+                  else if (e.key === 'Escape') setEditingVariable(null);
+                }}
+                style={{
+                  fontSize: '12px', padding: '0 2px', border: '1px solid #007acc',
+                  backgroundColor: isDark ? '#1e1e1e' : '#fff', color: isDark ? '#fff' : '#000', outline: 'none'
+                }}
+              />
+            ) : (
+              <span 
+                title={hasChildren ? "클릭하여 확장" : "클릭하여 값 변경"}
+                onClick={() => {
+                  if (hasChildren) toggleVariableNode(v.variablesReference);
+                  else if (v.variablesReference === 0 && variables.length > 0) setEditingVariable({ name: v.name, value: v.value, ref: variables[0].variablesReference || 0 });
+                }}
+                style={{ color: isDark ? '#ce9178' : '#a31515', wordBreak: 'break-all', cursor: 'pointer' }}>
+                {v.value}
+              </span>
+            )}
+          </div>
+          {hasChildren && isExpanded && expandedVariables[v.variablesReference] && (
+            <div style={{ marginTop: '2px' }}>
+              {renderVariableTree(expandedVariables[v.variablesReference], depth + 1)}
+            </div>
+          )}
+        </div>
+      );
+    });
+  };
+
   return (
     <div className="code-block" style={{ 
       border: isDark ? '1px solid #333' : '1px solid #ddd', 
@@ -1187,6 +1464,68 @@ export function MarkdownJavaBlock({
       contentVisibility: 'visible',
       contain: 'none'
     }}>
+      <style>{`
+        /* Monaco Hover Auto-Resize & Resizable Fix */
+        .monaco-editor .monaco-hover {
+          height: auto !important;
+          width: auto !important;
+          min-width: 350px !important;
+          max-width: 800px !important;
+          max-height: 600px !important;
+          display: flex !important;
+          flex-direction: column !important;
+          resize: both !important;
+          overflow: hidden !important;
+          z-index: 1000 !important;
+          background-color: ${isDark ? '#252526' : '#f3f3f3'} !important;
+          border: 1px solid ${isDark ? '#454545' : '#ccc'} !important;
+          box-shadow: 0 4px 12px rgba(0,0,0,0.2) !important;
+        }
+        .monaco-editor .monaco-hover .monaco-scrollable-element {
+          height: 100% !important;
+          width: 100% !important;
+          display: flex !important;
+          flex-direction: column !important;
+        }
+        .monaco-editor .monaco-hover .monaco-hover-content {
+          flex: 1 1 auto !important;
+          height: auto !important;
+          max-height: none !important;
+          overflow-y: auto !important;
+          padding: 8px !important;
+        }
+        
+        /* Tree Styling */
+        .monaco-editor .monaco-hover .monaco-hover-content details {
+          margin-bottom: 2px;
+        }
+        .monaco-editor .monaco-hover .monaco-hover-content summary {
+          cursor: pointer;
+          outline: none;
+          list-style: none;
+          display: flex;
+          align-items: center;
+          padding: 2px 4px;
+          border-radius: 4px;
+        }
+        .monaco-editor .monaco-hover .monaco-hover-content summary::-webkit-details-marker {
+          display: none;
+        }
+        .monaco-editor .monaco-hover .monaco-hover-content summary:hover {
+          background-color: ${isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.05)'};
+        }
+        .monaco-editor .monaco-hover .monaco-hover-content summary .tree-arrow {
+          display: inline-block;
+          margin-right: 6px;
+          transition: transform 0.2s;
+          font-size: 10px;
+          width: 12px;
+          text-align: center;
+        }
+        .monaco-editor .monaco-hover .monaco-hover-content details[open] > summary .tree-arrow {
+          transform: rotate(90deg);
+        }
+      `}</style>
       <div className="code-block__header" style={{ borderBottom: isDark ? '1px solid #333' : '1px solid #ddd' }}>
         <div className="code-block__header-meta">
           <span className="code-block__language">{formatCodeLanguageLabel('java')}</span>
@@ -1415,39 +1754,11 @@ export function MarkdownJavaBlock({
                   <div>
                     <div style={{ fontWeight: 'bold', marginBottom: '8px', color: isDark ? '#858585' : '#666', fontSize: '11px', textTransform: 'uppercase' }}>VARIABLES</div>
                     {variables.length > 0 ? (
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', padding: '0 8px' }}>
-                        {variables.map(v => (
-                          <div key={v.name} style={{ display: 'flex', gap: '6px', alignItems: 'baseline' }}>
-                            <span style={{ color: isDark ? '#9cdcfe' : '#001080', fontWeight: '500' }}>{v.name}</span>
-                            <span style={{ color: isDark ? '#cccccc' : '#333333' }}>=</span>
-                            {editingVariable?.name === v.name ? (
-                              <input
-                                autoFocus
-                                defaultValue={v.value}
-                                onBlur={(e) => handleVariableValueChange(v.name, e.target.value, editingVariable.ref)}
-                                onKeyDown={(e) => {
-                                  if (e.key === 'Enter') handleVariableValueChange(v.name, (e.target as HTMLInputElement).value, editingVariable.ref);
-                                  else if (e.key === 'Escape') setEditingVariable(null);
-                                }}
-                                style={{
-                                  fontSize: '12px', padding: '0 2px', border: '1px solid #007acc',
-                                  backgroundColor: isDark ? '#1e1e1e' : '#fff', color: isDark ? '#fff' : '#000', outline: 'none'
-                                }}
-                              />
-                            ) : (
-                              <span 
-                                title="클릭하여 값 변경"
-                                onClick={() => v.variablesReference === 0 && setEditingVariable({ name: v.name, value: v.value, ref: variables[0].variablesReference || 0 })}
-                                style={{ color: isDark ? '#ce9178' : '#a31515', wordBreak: 'break-all', cursor: v.variablesReference === 0 ? 'pointer' : 'default' }}>
-                                {v.value}
-                              </span>
-                            )}
-                          </div>
-                        ))}
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', padding: '0 8px' }}>
+                        {renderVariableTree(variables)}
                       </div>
                     ) : <div style={{ opacity: 0.5, fontStyle: 'italic', padding: '0 8px' }}>사용 가능한 변수가 없습니다.</div>}
-                  </div>                </div>
-              )}
+                  </div>                </div>              )}
             </div>
           </div>
         )}

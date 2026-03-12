@@ -91,7 +91,10 @@ function createMonacoLanguageClient(transports: any, projectDir: string, monaco:
                 },
                 debug: {
                     settings: {
-                        enable: true
+                        enable: true,
+                        showStaticVariables: true,
+                        showLogicalStructure: true,
+                        showToString: true
                     }
                 }
             }

@@ -1347,6 +1347,12 @@
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2) !important;
   padding: 8px !important;
   backdrop-filter: blur(12px) !important;
+  max-width: 800px !important;
+  min-width: 300px !important;
+}
+
+.monaco-editor .monaco-hover-content {
+  max-width: 100% !important;
 }
 
 .monaco-editor .monaco-hover .hover-row {
