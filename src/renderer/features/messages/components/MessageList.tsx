@@ -140,12 +140,26 @@ const haveRelevantSourceStatesChanged = (
     );
   });
 
+/**
+ * Estimating message height helps reduce layout shifts during initial rendering.
+ * We include estimates for code blocks and diagrams to reserve enough space 
+ * before they are measured and cached in the persistent store.
+ */
 const estimateMessageHeight = (message: Message): number => {
   const baseHeight = message.role === 'assistant' ? 128 : 92;
   const lineEstimate = Math.ceil(message.text.length / 180) * 24;
   const sourceEstimate = message.sources.length > 0 ? 52 : 0;
+  
+  // Estimate code block height (roughly 100px per block, or more if it looks long)
+  const codeBlocks = message.text.match(/```/g) || [];
+  const codeBlockCount = Math.floor(codeBlocks.length / 2);
+  const codeBlockEstimate = codeBlockCount * 120;
+  
+  // Extra height for mermaid or diagrams
+  const isDiagram = RENDERABLE_DIAGRAM_PATTERN.test(message.text);
+  const diagramEstimate = isDiagram ? 300 : 0;
 
-  return baseHeight + lineEstimate + sourceEstimate;
+  return baseHeight + lineEstimate + sourceEstimate + codeBlockEstimate + diagramEstimate;
 };
 
 const findStartIndex = (layouts: MessageLayout[], targetOffset: number): number => {
@@ -644,13 +658,21 @@ export function MessageList({
   }, [activeConversation.messages, measuredHeights, scrollTop, viewportHeight]);
 
   useEffect(() => {
-    // Auto-scroll to bottom on fresh data or new messages
+    // Auto-scroll to bottom on fresh data or new messages, but only if we're already near the bottom
     if (activeConversation.messages.length > 0) {
         window.requestAnimationFrame(() => {
             const messageListElement = messageListRef.current;
             if (messageListElement) {
+                const currentScroll = messageListElement.scrollTop;
                 const maxScroll = Math.max(totalHeight - messageListElement.clientHeight, 0);
-                commitScrollPosition(maxScroll);
+                
+                // If we're within 150px of the bottom, keep scrolling to bottom
+                // Or if it's a completely new conversation start
+                const isNearBottom = maxScroll - currentScroll < 150;
+                
+                if (isNearBottom) {
+                    commitScrollPosition(maxScroll);
+                }
             }
         });
     }

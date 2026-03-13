@@ -412,6 +412,7 @@ export class ChatGptConversationNetworkMonitor {
 
         const url = responseMeta.url;
         if (url.includes('/backend-api/settings/user')) {
+            console.info(`[gptviewer][monitor:response] /backend-api/settings/user BODY:`, bodyText);
             try {
                 const payload = JSON.parse(bodyText);
                 const juices = payload?.last_used_model_config?.juices?.web || payload?.last_used_model_config?.juices?.default;

@@ -16,4 +16,4 @@
 ## CLI Model Selection
 
 - **auto** 모델 옵션 사용 시, 절대 `gemini-2.5-flash` 모델을 선택하지 말고, 반드시 3버전 이상의 pro와 flash 모델(예: `3.1-pro-preview`, `3-flash-preview`)을 사용해야 합니다.
-
+  

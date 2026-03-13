@@ -17,10 +17,42 @@ export function useSourcePreviewState() {
   >({});
   const sourcePreviewCacheRef = useRef<Record<string, SourcePreview>>({});
   const sourcePreviewRequestRef = useRef<Map<string, Promise<void>>>(new Map());
-  const messageScrollPositionsRef = useRef<Record<string, number>>({});
-  const messageHeightCacheRef = useRef<Record<string, Record<string, number>>>(
-    {},
+  const messageScrollPositionsRef = useRef<Record<string, number>>(
+    (() => {
+      try {
+        const saved = localStorage.getItem('message-scroll-positions');
+        return saved ? JSON.parse(saved) : {};
+      } catch {
+        return {};
+      }
+    })(),
   );
+  const messageHeightCacheRef = useRef<Record<string, Record<string, number>>>(
+    (() => {
+      try {
+        const saved = localStorage.getItem('message-height-cache');
+        return saved ? JSON.parse(saved) : {};
+      } catch {
+        return {};
+      }
+    })(),
+  );
+
+  const saveHeightCache = () => {
+    try {
+      localStorage.setItem('message-height-cache', JSON.stringify(messageHeightCacheRef.current));
+    } catch (e) {
+      console.warn('Failed to save message height cache', e);
+    }
+  };
+
+  const saveScrollPositions = () => {
+    try {
+      localStorage.setItem('message-scroll-positions', JSON.stringify(messageScrollPositionsRef.current));
+    } catch (e) {
+      console.warn('Failed to save scroll positions', e);
+    }
+  };
 
   useEffect(() => {
     sourcePreviewCacheRef.current = sourcePreviewCache;
@@ -74,6 +106,7 @@ export function useSourcePreviewState() {
     }
 
     messageScrollPositionsRef.current[conversationId] = scrollTop;
+    saveScrollPositions();
   };
 
   const handleMessageHeightChange = (
@@ -95,6 +128,7 @@ export function useSourcePreviewState() {
       ...currentHeights,
       [messageId]: height,
     };
+    saveHeightCache();
   };
 
   const loadSourcePreview = async (source: MessageSource): Promise<void> => {
@@ -163,6 +197,8 @@ export function useSourcePreviewState() {
     sourcePreviewRequestRef.current.clear();
     messageHeightCacheRef.current = {};
     messageScrollPositionsRef.current = {};
+    localStorage.removeItem('message-height-cache');
+    localStorage.removeItem('message-scroll-positions');
   };
 
   const removeConversationScrollState = (conversationIds: string[]) => {
@@ -170,6 +206,8 @@ export function useSourcePreviewState() {
       delete messageScrollPositionsRef.current[conversationId];
       delete messageHeightCacheRef.current[conversationId];
     });
+    saveHeightCache();
+    saveScrollPositions();
   };
 
   return {
