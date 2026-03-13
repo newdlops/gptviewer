@@ -7,35 +7,52 @@
 
 ```typescript
 export const MONITOR_LOG_FLAGS = {
-    SHOW_BACKUP_REQUESTS: false,   // session.webRequest 기반 모든 URL 캡처 로그
-    SHOW_SENTINEL_FLOW: true,      // Sentinel (prepare/finalize) 관련 헤더 및 바디 로그
-    SHOW_CONVERSATION_FLOW: true,  // f/conversation 관련 스트림 및 바디 로그
-    SHOW_AUTH_CAPTURE: true,       // Authorization 헤더 캡처 성공 로그
-    SHOW_GENERAL_REQUESTS: false,  // 모든 /backend-api/ 요청 URL 모니터링 로그
-    SHOW_MAPPING: true,            // Sentinel 토큰 매핑 관련 알림 로그
+    // 1. 요청 헤더 출력
+    SHOW_REQUEST_HEADERS: false,
+    
+    // 2. 응답 헤더 출력
+    SHOW_RESPONSE_HEADERS: false,
+    
+    // 3. 요청 바디(Payload) 출력
+    SHOW_REQUEST_BODY: false,
+    
+    // 4. 응답 바디 출력
+    SHOW_RESPONSE_BODY: false,
+    
+    // 5. 스트림 이벤트 및 기타 중요 이벤트 상태 로그 (시작, 수신, 종료 등)
+    SHOW_STREAM_EVENTS: true,
 
-    // 상세 내용 제어 (위 흐름이 활성화된 경우에만 적용)
-    SHOW_REQUEST_HEADERS: true,    // 요청 헤더 출력 여부
-    SHOW_REQUEST_BODY: true,       // 요청 바디 출력 여부
-    SHOW_RESPONSE_HEADERS: true,   // 응답 헤더 출력 여부
-    SHOW_RESPONSE_BODY: true,      // 응답 바디 출력 여부
+    // 기타 시스템 디버깅용 보조 플래그
+    SHOW_BACKUP_REQUESTS: false,   // session.webRequest 기본 URL 로그
+    SHOW_GENERAL_REQUESTS: false,  // 모든 /backend-api/ 단순 호출 로그
 };
 ```
+
+## 관찰 대상 주요 API
+위 플래그들은 주로 다음 경로를 포함하는 API에 대해 작동합니다:
+- `/sentinel/chat-requirements` (Sentinel 흐름)
+- `/backend-api/f/conversation` (대화 전송/수신)
+- `/backend-api/celsius/ws/user` (WebSocket 연결 정보)
 
 ## 각 Flag 설명
 
 | Flag 이름 | 기본값 | 설명 |
 | :--- | :--- | :--- |
-| `SHOW_BACKUP_REQUESTS` | `false` | Electron 세션 레벨에서 감지되는 모든 URL 요청을 로그합니다. 양이 매우 많을 수 있습니다. |
-| `SHOW_SENTINEL_FLOW` | `true` | 4단계 자동화 흐름(Sentinel) 중 발생하는 중요 API의 로그를 활성화합니다. |
-| `SHOW_CONVERSATION_FLOW` | `true` | 실제 대화 메시지 전송 및 응답 수신 API의 로그를 활성화합니다. |
-| `SHOW_AUTH_CAPTURE` | `true` | ChatGPT 인증 토큰(Authorization)이 갱신되거나 캡처될 때 로그합니다. |
+| `SHOW_REQUEST_HEADERS` | `false` | 대상 API들의 **요청 헤더(Request Headers)**를 출력합니다. |
+| `SHOW_RESPONSE_HEADERS` | `false` | 대상 API들의 **응답 헤더(Response Headers)**를 출력합니다. |
+| `SHOW_REQUEST_BODY` | `false` | 대상 API들의 **요청 바디(Payload)**를 출력합니다. |
+| `SHOW_RESPONSE_BODY` | `false` | 대상 API들의 **응답 바디**를 출력합니다. |
+| `SHOW_STREAM_EVENTS` | `true` | `/conversation/resume` 스트림의 시작, 데이터 수신(바이트), 종료 및 기타 중요 상태를 로그합니다. |
+| `SHOW_BACKUP_REQUESTS` | `false` | Electron 세션 레벨에서 감지되는 모든 URL 요청을 로그합니다. |
 | `SHOW_GENERAL_REQUESTS` | `false` | 모든 `/backend-api/` 요청에 대해 URL만 간단히 로그합니다. |
-| `SHOW_MAPPING` | `true` | 응답 바디에서 Sentinel용 특수 토큰들을 추출하여 매핑할 때 로그합니다. |
-| `SHOW_REQUEST_HEADERS` | `true` | 활성화된 흐름에 대해 **요청 헤더**를 출력합니다. |
-| `SHOW_REQUEST_BODY` | `true` | 활성화된 흐름에 대해 **요청 바디**를 출력합니다. |
-| `SHOW_RESPONSE_HEADERS` | `true` | 활성화된 흐름에 대해 **응답 헤더**를 출력합니다. |
-| `SHOW_RESPONSE_BODY` | `true` | 활성화된 흐름에 대해 **응답 바디**를 출력합니다. |
+
+---
+
+## 스트림 종료 감지 및 자동 새로고침
+`gptviewer`는 `/backend-api/f/conversation/resume` API의 네트워크 스트림 상태를 직접 감시합니다. (`SHOW_STREAM_EVENTS` 활성화 시 관찰 가능)
+1. **시작 감지**: 스트림 응답이 시작되면 `STREAM STARTED` 로그를 남기고 수신 상태로 전환합니다.
+2. **수신 중**: 데이터 조각(chunk)이 들어올 때마다 `RECEIVING DATA` 로그와 함께 바이트 크기를 출력합니다.
+3. **종료 감지**: 네트워크 수준에서 스트림이 닫히면 `STREAM FINISHED` 로그와 함께 즉시 대화 새로고침을 트리거합니다. 이 방식은 DOM 상태 감지보다 훨씬 빠르고 정확합니다.
 
 ---
 
