@@ -131,7 +131,7 @@ function AppContent() {
         onSourcePreviewNeeded={sourceState.loadSourcePreview}
         onToggleSourceDrawer={sourceState.toggleSourceDrawer}
         onSendMessage={workspaceActions.handleSendMessageToActiveConversation}
-        isSendingMessage={workspaceActions.isSendingMessage}
+        sendMessageStatus={workspaceActions.sendMessageStatus}
         refreshError={workspaceActions.refreshError}
         refreshingConversationId={workspaceActions.refreshingConversationId}
         renderNonce={conversationRenderNonce}

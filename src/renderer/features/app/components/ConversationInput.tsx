@@ -3,11 +3,20 @@ import { Button } from '../../../components/ui/Button';
 
 type ConversationInputProps = {
   onSendMessage: (message: string) => void;
+  sendMessageStatus?: 'idle' | 'sending' | 'receiving';
+  isRefreshing?: boolean;
   disabled?: boolean;
 };
 
-export function ConversationInput({ onSendMessage, disabled }: ConversationInputProps) {
+export function ConversationInput({ onSendMessage, sendMessageStatus, isRefreshing, disabled }: ConversationInputProps) {
   const [message, setMessage] = useState('');
+
+  const getButtonText = () => {
+    if (sendMessageStatus === 'sending') return '전송 중...';
+    if (sendMessageStatus === 'receiving') return '응답 수신 중...';
+    if (isRefreshing) return '새로고침 중...';
+    return '전송';
+  };
 
   const handleSend = () => {
     if (message.trim() && !disabled) {
@@ -27,7 +36,7 @@ export function ConversationInput({ onSendMessage, disabled }: ConversationInput
     <div className="conversation-input">
       <textarea
         className="conversation-input__textarea"
-        placeholder={disabled ? '메시지를 전송하는 중입니다...' : '메시지를 입력하세요 (Enter로 전송, Shift+Enter로 줄바꿈)'}
+        placeholder={disabled ? '작업을 처리하는 중입니다...' : '메시지를 입력하세요 (Enter로 전송, Shift+Enter로 줄바꿈)'}
         value={message}
         onChange={(e) => setMessage(e.target.value)}
         onKeyDown={handleKeyDown}
@@ -37,9 +46,9 @@ export function ConversationInput({ onSendMessage, disabled }: ConversationInput
         className="conversation-input__send"
         variant="primary"
         onClick={handleSend}
-        disabled={!message.trim() || disabled}
+        disabled={!message.trim() || disabled || isRefreshing}
       >
-        {disabled ? '전송 중' : '전송'}
+        {getButtonText()}
       </Button>
     </div>
   );

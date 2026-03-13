@@ -74,6 +74,9 @@ const isRelevantContentType = (mimeType?: string): boolean => {
 };
 
 const isRelevantResponse = (responseMeta: PendingResponseMeta): boolean => {
+  if (responseMeta.url.includes('/backend-api/lat/r') || responseMeta.url.includes('/backend-api/sentinel/ping')) {
+    return true;
+  }
   if (!RELEVANT_HOST_PATTERNS.some((pattern) => responseMeta.url.includes(pattern))) {
     return false;
   }
@@ -111,6 +114,10 @@ export class ChatGptConversationNetworkMonitor {
 
   getRecords(): ChatGptConversationNetworkRecord[] {
     return [...this.records];
+  }
+
+  hasCapturedUrl(pattern: string): boolean {
+    return this.records.some((record) => record.url.includes(pattern));
   }
 
   getLatestBackendApiHeaders() {

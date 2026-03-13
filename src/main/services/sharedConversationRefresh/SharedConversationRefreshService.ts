@@ -97,7 +97,7 @@ export class SharedConversationRefreshService {
     console.info(`[gptviewer] sendMessageToConversation initiated for URL: ${request.chatUrl}`);
 
     const result = await runWithLoginResume({
-      initialMode: 'visible', // User explicitly wants a secondary window
+      initialMode: 'background', // Like import, run in background by default
       runAttempt: async (automationView) => {
         console.info('[gptviewer] Enabling network monitoring...');
         // We enable it first so we can observe initial requests and capture auth headers

@@ -63,7 +63,7 @@ export function useSharedConversationActions({
   const [importError, setImportError] = useState('');
   const [refreshError, setRefreshError] = useState('');
   const [refreshingConversationId, setRefreshingConversationId] = useState<string | null>(null);
-  const [isSendingMessage, setIsSendingMessage] = useState(false);
+  const [sendMessageStatus, setSendMessageStatus] = useState<'idle' | 'sending' | 'receiving'>('idle');
   const [refreshConfigState, setRefreshConfigState] =
     useState<SharedConversationRefreshConfigState | null>(null);
 
@@ -134,6 +134,9 @@ export function useSharedConversationActions({
 
   useEffect(() => {
     setRefreshError('');
+    // Clear loading states when switching conversations to prevent UI lock
+    setRefreshingConversationId(null);
+    setSendMessageStatus('idle');
   }, [activeConversation?.id]);
 
   const handleImportSharedConversation = async (event: FormEvent<HTMLFormElement>) => {
@@ -321,9 +324,11 @@ export function useSharedConversationActions({
   };
 
   const handleRefreshActiveConversation = async () => {
-    if (!isRefreshableSharedConversation(activeConversation) || refreshingConversationId === activeConversation.id) return;
+    const targetConversationId = activeConversation?.id;
+    if (!isRefreshableSharedConversation(activeConversation) || !targetConversationId || refreshingConversationId === targetConversationId) return;
+
     setRefreshError('');
-    setRefreshingConversationId(activeConversation.id);
+    setRefreshingConversationId(targetConversationId);
     try {
       const refreshRequest = activeConversation.refreshRequest ?? {
         conversationTitle: activeConversation.title,
@@ -352,10 +357,10 @@ export function useSharedConversationActions({
       if (!importedConversation) throw new Error('대화를 새로고침할 수 없습니다.');
       if (importedConversation.messages.length === 0) throw new Error('공유 페이지에서 최신 대화 내용을 찾지 못했습니다.');
 
-      messageHeightCacheRef.current[activeConversation.id] = {};
+      messageHeightCacheRef.current[targetConversationId] = {};
       setConversations((currentConversations) =>
         currentConversations.map((conversation) =>
-          conversation.id === activeConversation.id
+          conversation.id === targetConversationId
             ? buildConversationFromImport(conversation.id, importedConversation)
             : conversation,
         ),
@@ -369,32 +374,34 @@ export function useSharedConversationActions({
   };
 
   const handleSendMessageToActiveConversation = async (message: string) => {
-    if (!activeConversation || isSendingMessage) return;
-    
-    const chatUrl = activeConversation.refreshRequest?.chatUrl || 
+    if (!activeConversation || sendMessageStatus !== 'idle') return;
+
+    const chatUrl = activeConversation.refreshRequest?.chatUrl ||
                    (isChatUrlImportedConversation(activeConversation) ? activeConversation.sourceUrl : null);
-    
+
     if (!chatUrl) {
       setRefreshError('메시지를 보낼 원본 ChatGPT 링크가 없습니다. 새로고침 설정에서 원본 링크를 연결해 주세요.');
       return;
     }
 
-    setIsSendingMessage(true);
+    setSendMessageStatus('sending');
     setRefreshError('');
-    
+
     try {
       const refreshRequest = activeConversation.refreshRequest ?? {
         chatUrl,
         conversationTitle: activeConversation.title,
-        helperWindowMode: 'visible',
+        helperWindowMode: 'background',
         mode: 'direct-chat-page',
         shareUrl: activeConversation.sourceUrl,
       };
 
+      // API call initiates
       const result = await window.electronAPI?.sendMessageToSharedConversation(
         refreshRequest,
         message
       );
+
       const importedConversation = normalizeImportedConversation(result);
 
       if (!importedConversation) throw new Error('메시지 전송 후 대화를 갱신하지 못했습니다.');
@@ -411,7 +418,7 @@ export function useSharedConversationActions({
     } catch (error) {
       setRefreshError(formatRefreshErrorMessage(error));
     } finally {
-      setIsSendingMessage(false);
+      setSendMessageStatus('idle');
     }
   };
 
@@ -482,7 +489,7 @@ export function useSharedConversationActions({
     importProjectUrl,
     isImportModalOpen,
     isImportingSharedConversation,
-    isSendingMessage,
+    sendMessageStatus,
     openRefreshConfigModal,
     refreshError,
     refreshConfigState,

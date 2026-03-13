@@ -9,7 +9,7 @@ type ConversationViewerProps = {
   activeConversation: Conversation | null;
   initialMessageHeights?: Record<string, number>;
   initialScrollTop?: number;
-  isSendingMessage?: boolean;
+  sendMessageStatus?: 'idle' | 'sending' | 'receiving';
   onClearConversation: (conversationId: string) => void;
   onMessageHeightChange: (conversationId: string, messageId: string, height: number) => void;
   onOpenRefreshSettings: (conversationId: string) => void;
@@ -32,7 +32,7 @@ export function ConversationViewer({
   activeConversation,
   initialMessageHeights,
   initialScrollTop,
-  isSendingMessage,
+  sendMessageStatus,
   onClearConversation,
   onMessageHeightChange,
   onOpenRefreshSettings,
@@ -142,9 +142,11 @@ export function ConversationViewer({
               )}
 
               {(isChatUrlImportedConversation(activeConversation) || activeConversation.refreshRequest?.chatUrl) ? (
-                <ConversationInput 
-                  onSendMessage={onSendMessage} 
-                  disabled={isSendingMessage || refreshingConversationId === activeConversation.id} 
+                <ConversationInput
+                  onSendMessage={onSendMessage}
+                  sendMessageStatus={sendMessageStatus}
+                  isRefreshing={refreshingConversationId === activeConversation.id}
+                  disabled={sendMessageStatus !== 'idle'} 
                 />
               ) : null}
             </>
