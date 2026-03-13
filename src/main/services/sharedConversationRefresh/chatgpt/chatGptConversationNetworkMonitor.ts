@@ -48,12 +48,12 @@ const normalizeHeaders = (headers: Record<string, string | string[]>) => {
 
 const sanitizeHeadersForReplay = (headers: Record<string, string>) => {
   const sanitized: Record<string, string> = {};
-  // Block standard browser-managed headers and HTTP/2 pseudo-headers (starting with :)
   const blockedHeaderPattern =
     /^(host|connection|content-length|origin|referer|accept-encoding|priority|sec-fetch-.*|sec-ch-.*|:.*)$/i;
 
   Object.entries(headers).forEach(([key, value]) => {
-    if (!value || blockedHeaderPattern.test(key) || key.toLowerCase() === 'cookie') {
+    const k = key.toLowerCase();
+    if (!value || blockedHeaderPattern.test(key) || k === 'cookie') {
       return;
     }
     sanitized[key] = value;
@@ -150,17 +150,29 @@ export class ChatGptConversationNetworkMonitor {
       const payload = JSON.parse(payloadStr);
       if (!payload || typeof payload !== 'object') return;
 
+      // 1. requirements-token (from prepare_token or token)
       const reqToken = payload.prepare_token || payload.token;
-      if (reqToken) this.sentinelHeaders['openai-sentinel-chat-requirements-token'] = reqToken;
-      
-      const pToken = payload.proofofwork || payload.p || payload.proof;
-      if (pToken) this.sentinelHeaders['openai-sentinel-proof-token'] = pToken;
-      
-      if (payload.turnstile?.token) {
-        this.sentinelHeaders['openai-sentinel-turnstile-token'] = payload.turnstile.token;
+      if (reqToken) {
+          this.sentinelHeaders['openai-sentinel-chat-requirements-token'] = reqToken;
+          console.info(`[MAPPING] requirements-token captured from ${url}`);
       }
       
-      console.info(`[MAPPING] Sentinel tokens mapped from ${url}`);
+      // 2. proof-token (from proofofwork or p or proof)
+      const pToken = payload.proofofwork || payload.p || payload.proof;
+      if (pToken) {
+          this.sentinelHeaders['openai-sentinel-proof-token'] = pToken;
+          console.info(`[MAPPING] proof-token captured from ${url}`);
+      }
+      
+      // 3. turnstile-token (from turnstile.token)
+      if (payload.turnstile && typeof payload.turnstile === 'object' && payload.turnstile.token) {
+          this.sentinelHeaders['openai-sentinel-turnstile-token'] = payload.turnstile.token;
+          console.info(`[MAPPING] turnstile-token captured from ${url}`);
+      } else if (payload.turnstile && typeof payload.turnstile === 'string') {
+          // fallback if it's direct string
+          this.sentinelHeaders['openai-sentinel-turnstile-token'] = payload.turnstile;
+          console.info(`[MAPPING] turnstile-token (string) captured from ${url}`);
+      }
     } catch (e) {}
   }
 
@@ -247,7 +259,6 @@ export class ChatGptConversationNetworkMonitor {
         }
       }
 
-      // Authorization header capture reinforcement
       if (url.startsWith(BACKEND_API_PREFIX)) {
         if (normalized['authorization']) {
           console.info(`[gptviewer][monitor] Authorization CAPTURED from ${url}`);
@@ -298,16 +309,18 @@ export class ChatGptConversationNetworkMonitor {
           if (isSentinel || isConversation) {
             console.info(`Response Body (${url}):`, bodyText);
             
-            // Extract tokens from Step 2 Response Body as a fallback/reinforcement
-            if (url.includes('/sentinel/chat-requirements/prepare')) {
-                try {
-                    const payload = JSON.parse(bodyText);
-                    if (payload.prepare_token) {
-                        this.sentinelHeaders['openai-sentinel-chat-requirements-token'] = payload.prepare_token;
-                        console.info(`[MAPPING] prepare_token captured from Step 2 Response`);
-                    }
-                } catch(e) {}
-            }
+            // Extract tokens from Responses as reinforcement
+            try {
+                const payload = JSON.parse(bodyText);
+                if (url.includes('/sentinel/chat-requirements/prepare') && payload.prepare_token) {
+                    this.sentinelHeaders['openai-sentinel-chat-requirements-token'] = payload.prepare_token;
+                    console.info(`[MAPPING] requirements-token captured from Step 2 Response`);
+                }
+                if (url.includes('/sentinel/chat-requirements/finalize') && payload.token) {
+                    this.sentinelHeaders['openai-sentinel-chat-requirements-token'] = payload.token;
+                    console.info(`[MAPPING] requirements-token captured from Step 3 Response`);
+                }
+            } catch(e) {}
           }
         }
 
