@@ -64,9 +64,11 @@ export class SharedConversationRefreshService {
           )
         : await this.directChatConversationImportStrategy.importFromChatUrl(request);
       const resolvedShareUrl = conversation.sourceUrl || request.chatUrl || request.shareUrl;
+      const availableModels = existingView?.getConversationNetworkMonitor()?.getAvailableModels();
 
       return {
         ...conversation,
+        availableModels,
         refreshedAt: new Date().toISOString(),
         refreshRequest: {
           chatUrl: request.chatUrl,

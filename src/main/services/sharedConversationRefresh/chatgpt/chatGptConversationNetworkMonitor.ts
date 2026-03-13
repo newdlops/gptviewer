@@ -92,6 +92,7 @@ const isRelevantResponse = (responseMeta: PendingResponseMeta): boolean => {
 export class ChatGptConversationNetworkMonitor {
   private lastSuccessfulBackendApiHeaders: CapturedBackendApiRequestHeaders | null = null;
   private sentinelHeaders: Record<string, string> = {};
+  private availableModels: string[] = [];
   private readonly capturedUrls = new Set<string>();
   private readonly pendingRequests = new Map<string, PendingRequestMeta>();
   private readonly pendingResponses = new Map<string, PendingResponseMeta>();
@@ -100,10 +101,87 @@ export class ChatGptConversationNetworkMonitor {
 
   constructor(private readonly webContents: WebContents) {
     this.readyPromise = this.attach();
+    this.setupBackupMonitor();
   }
 
   async ready() {
     await this.readyPromise;
+  }
+
+  private setupBackupMonitor() {
+    if (this.webContents.isDestroyed()) return;
+    
+    const session = this.webContents.session;
+    const webContentsId = this.webContents.id;
+
+    // Use an even broader filter to capture potentially missed domains
+    const filter = { urls: ['<all_urls>'] };
+
+    const recordUrl = (url: string, source: string) => {
+        if (!url) return;
+        const lowerUrl = url.toLowerCase();
+        
+        // Log all backend-api or specific patterns we are looking for
+        if (lowerUrl.includes('/backend-api/') || lowerUrl.includes('lat/') || lowerUrl.includes('ping')) {
+            if (!this.capturedUrls.has(url)) {
+                this.capturedUrls.add(url);
+                console.info(`[gptviewer][monitor:${source}] ${url}`);
+            }
+        }
+    };
+
+    session.webRequest.onBeforeRequest(filter, (details, callback) => {
+        if (details.webContentsId === webContentsId || details.url.includes('chatgpt.com')) {
+            recordUrl(details.url, 'backup-request');
+        }
+        callback({});
+    });
+
+    session.webRequest.onHeadersReceived(filter, (details, callback) => {
+        if (details.webContentsId === webContentsId || details.url.includes('chatgpt.com')) {
+            recordUrl(details.url, 'backup-headers');
+        }
+        callback({ responseHeaders: details.responseHeaders });
+    });
+
+    session.webRequest.onResponseStarted(filter, (details) => {
+        if (details.webContentsId === webContentsId || details.url.includes('chatgpt.com')) {
+            recordUrl(details.url, 'backup-response');
+        }
+    });
+
+    session.webRequest.onCompleted(filter, (details) => {
+        if (details.webContentsId === webContentsId || details.url.includes('chatgpt.com')) {
+            recordUrl(details.url, 'backup-completed');
+        }
+    });
+
+    session.webRequest.onErrorOccurred(filter, (details) => {
+        if (details.webContentsId === webContentsId || details.url.includes('chatgpt.com')) {
+            recordUrl(details.url, 'backup-error');
+        }
+    });
+
+    // Reliable Authorization header capture via session events
+    session.webRequest.onBeforeSendHeaders(filter, (details, callback) => {
+        const url = details.url;
+        if (details.webContentsId === webContentsId || url.includes('chatgpt.com')) {
+            recordUrl(url, 'backup-send-headers');
+            const normalized = normalizeHeaders(details.requestHeaders);
+            if (normalized['authorization']) {
+                if (!this.lastSuccessfulBackendApiHeaders || url.includes('/me') || url.includes('/models')) {
+                    console.info(`[gptviewer][monitor:backup-auth-captured] Authorization CAPTURED from ${url}`);
+                    this.lastSuccessfulBackendApiHeaders = {
+                        headers: sanitizeHeadersForReplay(normalized),
+                        method: details.method.toUpperCase(),
+                        statusCode: 0,
+                        url: url,
+                    };
+                }
+            }
+        }
+        callback({ requestHeaders: details.requestHeaders });
+    });
   }
 
   clear() {
@@ -117,6 +195,10 @@ export class ChatGptConversationNetworkMonitor {
 
   getRecords(): ChatGptConversationNetworkRecord[] {
     return [...this.records];
+  }
+
+  getAvailableModels(): string[] {
+    return [...this.availableModels];
   }
 
   hasCapturedUrl(pattern: string): boolean {
@@ -329,6 +411,17 @@ export class ChatGptConversationNetworkMonitor {
         const bodyText = resBody.base64Encoded ? Buffer.from(resBody.body, 'base64').toString('utf8') : resBody.body;
 
         const url = responseMeta.url;
+        if (url.includes('/backend-api/settings/user')) {
+            try {
+                const payload = JSON.parse(bodyText);
+                const juices = payload?.last_used_model_config?.juices?.web || payload?.last_used_model_config?.juices?.default;
+                if (juices && typeof juices === 'object') {
+                    this.availableModels = Object.keys(juices);
+                    console.info(`[gptviewer][monitor] Captured available models: ${this.availableModels.join(', ')}`);
+                }
+            } catch (e) {}
+        }
+
         if (!url.includes('/conversation/init')) {
           const isSentinel = url.includes('/sentinel/chat-requirements');
           const isConversation = url.includes('/backend-api/f/conversation');

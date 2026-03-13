@@ -98,7 +98,7 @@ export const normalizeImportedConversation = (
           const authorName =
             typeof messageRecord.authorName === 'string'
               ? messageRecord.authorName.trim()
-              : undefined;
+              : role === 'assistant' ? 'ChatGPT' : 'User';
           const text =
             typeof messageRecord.text === 'string' ? messageRecord.text.trim() : '';
 
@@ -111,7 +111,7 @@ export const normalizeImportedConversation = (
             role: role as ChatRole,
             sources: normalizeMessageSources(messageRecord.sources),
             text,
-          };
+          } as ImportedConversation['messages'][number];
         })
         .filter(
           (message): message is ImportedConversation['messages'][number] =>

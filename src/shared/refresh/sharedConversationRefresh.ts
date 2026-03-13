@@ -39,6 +39,7 @@ export type SharedConversationRefreshRequest = {
   helperWindowMode?: 'background' | 'visible';
   mode?: SharedConversationRefreshMode;
   projectUrl?: string;
+  selectedModel?: string;
   shareUrl: string;
 };
 
@@ -54,6 +55,7 @@ export type SharedConversationImport = {
 };
 
 export type SharedConversationRefreshResult = SharedConversationImport & {
+  availableModels?: string[];
   refreshedAt: string;
   resolvedShareUrl: string;
   strategy: SharedConversationRefreshMode;

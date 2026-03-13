@@ -13,3 +13,7 @@
   - **절대 금지:** MCP 서버 오류(타임아웃, 응답 없음 등)가 발생했다고 해서 **일반 Shell 명령어(`grep`, `sed`, `find` 등)나 다른 파일 읽기/쓰기 도구로 우회(Fallback)하지 마십시오.** 항상 연결을 복구한 뒤 **반드시 다시 MCP 도구(`mcp_intellij-server_*`)를 사용하여 작업을 완수**해야 합니다.
   - 도구 호출 시 항상 `projectPath`를 명시함으로써, IDE가 어떤 프로젝트 컨텍스트인지 즉각 인식하도록 강제합니다.
 
+## CLI Model Selection
+
+- **auto** 모델 옵션 사용 시, 절대 `gemini-2.5-flash` 모델을 선택하지 말고, 반드시 3버전 이상의 pro와 flash 모델(예: `3.1-pro-preview`, `3-flash-preview`)을 사용해야 합니다.
+

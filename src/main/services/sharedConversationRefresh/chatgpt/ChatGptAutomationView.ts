@@ -287,6 +287,10 @@ export class ChatGptAutomationView {
 
   isClosed() { return this.closed || this.window.isDestroyed() || this.view.webContents.isDestroyed(); }
 
+  getConversationNetworkMonitor() {
+    return this.conversationNetworkMonitor;
+  }
+
   async close() {
     await this.persistSession();
     if (this.visibilityMode === 'background' && !this.isClosed()) {

@@ -1,83 +1,39 @@
-# GPTViewer 이미지/원본 가져오기 핸드오프 (최신 압축)
+# GPTViewer Context Handoff (2026-03-13)
 
-## TL;DR
-- import 단계에서 이미지 eager 해석을 사실상 제거하고, 렌더러 lazy + 백그라운드 워커 큐 기반으로 전환함.
-- 메모리 캐시만 있던 구조를 디스크 캐시까지 확장해서 앱 재실행 후에도 재사용 가능하게 함.
-- 일부 이미지(fileId)에 대해 여전히 워커 timeout(40s) 케이스가 있어 referrer/부트스트랩 폴백을 추가했고 재검증 필요.
+## 1. 프로젝트 목적
+ChatGPT 대화 데이터를 효율적으로 파싱하고, 자동화된 메시지 전송 및 실시간 새로고침 기능을 제공하는 데스크톱 어플리케이션(Electron 기반) 고도화.
 
-## 현재 핵심 동작
+## 2. 주요 구현 및 수정 사항
 
-### 1) 이미지는 무조건 lazy 경로로 처리
-파일: `src/main/services/sharedConversationRefresh/strategies/DirectChatConversationImportStrategy.ts`
-- `EAGER_IMAGE_ASSET_RESOLVE_LIMIT = 0`으로 설정.
-- import 단계에서 대량 이미지 fetch로 막히지 않고 메시지 파싱만 우선 완료.
-- 느림 경고(`chat-import-may-be-slow`)는 유지.
+### A. 대화 자동화 (Sentinel Flow)
+- **4단계 인증 흐름**: ChatGPT의 보안 강화에 대응하여 `prepare` -> `sentinel wakeup` -> `finalize` -> `actual conversation`의 4단계 API 호출 흐름을 `ChatGptAutomationView.ts`에 구현함.
+- **모델 강제**: 모든 자동화 단계에서 `gpt-5-3` 또는 사용자가 선택한 최신 모델을 사용하도록 강제하여 하위 모델(2.5 등)로의 폴백 방지.
+- **모델 선택 UI**: `ConversationInput.tsx`에 `/backend-api/settings/user`에서 파싱한 가용 모델 목록을 드롭다운으로 표시하고, 전송 시 해당 모델을 페이로드에 포함함.
 
-### 2) 렌더러 이미지 뷰포트 lazy + ChatGPT 자산 resolve
-파일: `src/renderer/features/messages/components/MarkdownImageViewport.tsx`
-- `IntersectionObserver` 진입 전까지 실제 이미지 resolve/fetch 안 함.
-- `sediment://file_*`뿐 아니라 `chatgpt.com/backend-api/estuary/content`, `.../files/...`, `?id=file_*` 패턴도 워커 resolve 경로 사용.
-- 로딩 경고 문구 추가(큰 대화/이미지 다수 시 지연 가능).
+### B. 데이터 파싱 및 정규화
+- **SSE 스트림 파싱**: `/backend-api/f/conversation`의 SSE 스트림(delta, patch, add 형식)을 실시간으로 파싱하여 대화 내용을 복원하는 로직을 `chatGptConversationNetworkParser.ts`에 추가함.
+- **작성자 정보 유지**: `SharedConversationMessage`와 `Message` 타입에 `authorName`/`name` 필드를 추가하여, `name: null`인 경우에도 "ChatGPT" 등으로 기본값을 할당해 렌더링 누락 방지.
+- **타입 안정성**: `normalizers.ts`에서 메시지 변환 시 발생하던 타입 불일치(TS2677)를 명시적 타입 단언 및 인터페이스 갱신으로 해결.
 
-### 3) 메인 이미지 워커 큐/중복제거/타임아웃
-파일: `src/main/index.ts`
-- IPC `chatgpt-image:resolve`:
-  - 메모리 캐시 hit 우선
-  - in-flight dedupe
-  - 큐 enqueue 후 단일 워커 처리
-- 로그:
-  - `queue`, `worker-start`, `worker-dequeue`, `resolve-start`, `resolve-success|resolve-miss`, `worker-task-done`
-- timeout:
-  - `CHATGPT_IMAGE_RESOLVE_TASK_TIMEOUT_MS = 40_000`
-  - timeout/error 시 워커 view 닫고 다음 작업 진행.
+### C. 네트워크 모니터링 및 종료 감지
+- **초광대역 캡처**: Electron `session.webRequest`의 모든 단계에서 URL을 캡처하도록 `ChatGptConversationNetworkMonitor.ts`를 강화하여 `/lat/r` (종료 신호) 감지 신뢰도를 높임.
+- **하이브리드 종료 감지**: 네트워크 신호(`/lat/`)와 DOM 상태(응답 중 아님 + 입력창 활성화)를 병행 체크하여 대화 완료 후 즉시 새로고침 트리거.
+- **타임아웃 최적화**: 대기 시간을 30초로 단축하여 사용자 경험 개선.
 
-### 4) 재실행 유지 디스크 캐시 추가
-파일:
-- `src/main/services/sharedConversationRefresh/chatgpt/chatGptImageAssetCache.ts` (신규)
-- `src/main/index.ts`
-- 저장 위치: `app.getPath('userData')/chatgpt-image-cache`
-- 키: `conversationUrl::(fileId or normalizedAssetUrl)`
-- resolve 성공 시 메모리 + 디스크 저장.
-- 앱 재실행 후 디스크 hit 시 `chatgpt-image:cache-hit-disk` 로그.
+### D. UI/UX 개선
+- **스크롤 하단 고정**: `MessageList.tsx`에서 대화 데이터 갱신 시 자동으로 최하단으로 스크롤되도록 `useEffect` 로직 보강.
+- **전송 버튼 상태 세분화**: `전송` -> `전송 중...` -> `응답 수신 중...` -> `전송` 순으로 상태를 UI에 표시하여 실시간 진행 상황 인지 가능하게 함.
+- **비침습적 자동화**: 보조 창이 포커스를 탈취하지 않도록 `showInactive()`를 사용하고, 대부분의 작업을 백그라운드 모드에서 수행하도록 설정.
 
-### 5) fetch 경로 최적화 + referrer 강화
-파일:
-- `src/main/services/sharedConversationRefresh/chatgpt/chatGptConversationImportScripts.ts`
-- `src/main/index.ts`
-- endpoint 후보를 축소/우선순위화(`download` 계열 우선).
-- JSON 응답에서 `download_url/signed_url/url` 즉시 우선 사용.
-- fetch 스크립트에 `referrerUrl` 파라미터 추가 후, 메인에서 `normalizedChatUrl` 전달.
-- 루트 부트스트랩에서 헤더 미확보 시 대화 URL로 2차 부트스트랩(`worker-bootstrap-chat`) 수행.
+## 3. 현재 상태 및 남은 과제
+- [x] 메시지 전송 및 응답 수신 로직 완성
+- [x] SSE 델타 파싱 및 작성자 이름 처리
+- [x] 모델 선택 드롭다운 UI 적용
+- [x] 자동 스크롤 하단 고정
+- [ ] `/lat/r` 감지 신뢰도 최종 검증 (로그 모니터링 필요)
+- [ ] 모델 선택 드롭다운의 디자인 미세 조정 (CSS)
 
-### 6) 뷰포트(줌/맞춤/자동조절) 방어 로직 보강
-파일: `src/renderer/features/messages/lib/useZoomableDiagramViewport.ts`
-- 이미지 `naturalWidth/Height` 기반 메트릭 측정 추가.
-- transform/scale sanitize(`NaN`, 0, 비정상 값 클램프) 추가.
-- zoom 시 최신 메트릭 강제 갱신 경로 추가.
-
-### 7) EIO 로그 크래시 방지
-파일: `src/main/index.ts`
-- `console.info/warn`가 `write EIO`를 던질 때 메인 프로세스가 죽지 않도록 safe logger 래퍼 적용.
-
-## 최근 관찰 로그 / 상태
-- 재현 로그:
-  - `chatgpt-image:worker-timeout ... timeoutMs=40000`
-  - 특정 fileId가 간헐적으로 timeout.
-- 바로 전 조치:
-  - referrer를 대화 URL로 고정,
-  - 헤더 미확보 시 대화 URL 2차 부트스트랩.
-- 다음 검증에서 확인할 로그:
-  - `chatgpt-image:worker-bootstrap`
-  - `chatgpt-image:worker-bootstrap-chat` (필요 시)
-  - `chatgpt-image:resolve-success` 또는 `resolve-miss`
-  - `chatgpt-image:cache-hit-disk` (앱 재시작 후)
-
-## 비고
-- `service_worker_storage.cc Failed to delete the database`는 세션 초기화(clearStorageData) 시 Chromium 내부 IO 로그로 보이며, 현재는 기능 저하 없이 지나가는 케이스가 있었음.
-- main 워크트리는 변경 파일이 많은 상태(.idea/workspace.xml 포함)라 커밋 전 범위 확인 필요.
-
-## 검증
-- 최근 변경 이후 반복적으로 통과:
-  - `npx tsc --noEmit`
-  - `npm run -s lint`
-  - IntelliJ build(project) success
+## 4. 기술적 참고 사항
+- **네트워크 모니터**: `Debugger` 이벤트 유실에 대비해 `session.webRequest`를 백업으로 사용 중.
+- **SSE 파서**: `patch` 이벤트의 `append`, `replace` 연산을 직접 구현하여 텍스트를 조립함.
+- **백그라운드 뷰**: `BACKGROUND_WINDOW_OPACITY` (0.01)를 사용하여 화면에는 거의 보이지 않으면서도 동작을 유지함.
