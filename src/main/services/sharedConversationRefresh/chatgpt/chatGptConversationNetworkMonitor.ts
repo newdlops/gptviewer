@@ -74,10 +74,11 @@ const isRelevantContentType = (mimeType?: string): boolean => {
 };
 
 const isRelevantResponse = (responseMeta: PendingResponseMeta): boolean => {
-  if (responseMeta.url.includes('/backend-api/lat/r') || responseMeta.url.includes('/backend-api/sentinel/ping')) {
+  const url = responseMeta.url;
+  if (url.includes('/backend-api/lat/') || url.includes('/backend-api/sentinel/ping')) {
     return true;
   }
-  if (!RELEVANT_HOST_PATTERNS.some((pattern) => responseMeta.url.includes(pattern))) {
+  if (!RELEVANT_HOST_PATTERNS.some((pattern) => url.includes(pattern))) {
     return false;
   }
   if (!isRelevantContentType(responseMeta.mimeType)) {
@@ -91,6 +92,7 @@ const isRelevantResponse = (responseMeta: PendingResponseMeta): boolean => {
 export class ChatGptConversationNetworkMonitor {
   private lastSuccessfulBackendApiHeaders: CapturedBackendApiRequestHeaders | null = null;
   private sentinelHeaders: Record<string, string> = {};
+  private readonly capturedUrls = new Set<string>();
   private readonly pendingRequests = new Map<string, PendingRequestMeta>();
   private readonly pendingResponses = new Map<string, PendingResponseMeta>();
   private readonly records: ChatGptConversationNetworkRecord[] = [];
@@ -107,6 +109,7 @@ export class ChatGptConversationNetworkMonitor {
   clear() {
     this.lastSuccessfulBackendApiHeaders = null;
     this.sentinelHeaders = {};
+    this.capturedUrls.clear();
     this.pendingRequests.clear();
     this.pendingResponses.clear();
     this.records.length = 0;
@@ -117,7 +120,13 @@ export class ChatGptConversationNetworkMonitor {
   }
 
   hasCapturedUrl(pattern: string): boolean {
-    return this.records.some((record) => record.url.includes(pattern));
+    const lowerPattern = pattern.toLowerCase();
+    for (const url of this.capturedUrls) {
+      if (url.toLowerCase().includes(lowerPattern)) {
+        return true;
+      }
+    }
+    return this.records.some((record) => record.url.toLowerCase().includes(lowerPattern));
   }
 
   getLatestBackendApiHeaders() {
@@ -190,6 +199,7 @@ export class ChatGptConversationNetworkMonitor {
       if (!requestId || !response?.url) return;
 
       const url = response.url;
+      this.capturedUrls.add(url);
       if (!url.includes('/conversation/init')) {
         const isSentinel = url.includes('/sentinel/chat-requirements');
         const isConversation = url.includes('/backend-api/f/conversation');
@@ -212,6 +222,13 @@ export class ChatGptConversationNetworkMonitor {
       if (!requestId || !request?.url) return;
 
       const url = request.url;
+      this.capturedUrls.add(url);
+      
+      // Log all backend-api requests for debugging lat/r detection
+      if (url.includes('/backend-api/')) {
+          console.info(`[gptviewer][monitor:request] ${url}`);
+      }
+
       const existingRequestMeta = this.pendingRequests.get(requestId);
       this.pendingRequests.set(requestId, {
         headers: existingRequestMeta?.headers ?? {},
@@ -247,6 +264,7 @@ export class ChatGptConversationNetworkMonitor {
       const headers = params.headers as Record<string, string | string[]>;
       const existingRequestMeta = this.pendingRequests.get(requestId);
       const url = existingRequestMeta?.url || '';
+      if (url) this.capturedUrls.add(url);
       const methodName = String(existingRequestMeta?.method || 'GET').toUpperCase();
 
       if (!requestId || !url) return;
@@ -289,6 +307,7 @@ export class ChatGptConversationNetworkMonitor {
     if (method === 'Network.loadingFinished') {
       const requestId = String(params.requestId || '');
       const responseMeta = this.pendingResponses.get(requestId);
+      if (responseMeta?.url) this.capturedUrls.add(responseMeta.url);
       const requestMeta = this.pendingRequests.get(requestId);
       this.pendingRequests.delete(requestId);
       this.pendingResponses.delete(requestId);
@@ -338,8 +357,11 @@ export class ChatGptConversationNetworkMonitor {
     }
 
     if (method === 'Network.loadingFailed') {
-      this.pendingRequests.delete(String(params.requestId || ''));
-      this.pendingResponses.delete(String(params.requestId || ''));
+      const requestId = String(params.requestId || '');
+      const responseMeta = this.pendingResponses.get(requestId);
+      if (responseMeta?.url) this.capturedUrls.add(responseMeta.url);
+      this.pendingRequests.delete(requestId);
+      this.pendingResponses.delete(requestId);
     }
   };
 }

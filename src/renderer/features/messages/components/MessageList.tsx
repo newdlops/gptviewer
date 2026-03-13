@@ -642,6 +642,19 @@ export function MessageList({
       visibleLayouts: layouts.slice(startIndex, endIndex + 1),
     };
   }, [activeConversation.messages, measuredHeights, scrollTop, viewportHeight]);
+
+  useEffect(() => {
+    // Auto-scroll to bottom on fresh data or new messages
+    if (activeConversation.messages.length > 0) {
+        window.requestAnimationFrame(() => {
+            const messageListElement = messageListRef.current;
+            if (messageListElement) {
+                const maxScroll = Math.max(totalHeight - messageListElement.clientHeight, 0);
+                commitScrollPosition(maxScroll);
+            }
+        });
+    }
+  }, [activeConversation.id, activeConversation.messages.length, totalHeight]);
   const renderedLayouts = useMemo(() => {
     if (allLayouts.length === 0) {
       return visibleLayouts;

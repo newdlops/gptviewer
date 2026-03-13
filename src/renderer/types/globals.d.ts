@@ -50,6 +50,9 @@ interface ElectronAPI {
   onProjectConversationImportProgress(
     listener: (progress: ProjectConversationImportProgress) => void,
   ): () => void;
+  onSharedConversationStatusUpdate(
+    listener: (status: 'sending' | 'receiving' | 'idle') => void,
+  ): () => void;
   refreshSharedConversation(
     request: SharedConversationRefreshRequest,
   ): Promise<SharedConversationRefreshResult>;

@@ -108,13 +108,14 @@ export const normalizeImportedConversation = (
 
           return {
             authorName,
-            role,
+            role: role as ChatRole,
             sources: normalizeMessageSources(messageRecord.sources),
             text,
           };
         })
         .filter(
-          (message): message is ImportedConversation['messages'][number] => !!message,
+          (message): message is ImportedConversation['messages'][number] =>
+            message !== null,
         )
     : [];
 

@@ -8,6 +8,7 @@ import { ChatGptShareFlowRefreshStrategy } from './strategies/ChatGptShareFlowRe
 import { DirectSharedConversationRefreshStrategy } from './strategies/DirectSharedConversationRefreshStrategy';
 import { runWithLoginResume } from './chatgpt/chatGptLoginState';
 import { SharedConversationRefreshError } from './SharedConversationRefreshError';
+import { ChatGptAutomationView } from './chatgpt/ChatGptAutomationView';
 
 const hasUsableSharedConversationUrl = (value: string): boolean => {
   const trimmedValue = value.trim();
@@ -42,6 +43,7 @@ export class SharedConversationRefreshService {
 
   async refreshConversation(
     request: SharedConversationRefreshRequest,
+    existingView?: ChatGptAutomationView,
   ): Promise<SharedConversationRefreshResult> {
     if (!request.shareUrl.trim()) {
       throw new Error('새로고침할 공유 링크가 없습니다.');
@@ -55,8 +57,12 @@ export class SharedConversationRefreshService {
       request.mode === 'direct-chat-page' ||
       (!!request.chatUrl && !hasUsableSharedConversationUrl(request.shareUrl))
     ) {
-      const conversation =
-        await this.directChatConversationImportStrategy.importFromChatUrl(request);
+      const conversation = existingView
+        ? await this.directChatConversationImportStrategy.importFromChatUrlWithView(
+            request,
+            existingView,
+          )
+        : await this.directChatConversationImportStrategy.importFromChatUrl(request);
       const resolvedShareUrl = conversation.sourceUrl || request.chatUrl || request.shareUrl;
 
       return {
@@ -89,6 +95,7 @@ export class SharedConversationRefreshService {
   async sendMessageToConversation(
     request: SharedConversationRefreshRequest,
     message: string,
+    onStatusChange?: (status: 'sending' | 'receiving' | 'idle') => void,
   ): Promise<SharedConversationRefreshResult> {
     if (!request.chatUrl) {
       throw new SharedConversationRefreshError('chat_url_missing', '대화를 보낼 원본 링크가 없습니다.');
@@ -99,6 +106,7 @@ export class SharedConversationRefreshService {
     const result = await runWithLoginResume({
       initialMode: 'background', // Like import, run in background by default
       runAttempt: async (automationView) => {
+        onStatusChange?.('sending');
         console.info('[gptviewer] Enabling network monitoring...');
         // We enable it first so we can observe initial requests and capture auth headers
         await automationView.enableConversationNetworkMonitoring().catch(() => {});
@@ -118,19 +126,26 @@ export class SharedConversationRefreshService {
           throw new SharedConversationRefreshError('unknown', `메시지 전송 실패: ${sendResult.error || '알 수 없는 오류'}`);
         }
 
+        // --- NEW: f/conversation response received, now receiving ---
+        onStatusChange?.('receiving');
+
         // Wait for completion (our improved logic that checks network and visibility)
         console.info('[gptviewer] Waiting for ChatGPT response to complete...');
         const completionResult = await automationView.waitForResponseCompletion();
         console.info(`[gptviewer] Wait for response completion finished. Result: ${completionResult}`);
 
         console.info('[gptviewer] Proceeding to refresh conversation data after sending message...');
-        return this.refreshConversation({
-          ...request,
-          mode: 'direct-chat-page',
-        });
+        return this.refreshConversation(
+          {
+            ...request,
+            mode: 'direct-chat-page',
+          },
+          automationView,
+        );
       },
     });
 
+    onStatusChange?.('idle');
     console.info('[gptviewer] sendMessageToConversation fully completed.');
     return result as SharedConversationRefreshResult;
   }

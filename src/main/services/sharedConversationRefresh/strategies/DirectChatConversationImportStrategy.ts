@@ -689,7 +689,7 @@ export class DirectChatConversationImportStrategy {
     });
   }
 
-  private async importFromChatUrlWithView(
+  async importFromChatUrlWithView(
     request: SharedConversationRefreshRequest,
     automationView: ChatGptAutomationView,
   ): Promise<SharedConversationImport> {
@@ -962,6 +962,11 @@ export class DirectChatConversationImportStrategy {
 
       let isReady = await waitForDirectConversationReady(automationView, 12_000, 200);
       let networkRecords = automationView.getConversationNetworkRecords();
+      
+      // DEBUG: Check for termination signals in captured records
+      const hasLatR = networkRecords.some(r => r.url.includes('/backend-api/lat/'));
+      console.info(`[gptviewer][direct-chat-import:network-check] records=${networkRecords.length} hasLatR=${hasLatR}`);
+
       let networkDiagnostics = buildChatGptConversationNetworkDiagnostics(
         networkRecords,
         request.chatUrl,

@@ -254,14 +254,17 @@ export class ChatGptAutomationView {
 
   private showBackgroundWindow() {
     if (this.window.isDestroyed()) return;
+    
+    // If it's already visible in background, don't keep calling showInactive
+    // which might cause flashes or pop-ups on some OSs.
+    if (this.window.isVisible() && this.window.getOpacity() === BACKGROUND_WINDOW_OPACITY) {
+        return;
+    }
+
     this.window.setOpacity(BACKGROUND_WINDOW_OPACITY);
     this.window.setSkipTaskbar(true);
     this.window.setBounds(getBackgroundWindowBounds(this.anchorWindow), false);
     if (this.window.isMinimized()) this.window.restore();
-    if (!this.window.isVisible()) {
-      this.window.showInactive();
-      return;
-    }
     this.window.showInactive();
   }
 
@@ -761,7 +764,7 @@ export class ChatGptAutomationView {
     return this.execute<boolean>(buildIsRespondingScript());
   }
 
-  async waitForResponseCompletion(timeoutMs = 120_000, intervalMs = 1_000) {
+  async waitForResponseCompletion(timeoutMs = 30_000, intervalMs = 1_000) {
     console.info('[gptviewer] waitForResponseCompletion started');
     const deadline = Date.now() + timeoutMs;
     
@@ -795,14 +798,14 @@ export class ChatGptAutomationView {
       finishCheckCount++;
       const responding = await this.isResponding();
       const hasPing = this.conversationNetworkMonitor?.hasCapturedUrl('/backend-api/sentinel/ping') ?? false;
-      const hasLatR = this.conversationNetworkMonitor?.hasCapturedUrl('/backend-api/lat/r') ?? false;
+      const hasLatR = this.conversationNetworkMonitor?.hasCapturedUrl('/backend-api/lat/') ?? false;
       
       if (finishCheckCount % 2 === 0) {
           console.info(`[gptviewer] Finish check ${finishCheckCount}: isResponding=${responding} hasPing=${hasPing} hasLatR=${hasLatR}`);
       }
 
       if (hasLatR) {
-          console.info('[gptviewer] /backend-api/lat/r captured. Response completion confirmed via network.');
+          console.info('[gptviewer] /backend-api/lat/ captured. Response completion confirmed via network.');
           await sleep(1000); 
           return true;
       }
@@ -811,7 +814,7 @@ export class ChatGptAutomationView {
         console.info('[gptviewer] No longer responding (DOM), double checking in 2s...');
         await sleep(2000);
         const stillResponding = await this.isResponding();
-        const hasLatRNow = this.conversationNetworkMonitor?.hasCapturedUrl('/backend-api/lat/r') ?? false;
+        const hasLatRNow = this.conversationNetworkMonitor?.hasCapturedUrl('/backend-api/lat/') ?? false;
         console.info(`[gptviewer] Double check: isResponding=${stillResponding} hasLatR=${hasLatRNow}`);
         
         if (hasLatRNow || !stillResponding) {

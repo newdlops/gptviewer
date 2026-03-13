@@ -139,6 +139,15 @@ export function useSharedConversationActions({
     setSendMessageStatus('idle');
   }, [activeConversation?.id]);
 
+  useEffect(() => {
+    const removeListener = window.electronAPI?.onSharedConversationStatusUpdate((status) => {
+      setSendMessageStatus(status);
+    });
+    return () => {
+      removeListener?.();
+    };
+  }, []);
+
   const handleImportSharedConversation = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const normalizedUrl = shareUrl.trim();

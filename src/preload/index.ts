@@ -39,6 +39,23 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   refreshSharedConversation: (request: SharedConversationRefreshRequest) =>
     ipcRenderer.invoke('shared-conversation:refresh', request),
+  onSharedConversationStatusUpdate: (
+    listener: (status: 'sending' | 'receiving' | 'idle') => void,
+  ) => {
+    const wrappedListener = (
+      _event: Electron.IpcRendererEvent,
+      status: 'sending' | 'receiving' | 'idle',
+    ) => {
+      listener(status);
+    };
+    ipcRenderer.on('shared-conversation:status-update', wrappedListener);
+    return () => {
+      ipcRenderer.removeListener(
+        'shared-conversation:status-update',
+        wrappedListener,
+      );
+    };
+  },
   sendMessageToSharedConversation: (request: SharedConversationRefreshRequest, message: string) =>
     ipcRenderer.invoke('shared-conversation:send-message', request, message),
   importChatGptConversation: (request: SharedConversationRefreshRequest) =>

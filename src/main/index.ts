@@ -627,17 +627,17 @@ const resolveChatGptImageAssetWithWorker = async (
   if (!hasHeaders() || chatGptImageResolveWorkerChatUrl !== normalizedChatUrl) {
     const bootstrapStartedAt = Date.now();
     await automationView.enableConversationNetworkMonitoring().catch((): void => undefined);
-    
+
     // 이미 헤더가 넉넉히(5개 이상) 있고, 현재 페이지가 대화 페이지라면 굳이 다시 로드하지 않음
     const needFullLoad = !hasHeaders() || (Object.keys(chatGptImageResolveWorkerHeaders).length < 5);
-    
+
     if (needFullLoad) {
       safeMainInfoLog(`[gptviewer][chatgpt-image:worker-load-start] url=${normalizedChatUrl}`);
       await automationView.load(normalizedChatUrl);
       chatGptImageResolveWorkerChatUrl = normalizedChatUrl;
-      
+
       await checkLogin();
-      
+
       chatGptImageResolveWorkerHeaders = await waitForBackendReplayHeaders(
         automationView,
         20_000, // 20초 대기
@@ -664,7 +664,7 @@ const resolveChatGptImageAssetWithWorker = async (
         normalizedChatUrl,
       ),
     ).catch((): FetchedConversationAssetPayload | null => null);
-    
+
     if (
       directFetchResult?.ok &&
       typeof directFetchResult.dataUrl === 'string' &&
@@ -2428,13 +2428,19 @@ ipcMain.handle(
 
 ipcMain.handle(
   'shared-conversation:send-message',
-  async (_event, request: SharedConversationRefreshRequest, message: string) => {
+  async (event, request: SharedConversationRefreshRequest, message: string) => {
     if (!request || typeof request !== 'object') {
       throw new Error('메시지 전송 요청이 올바르지 않습니다.');
     }
 
     try {
-      return await sharedConversationRefreshService.sendMessageToConversation(request, message);
+      return await sharedConversationRefreshService.sendMessageToConversation(
+        request,
+        message,
+        (status) => {
+          event.sender.send('shared-conversation:status-update', status);
+        }
+      );
     } catch (error) {
       if (error instanceof SharedConversationRefreshError) {
         throw new Error(
@@ -2600,7 +2606,7 @@ ipcMain.handle(
         // --- JShell 모드 (단일 스니펫 & 단순 함수, 프로젝트 아님) ---
         tempDir = await mkdtemp(join(tmpdir(), 'gptviewer-jshell-'));
         javaProcess = spawn(jshellPath, ['-q'], { cwd: tempDir });
-        
+
         // JShell이 켜지면 분석된 코드를 바로 밀어넣습니다.
         if (javaProcess.stdin) {
           javaProcess.stdin.write(analysis.executableCode + '\n');
@@ -2622,11 +2628,11 @@ ipcMain.handle(
             // relPath는 보통 'src/com/example/Main.java' 형태이거나 'src/Main.java'
             const fullPath = join(tempDir, relPath);
             await mkdir(dirname(fullPath), { recursive: true });
-            
+
             // 현재 에디터에서 보고 있는 파일(code)이라면 최신 내용으로 덮어씀
             const isCurrentFile = relPath.endsWith(`${className}.java`);
             await writeFile(fullPath, isCurrentFile ? code : content, 'utf8');
-            
+
             if (isCurrentFile) targetRelPath = relPath;
           }
         }
@@ -2641,9 +2647,9 @@ ipcMain.handle(
         // -sourcepath src를 지정하면 의존성 있는 파일들을 javac가 자동으로 찾아서 함께 컴파일합니다.
         try {
           const targetFileFullPath = join(tempDir, targetRelPath);
-          await execAsync(`"${javacPath}" -d bin -sourcepath src --release 21 --enable-preview "${targetFileFullPath}"`, { 
-            cwd: tempDir, 
-            timeout: 15000 
+          await execAsync(`"${javacPath}" -d bin -sourcepath src --release 21 --enable-preview "${targetFileFullPath}"`, {
+            cwd: tempDir,
+            timeout: 15000
           });
         } catch (compileError: any) {
           return { success: false, error: compileError.stderr || compileError.message };
@@ -2708,7 +2714,7 @@ ipcMain.handle(
     try {
       // 1. 임시 디렉토리 생성
       tempDir = await mkdtemp(join(tmpdir(), 'gptviewer-java-'));
-      
+
       // 2. 클래스 이름 추출 (간단한 정규식 사용)
       const classMatch = code.match(/public\s+class\s+([a-zA-Z0-9_$]+)/);
       const className = classMatch ? classMatch[1] : 'Main';
@@ -2731,8 +2737,8 @@ ipcMain.handle(
 
       // 5. 실행 (java)
       try {
-        const { stdout, stderr } = await execAsync(`java "${className}"`, { 
-          cwd: tempDir, 
+        const { stdout, stderr } = await execAsync(`java "${className}"`, {
+          cwd: tempDir,
           timeout: 10000,
           maxBuffer: 1024 * 1024 // 1MB 제한
         });
