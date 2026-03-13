@@ -64,6 +64,8 @@ export function useSharedConversationActions({
   const [refreshError, setRefreshError] = useState('');
   const [refreshingConversationId, setRefreshingConversationId] = useState<string | null>(null);
   const [sendMessageStatus, setSendMessageStatus] = useState<'idle' | 'sending' | 'receiving'>('idle');
+  const [modelConfig, setModelConfig] = useState<any>(null);
+  const [selectedModel, setSelectedModel] = useState<string>(() => localStorage.getItem('gptviewer-selected-model') || 'auto');
   const [refreshConfigState, setRefreshConfigState] =
     useState<SharedConversationRefreshConfigState | null>(null);
 
@@ -382,6 +384,30 @@ export function useSharedConversationActions({
     }
   };
 
+  useEffect(() => {
+    const fetchModelConfig = async () => {
+      try {
+        const config = await window.electronAPI?.getChatGptModelConfig();
+        if (config) {
+          setModelConfig(config);
+          // If current selected model is not in the new config, and not 'auto', 
+          // we might want to keep it or reset, but usually 'auto' is safe.
+        }
+      } catch (e) {
+        console.error('Failed to fetch model config:', e);
+      }
+    };
+
+    fetchModelConfig();
+    const interval = setInterval(fetchModelConfig, 30000); // 30 seconds
+    return () => clearInterval(interval);
+  }, []);
+
+  const handleModelChange = (model: string) => {
+    setSelectedModel(model);
+    localStorage.setItem('gptviewer-selected-model', model);
+  };
+
   const handleSendMessageToActiveConversation = async (message: string) => {
     if (!activeConversation || sendMessageStatus !== 'idle') return;
 
@@ -405,10 +431,11 @@ export function useSharedConversationActions({
         shareUrl: activeConversation.sourceUrl,
       };
 
-      // API call initiates
+      // API call initiates with selected model
       const result = await window.electronAPI?.sendMessageToSharedConversation(
         refreshRequest,
-        message
+        message,
+        selectedModel === 'auto' ? undefined : selectedModel
       );
 
       const importedConversation = normalizeImportedConversation(result);
@@ -499,6 +526,9 @@ export function useSharedConversationActions({
     isImportModalOpen,
     isImportingSharedConversation,
     sendMessageStatus,
+    modelConfig,
+    selectedModel,
+    onModelChange: handleModelChange,
     openRefreshConfigModal,
     refreshError,
     refreshConfigState,

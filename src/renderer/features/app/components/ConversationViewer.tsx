@@ -19,6 +19,9 @@ type ConversationViewerProps = {
   onScrollPositionChange: (conversationId: string, scrollTop: number) => void;
   onSourcePreviewNeeded: Parameters<typeof MessageList>[0]['onSourcePreviewNeeded'];
   onToggleSourceDrawer: Parameters<typeof MessageList>[0]['onToggleSourceDrawer'];
+  modelConfig?: any;
+  selectedModel?: string;
+  onModelChange?: (model: string) => void;
   refreshError: string;
   refreshingConversationId: string | null;
   renderNonce: number;
@@ -49,6 +52,9 @@ export function ConversationViewer({
   sourcePreviewCache,
   sourcePreviewLoading,
   themeMode,
+  modelConfig,
+  selectedModel,
+  onModelChange,
 }: ConversationViewerProps) {
   return (
     <section className="viewer">
@@ -147,6 +153,9 @@ export function ConversationViewer({
                   sendMessageStatus={sendMessageStatus}
                   isRefreshing={refreshingConversationId === activeConversation.id}
                   disabled={sendMessageStatus !== 'idle'} 
+                  modelConfig={modelConfig}
+                  selectedModel={selectedModel}
+                  onModelChange={onModelChange}
                 />
               ) : null}
             </>

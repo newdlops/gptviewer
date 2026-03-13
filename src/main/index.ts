@@ -2385,6 +2385,14 @@ ipcMain.handle('java:start-debug-bridge', async (_event, tcpPort: number) => {
 
 
 ipcMain.handle(
+  'chatgpt-automation:get-model-config',
+  async () => {
+    // Return from static cache which is shared across all monitors
+    return ChatGptConversationNetworkMonitor.getStaticModelConfig();
+  }
+);
+
+ipcMain.handle(
   'chatgpt-automation:cleanup-background-pool',
   async () => {
     await ChatGptAutomationView.drainBackgroundPool();
@@ -2428,7 +2436,7 @@ ipcMain.handle(
 
 ipcMain.handle(
   'shared-conversation:send-message',
-  async (event, request: SharedConversationRefreshRequest, message: string) => {
+  async (event, request: SharedConversationRefreshRequest, message: string, model?: string) => {
     if (!request || typeof request !== 'object') {
       throw new Error('메시지 전송 요청이 올바르지 않습니다.');
     }
@@ -2437,6 +2445,7 @@ ipcMain.handle(
       return await sharedConversationRefreshService.sendMessageToConversation(
         request,
         message,
+        model,
         (status) => {
           event.sender.send('shared-conversation:status-update', status);
         }
@@ -2899,6 +2908,57 @@ const createWindow = (): void => {
   void mainWindow.loadURL(MAIN_WINDOW_WEBPACK_ENTRY);
 };
 
+/**
+ * Initialize ChatGPT settings by loading the site in a background view
+ * and capturing the /backend-api/settings/user response.
+ */
+const initializeChatGptSettings = async () => {
+  console.info('[gptviewer][init] Starting background ChatGPT initialization...');
+  try {
+    const automationView = await ChatGptAutomationView.acquire('background');
+    
+    // First enable monitoring so we don't miss any early requests
+    await automationView.enableConversationNetworkMonitoring();
+    
+    // Load the main site to establish session/cookies
+    console.info('[gptviewer][init] Loading chatgpt.com to establish session...');
+    await automationView.load('https://chatgpt.com');
+    
+    // Wait for the settings to be captured (max 10s)
+    let waitCount = 0;
+    while (!ChatGptConversationNetworkMonitor.getStaticModelConfig() && waitCount < 20) {
+        console.info(`[gptviewer][init] Waiting for settings capture... (${waitCount + 1}/20)`);
+        await new Promise(r => setTimeout(r, 500));
+        waitCount++;
+    }
+
+    if (!ChatGptConversationNetworkMonitor.getStaticModelConfig()) {
+        console.info('[gptviewer][init] Settings not captured after load, re-triggering fetch...');
+        await automationView.execute(`
+            fetch('https://chatgpt.com/backend-api/settings/user')
+                .then(r => r.json())
+                .then(data => console.log('[gptviewer][init-fetch] success'))
+                .catch(e => console.error('[gptviewer][init-fetch] failed', e));
+        `);
+
+        // Wait a bit more after manual trigger
+        await new Promise(r => setTimeout(r, 2000));
+    }
+
+    if (ChatGptConversationNetworkMonitor.getStaticModelConfig()) {
+        console.info('[gptviewer][init] ChatGPT model config successfully captured.');
+    } else {
+        console.warn('[gptviewer][init] ChatGPT model config capture timed out. Will retry during active usage.');
+    }
+    
+    // Keep it in the background pool for future use
+    await automationView.close(); 
+    console.info('[gptviewer][init] Background ChatGPT initialization completed.');
+  } catch (error) {
+    console.error('[gptviewer][init] Failed to initialize ChatGPT settings:', error);
+  }
+};
+
 ipcMain.on('renderer-log', (_event, level, ...args) => {
   if (level === 'error') console.error('[Renderer Error]', ...args);
   else if (level === 'warn') console.warn('[Renderer Warn]', ...args);
@@ -2907,6 +2967,9 @@ ipcMain.on('renderer-log', (_event, level, ...args) => {
 
 app.on('ready', () => {
   createWindow();
+  
+  // Initialize ChatGPT settings in background
+  void initializeChatGptSettings();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

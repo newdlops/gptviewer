@@ -520,10 +520,10 @@ export class ChatGptAutomationView {
     return this.execute<ChatGptPageSnapshot>(buildGetPageSnapshotScript());
   }
 
-  async sendMessage(message: string) {
-    console.info('[gptviewer][automation-view] Attempting to send message via API (Primary)...');
+  async sendMessage(message: string, model?: string) {
+    console.info(`[gptviewer][automation-view] Attempting to send message via API (Primary) with model: ${model || 'auto'}...`);
     try {
-      const apiResult = await this.sendMessageViaApi(message);
+      const apiResult = await this.sendMessageViaApi(message, model);
       if (apiResult.success) {
         console.info('[gptviewer][automation-view] Message sent successfully via API.');
         return apiResult;
@@ -549,12 +549,12 @@ export class ChatGptAutomationView {
     }
   }
 
-  async sendMessageViaApi(message: string) {
+  async sendMessageViaApi(message: string, model?: string) {
     if (!this.conversationNetworkMonitor) {
         return { success: false, error: 'Network monitor not initialized' };
     }
 
-    console.info('[gptviewer][automation-view] Sending message via 4-step Sentinel flow...');
+    console.info(`[gptviewer][automation-view] Sending message via 4-step Sentinel flow (model: ${model || 'auto'})...`);
     
     const logHandler = (event: any, level: number, message: string, line: number, sourceId: string) => {
         if (message.includes('[gptviewer-script][API]')) {
@@ -619,7 +619,7 @@ export class ChatGptAutomationView {
                         action: "next",
                         conversation_id: conversationId,
                         parent_message_id: parentMessageId,
-                        model: "auto",
+                        model: ${JSON.stringify(model || 'auto')},
                         partial_query: {
                             id: crypto.randomUUID(),
                             author: { role: "user" },
@@ -718,7 +718,7 @@ export class ChatGptAutomationView {
                         ],
                         conversation_id: conversationId,
                         parent_message_id: parentMessageId,
-                        model: "gpt-5-3",
+                        model: ${JSON.stringify(model || 'gpt-5-3')},
                         timezone_offset_min: -540,
                         timezone: "Asia/Seoul",
                         conversation_mode: { kind: "primary_assistant" },

@@ -56,8 +56,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
       );
     };
   },
-  sendMessageToSharedConversation: (request: SharedConversationRefreshRequest, message: string) =>
-    ipcRenderer.invoke('shared-conversation:send-message', request, message),
+  sendMessageToSharedConversation: (request: SharedConversationRefreshRequest, message: string, model?: string) =>
+    ipcRenderer.invoke('shared-conversation:send-message', request, message, model),
+  getChatGptModelConfig: () =>
+    ipcRenderer.invoke('chatgpt-automation:get-model-config'),
   importChatGptConversation: (request: SharedConversationRefreshRequest) =>
     ipcRenderer.invoke('chatgpt-conversation:import', request),
   fetchSourcePreview: (url: string) =>

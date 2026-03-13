@@ -91,3 +91,6 @@ typings/
 # Electron-Forge
 out/
 .idea
+.gemini
+.ai
+.git

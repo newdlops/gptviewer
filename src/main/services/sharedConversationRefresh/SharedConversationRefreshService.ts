@@ -97,13 +97,14 @@ export class SharedConversationRefreshService {
   async sendMessageToConversation(
     request: SharedConversationRefreshRequest,
     message: string,
+    model?: string,
     onStatusChange?: (status: 'sending' | 'receiving' | 'idle') => void,
   ): Promise<SharedConversationRefreshResult> {
     if (!request.chatUrl) {
       throw new SharedConversationRefreshError('chat_url_missing', '대화를 보낼 원본 링크가 없습니다.');
     }
 
-    console.info(`[gptviewer] sendMessageToConversation initiated for URL: ${request.chatUrl}`);
+    console.info(`[gptviewer] sendMessageToConversation initiated for URL: ${request.chatUrl} with model: ${model || 'auto'}`);
 
     const result = await runWithLoginResume({
       initialMode: 'background', // Like import, run in background by default
@@ -121,7 +122,7 @@ export class SharedConversationRefreshService {
 
 
         console.info('[gptviewer] Attempting to send message via script...');
-        const sendResult = await automationView.sendMessage(message);
+        const sendResult = await automationView.sendMessage(message, model);
         console.info(`[gptviewer] Send message result: ${JSON.stringify(sendResult)}`);
         
         if (!sendResult.success) {

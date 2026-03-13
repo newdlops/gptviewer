@@ -37,6 +37,25 @@ const RELEVANT_HOST_PATTERNS = [
   'openai.com',
 ];
 
+/**
+ * Logging Flags for Network Monitor
+ * Set to true to enable specific log categories.
+ */
+export const MONITOR_LOG_FLAGS = {
+    SHOW_BACKUP_REQUESTS: false,   // session.webRequest logs
+    SHOW_SENTINEL_FLOW: true,      // Sentinel (prepare/finalize) logs
+    SHOW_CONVERSATION_FLOW: true,  // f/conversation and body logs
+    SHOW_AUTH_CAPTURE: true,       // Authorization header capture logs
+    SHOW_GENERAL_REQUESTS: false,  // General /backend-api/ request monitoring
+    SHOW_MAPPING: true,            // Sentinel token mapping logs
+
+    // Detailed content flags (Applied to flows enabled above)
+    SHOW_REQUEST_HEADERS: true,
+    SHOW_REQUEST_BODY: true,
+    SHOW_RESPONSE_HEADERS: true,
+    SHOW_RESPONSE_BODY: true,
+};
+
 const normalizeHeaders = (headers: Record<string, string | string[]>) => {
   const normalized: Record<string, string> = {};
   Object.entries(headers).forEach(([key, value]) => {
@@ -90,9 +109,11 @@ const isRelevantResponse = (responseMeta: PendingResponseMeta): boolean => {
 };
 
 export class ChatGptConversationNetworkMonitor {
+  private static lastUserSettings: any = null;
+  private static availableModels: string[] = [];
+  
   private lastSuccessfulBackendApiHeaders: CapturedBackendApiRequestHeaders | null = null;
   private sentinelHeaders: Record<string, string> = {};
-  private availableModels: string[] = [];
   private readonly capturedUrls = new Set<string>();
   private readonly pendingRequests = new Map<string, PendingRequestMeta>();
   private readonly pendingResponses = new Map<string, PendingResponseMeta>();
@@ -106,6 +127,31 @@ export class ChatGptConversationNetworkMonitor {
 
   async ready() {
     await this.readyPromise;
+    // Trigger an initial fetch to populate the settings and models
+    this.triggerInitialSettingsFetch();
+  }
+
+  private triggerInitialSettingsFetch() {
+    if (this.webContents.isDestroyed()) return;
+    
+    // Inject a small script to trigger the fetch from the page context
+    // Use the full URL to ensure it reaches the right domain
+    const targetUrl = `${BACKEND_API_PREFIX}settings/user`;
+    const script = `
+      (async () => {
+        try {
+          const res = await fetch('${targetUrl}');
+          if (res.ok) {
+             console.info('[gptviewer][initial-fetch] settings/user success');
+          } else {
+             console.warn('[gptviewer][initial-fetch] settings/user failed', res.status);
+          }
+        } catch (e) {
+          // ignore network error if not on chatgpt.com domain yet
+        }
+      })();
+    `;
+    this.webContents.executeJavaScript(script).catch(() => {});
   }
 
   private setupBackupMonitor() {
@@ -125,7 +171,9 @@ export class ChatGptConversationNetworkMonitor {
         if (lowerUrl.includes('/backend-api/') || lowerUrl.includes('lat/') || lowerUrl.includes('ping')) {
             if (!this.capturedUrls.has(url)) {
                 this.capturedUrls.add(url);
-                console.info(`[gptviewer][monitor:${source}] ${url}`);
+                if (MONITOR_LOG_FLAGS.SHOW_BACKUP_REQUESTS) {
+                    console.info(`[gptviewer][monitor:${source}] ${url}`);
+                }
             }
         }
     };
@@ -170,7 +218,9 @@ export class ChatGptConversationNetworkMonitor {
             const normalized = normalizeHeaders(details.requestHeaders);
             if (normalized['authorization']) {
                 if (!this.lastSuccessfulBackendApiHeaders || url.includes('/me') || url.includes('/models')) {
-                    console.info(`[gptviewer][monitor:backup-auth-captured] Authorization CAPTURED from ${url}`);
+                    if (MONITOR_LOG_FLAGS.SHOW_AUTH_CAPTURE) {
+                        console.info(`[gptviewer][monitor:backup-auth-captured] Authorization CAPTURED from ${url}`);
+                    }
                     this.lastSuccessfulBackendApiHeaders = {
                         headers: sanitizeHeadersForReplay(normalized),
                         method: details.method.toUpperCase(),
@@ -198,7 +248,19 @@ export class ChatGptConversationNetworkMonitor {
   }
 
   getAvailableModels(): string[] {
-    return [...this.availableModels];
+    return [...ChatGptConversationNetworkMonitor.availableModels];
+  }
+
+  getLatestModelConfig(): any {
+    return ChatGptConversationNetworkMonitor.lastUserSettings?.last_used_model_config || null;
+  }
+
+  getLatestUserSettings(): any {
+    return ChatGptConversationNetworkMonitor.lastUserSettings;
+  }
+
+  static getStaticModelConfig(): any {
+    return ChatGptConversationNetworkMonitor.lastUserSettings?.last_used_model_config || null;
   }
 
   hasCapturedUrl(pattern: string): boolean {
@@ -252,24 +314,32 @@ export class ChatGptConversationNetworkMonitor {
       const reqToken = payload.prepare_token || payload.token;
       if (reqToken) {
           this.sentinelHeaders['openai-sentinel-chat-requirements-token'] = reqToken;
-          console.info(`[MAPPING] requirements-token captured from ${url}`);
+          if (MONITOR_LOG_FLAGS.SHOW_MAPPING) {
+              console.info(`[MAPPING] requirements-token captured from ${url}`);
+          }
       }
       
       // 2. proof-token (from proofofwork or p or proof)
       const pToken = payload.proofofwork || payload.p || payload.proof;
       if (pToken) {
           this.sentinelHeaders['openai-sentinel-proof-token'] = pToken;
-          console.info(`[MAPPING] proof-token captured from ${url}`);
+          if (MONITOR_LOG_FLAGS.SHOW_MAPPING) {
+              console.info(`[MAPPING] proof-token captured from ${url}`);
+          }
       }
       
       // 3. turnstile-token (from turnstile.token)
       if (payload.turnstile && typeof payload.turnstile === 'object' && payload.turnstile.token) {
           this.sentinelHeaders['openai-sentinel-turnstile-token'] = payload.turnstile.token;
-          console.info(`[MAPPING] turnstile-token captured from ${url}`);
+          if (MONITOR_LOG_FLAGS.SHOW_MAPPING) {
+              console.info(`[MAPPING] turnstile-token captured from ${url}`);
+          }
       } else if (payload.turnstile && typeof payload.turnstile === 'string') {
           // fallback if it's direct string
           this.sentinelHeaders['openai-sentinel-turnstile-token'] = payload.turnstile;
-          console.info(`[MAPPING] turnstile-token (string) captured from ${url}`);
+          if (MONITOR_LOG_FLAGS.SHOW_MAPPING) {
+              console.info(`[MAPPING] turnstile-token (string) captured from ${url}`);
+          }
       }
     } catch (e) {}
   }
@@ -285,7 +355,8 @@ export class ChatGptConversationNetworkMonitor {
       if (!url.includes('/conversation/init')) {
         const isSentinel = url.includes('/sentinel/chat-requirements');
         const isConversation = url.includes('/backend-api/f/conversation');
-        if (isSentinel || isConversation) {
+        const flowEnabled = (isSentinel && MONITOR_LOG_FLAGS.SHOW_SENTINEL_FLOW) || (isConversation && MONITOR_LOG_FLAGS.SHOW_CONVERSATION_FLOW);
+        if (flowEnabled && MONITOR_LOG_FLAGS.SHOW_RESPONSE_HEADERS) {
           console.info(`Response Header (${url}): Status ${response.status}`, JSON.stringify(response.headers, null, 2));
         }
       }
@@ -307,7 +378,7 @@ export class ChatGptConversationNetworkMonitor {
       this.capturedUrls.add(url);
       
       // Log all backend-api requests for debugging lat/r detection
-      if (url.includes('/backend-api/')) {
+      if (url.includes('/backend-api/') && MONITOR_LOG_FLAGS.SHOW_GENERAL_REQUESTS) {
           console.info(`[gptviewer][monitor:request] ${url}`);
       }
 
@@ -321,20 +392,27 @@ export class ChatGptConversationNetworkMonitor {
       if (!url.includes('/conversation/init')) {
         const isSentinel = url.includes('/sentinel/chat-requirements');
         const isConversation = url.includes('/backend-api/f/conversation');
-        if (isSentinel || isConversation) {
+        const showSentinel = isSentinel && MONITOR_LOG_FLAGS.SHOW_SENTINEL_FLOW;
+        const showConversation = isConversation && MONITOR_LOG_FLAGS.SHOW_CONVERSATION_FLOW;
+        
+        if (showSentinel || showConversation) {
           if (request.hasPostData && !request.postData) {
             const debuggerApi = this.webContents.debugger;
             if (debuggerApi.isAttached()) {
               debuggerApi.sendCommand('Network.getRequestPostData', { requestId })
                 .then((res: any) => {
                   if (res?.postData) {
-                    console.info(`Request Body (${url}):`, res.postData);
+                    if (MONITOR_LOG_FLAGS.SHOW_REQUEST_BODY) {
+                      console.info(`Request Body (${url}):`, res.postData);
+                    }
                     if (url.includes('/finalize')) this.mapSentinelTokens(url, res.postData);
                   }
                 }).catch(() => {});
             }
           } else if (request.postData) {
-            console.info(`Request Body (${url}):`, request.postData);
+            if (MONITOR_LOG_FLAGS.SHOW_REQUEST_BODY) {
+              console.info(`Request Body (${url}):`, request.postData);
+            }
             if (url.includes('/finalize')) this.mapSentinelTokens(url, request.postData);
           }
         }
@@ -361,14 +439,21 @@ export class ChatGptConversationNetworkMonitor {
       if (!url.includes('/conversation/init')) {
         const isSentinel = url.includes('/sentinel/chat-requirements');
         const isConversation = url.includes('/backend-api/f/conversation');
-        if (isSentinel || isConversation) {
-          console.info(`Request Header (${url}):`, JSON.stringify(headers, null, 2));
+        const showSentinel = isSentinel && MONITOR_LOG_FLAGS.SHOW_SENTINEL_FLOW;
+        const showConversation = isConversation && MONITOR_LOG_FLAGS.SHOW_CONVERSATION_FLOW;
+        
+        if (showSentinel || showConversation) {
+          if (MONITOR_LOG_FLAGS.SHOW_REQUEST_HEADERS) {
+            console.info(`Request Header (${url}):`, JSON.stringify(headers, null, 2));
+          }
         }
       }
 
       if (url.startsWith(BACKEND_API_PREFIX)) {
         if (normalized['authorization']) {
-          console.info(`[gptviewer][monitor] Authorization CAPTURED from ${url}`);
+          if (MONITOR_LOG_FLAGS.SHOW_AUTH_CAPTURE) {
+            console.info(`[gptviewer][monitor] Authorization CAPTURED from ${url}`);
+          }
           this.lastSuccessfulBackendApiHeaders = {
             headers: sanitizeHeadersForReplay(normalized),
             method: methodName,
@@ -412,13 +497,16 @@ export class ChatGptConversationNetworkMonitor {
 
         const url = responseMeta.url;
         if (url.includes('/backend-api/settings/user')) {
+            // ALWAYS Log settings/user as requested
             console.info(`[gptviewer][monitor:response] /backend-api/settings/user BODY:`, bodyText);
             try {
                 const payload = JSON.parse(bodyText);
+                ChatGptConversationNetworkMonitor.lastUserSettings = payload; // Cache statically
+                
                 const juices = payload?.last_used_model_config?.juices?.web || payload?.last_used_model_config?.juices?.default;
                 if (juices && typeof juices === 'object') {
-                    this.availableModels = Object.keys(juices);
-                    console.info(`[gptviewer][monitor] Captured available models: ${this.availableModels.join(', ')}`);
+                    ChatGptConversationNetworkMonitor.availableModels = Object.keys(juices);
+                    console.info(`[gptviewer][monitor] Captured available models: ${ChatGptConversationNetworkMonitor.availableModels.join(', ')}`);
                 }
             } catch (e) {}
         }
@@ -426,19 +514,28 @@ export class ChatGptConversationNetworkMonitor {
         if (!url.includes('/conversation/init')) {
           const isSentinel = url.includes('/sentinel/chat-requirements');
           const isConversation = url.includes('/backend-api/f/conversation');
-          if (isSentinel || isConversation) {
-            console.info(`Response Body (${url}):`, bodyText);
+          const showSentinel = isSentinel && MONITOR_LOG_FLAGS.SHOW_SENTINEL_FLOW;
+          const showConversation = isConversation && MONITOR_LOG_FLAGS.SHOW_CONVERSATION_FLOW;
+
+          if (showSentinel || showConversation) {
+            if (MONITOR_LOG_FLAGS.SHOW_RESPONSE_BODY) {
+              console.info(`Response Body (${url}):`, bodyText);
+            }
             
             // Extract tokens from Responses as reinforcement
             try {
                 const payload = JSON.parse(bodyText);
                 if (url.includes('/sentinel/chat-requirements/prepare') && payload.prepare_token) {
                     this.sentinelHeaders['openai-sentinel-chat-requirements-token'] = payload.prepare_token;
-                    console.info(`[MAPPING] requirements-token captured from Step 2 Response`);
+                    if (MONITOR_LOG_FLAGS.SHOW_MAPPING) {
+                        console.info(`[MAPPING] requirements-token captured from Step 2 Response`);
+                    }
                 }
                 if (url.includes('/sentinel/chat-requirements/finalize') && payload.token) {
                     this.sentinelHeaders['openai-sentinel-chat-requirements-token'] = payload.token;
-                    console.info(`[MAPPING] requirements-token captured from Step 3 Response`);
+                    if (MONITOR_LOG_FLAGS.SHOW_MAPPING) {
+                        console.info(`[MAPPING] requirements-token captured from Step 3 Response`);
+                    }
                 }
             } catch(e) {}
           }

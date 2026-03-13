@@ -132,6 +132,9 @@ function AppContent() {
         onToggleSourceDrawer={sourceState.toggleSourceDrawer}
         onSendMessage={workspaceActions.handleSendMessageToActiveConversation}
         sendMessageStatus={workspaceActions.sendMessageStatus}
+        modelConfig={workspaceActions.modelConfig}
+        selectedModel={workspaceActions.selectedModel}
+        onModelChange={workspaceActions.onModelChange}
         refreshError={workspaceActions.refreshError}
         refreshingConversationId={workspaceActions.refreshingConversationId}
         renderNonce={conversationRenderNonce}
