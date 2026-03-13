@@ -678,8 +678,9 @@ export class ChatGptAutomationView {
         
         // --- STEP 4: Actual Conversation ---
         // Get fresh headers (this will include the newly mapped sentinel tokens)
-        const finalHeaders = this.conversationNetworkMonitor.getLatestBackendApiHeaders();
-        if (!finalHeaders || !finalHeaders.headers['authorization']) {
+        const finalHeaders = this.conversationNetworkMonitor?.getLatestBackendApiHeaders() || { headers: {} };
+        const wsUrl = this.conversationNetworkMonitor?.getLatestWebSocketUrl() || null;
+        if (!finalHeaders.headers['authorization']) {
             console.warn('[gptviewer][sentinel-flow] No valid auth headers found for Step 4.');
             this.view.webContents.removeListener('console-message', logHandler);
             return { success: false, error: 'auth_headers_missing' };
@@ -743,17 +744,162 @@ export class ChatGptAutomationView {
                         force_parallel_switch: "auto"
                     };
 
-                    const response = await fetch('https://chatgpt.com/backend-api/f/conversation', {
-                        method: 'POST',
-                        headers: headers,
-                        body: JSON.stringify(payload)
-                    });
+                    console.log('[gptviewer-script][API] Step 4 Payload Model:', ${JSON.stringify(model || 'auto')});
+                    
+                    const wsUrl = ${JSON.stringify(wsUrl)};
+                    console.log('[gptviewer-script][API] wsUrl captured from monitor:', wsUrl);
 
-                    if (!response.ok) {
-                        const txt = await response.text();
-                        console.error('[gptviewer-script][API] /conversation failed!', JSON.stringify({ status: response.status, body: txt }));
-                        return { success: false, error: 'api_fail', status: response.status };
-                    }
+                    return new Promise((resolve) => {
+                        let resolved = false;
+                        const finish = async (reason) => {
+                            if (!resolved) {
+                                resolved = true;
+                                console.log('[gptviewer-script][API] Finish Triggered by:', reason);
+                                console.log('[gptviewer-script][API] Signal received. Waiting 2s for final logs...');
+                                await new Promise(r => setTimeout(r, 2000));
+                                console.log('[gptviewer-script][API] Finalizing sendMessageViaApi Promise.');
+                                resolve({ success: true });
+                            }
+                        };
+                        
+                        // Failsafe timeout to prevent hanging forever
+                        setTimeout(() => {
+                            console.warn('[gptviewer-script][API] Failsafe timeout reached (45s).');
+                            finish('timeout');
+                        }, 45000);
+
+                        let ws = null;
+                        let handoffReceived = false;
+                        let handoffTopicId = null;
+                        let sseDone = false;
+                        let wsTurnCompleteReceived = false;
+
+                        const sendConversationRequest = async () => {
+                            try {
+                                console.log('[gptviewer-script][API] Sending f/conversation POST request...');
+                                const response = await fetch('https://chatgpt.com/backend-api/f/conversation', {
+                                    method: 'POST',
+                                    headers: headers,
+                                    body: JSON.stringify(payload)
+                                });
+
+                                console.log('[gptviewer-script][API] Step 4 Fetch Result:', response.status, response.statusText);
+
+                                if (!response.ok) {
+                                    const txt = await response.text();
+                                    console.error('[gptviewer-script][API] /conversation failed!', JSON.stringify({ status: response.status, body: txt }));
+                                    await finish('api_fail');
+                                    return;
+                                }
+
+                                const reader = response.body.getReader();
+                                const decoder = new TextDecoder('utf-8');
+                                let buffer = '';
+
+                                while (true) {
+                                    const { done, value } = await reader.read();
+                                    if (done) {
+                                        sseDone = true;
+                                        console.log('[gptviewer-script][API] SSE Reader Done. handoffReceived:', handoffReceived);
+                                        if (!handoffReceived) {
+                                            console.log('[gptviewer-script][API] SSE stream complete without handoff.');
+                                            await finish('sse_done_no_handoff');
+                                        } else {
+                                            console.log('[gptviewer-script][API] SSE Reader Done. Waiting for WS unsubscribe response (max 30s)...');
+                                        }
+                                        break;
+                                    }
+                                    buffer += decoder.decode(value, { stream: true });
+                                    
+                                    const lines = buffer.split('\\n'); 
+                                    buffer = lines.pop() || ''; 
+                                    
+                                    for (const line of lines) {
+                                        if (line.startsWith('data: ') && line.length > 6) {
+                                            const dataStr = line.slice(6);
+                                            if (dataStr === '[DONE]') continue;
+                                            try {
+                                                const dataObj = JSON.parse(dataStr);
+                                                if (dataObj.type === 'stream_handoff' && dataObj.turn_exchange_id) {
+                                                    handoffReceived = true;
+                                                    handoffTopicId = 'conversation-turn-' + dataObj.turn_exchange_id;
+                                                    console.log('[gptviewer-script][API] Received stream_handoff! Subscribing to topic:', handoffTopicId);
+                                                    
+                                                    if (ws && ws.readyState === WebSocket.OPEN) {
+                                                        const subscribeFrame = JSON.stringify([{
+                                                            id: Math.floor(Math.random() * 10000),
+                                                            command: { type: 'subscribe', topic_id: handoffTopicId, offset: '0' }
+                                                        }]);
+                                                        ws.send(subscribeFrame);
+                                                        console.log('[gptviewer-script][API] Sent WS subscribe frame:', subscribeFrame);
+                                                    } else {
+                                                        console.warn('[gptviewer-script][API] WS not open when handoff received.');
+                                                    }
+                                                }
+                                            } catch (e) {}
+                                        }
+                                    }
+                                }
+                            } catch (e) {
+                                console.error('[gptviewer-script][API] Error reading SSE stream:', e);
+                                await finish('sse_error');
+                            }
+                        };
+
+                        if (wsUrl) {
+                            console.log('[gptviewer-script][API] Establishing WebSocket FIRST...');
+                            ws = new WebSocket(wsUrl);
+                            
+                            ws.onopen = () => {
+                                console.log('[gptviewer-script][API] WS connected. Triggering f/conversation...');
+                                sendConversationRequest();
+                            };
+                            
+                            ws.onmessage = async (event) => {
+                                console.log('[gptviewer-script][API] WS Message received:', event.data);
+                                try {
+                                    const msgData = JSON.parse(event.data);
+                                    if (Array.isArray(msgData)) {
+                                        for (const item of msgData) {
+                                            // 1. turn-complete 수신 감지
+                                            if (item?.payload?.type === 'conversation-turn-complete' && !wsTurnCompleteReceived) {
+                                                console.log('[gptviewer-script][API] turn-complete received. Sending unsubscribe request...');
+                                                wsTurnCompleteReceived = true;
+                                                if (handoffTopicId && ws.readyState === WebSocket.OPEN) {
+                                                    const unsubscribeFrame = JSON.stringify([{
+                                                        id: Math.floor(Math.random() * 10000),
+                                                        command: { type: 'unsubscribe', topic_id: handoffTopicId }
+                                                    }]);
+                                                    ws.send(unsubscribeFrame);
+                                                    console.log('[gptviewer-script][API] Sent WS unsubscribe frame.');
+                                                }
+                                            }
+                                            
+                                            // 2. unsubscribe 명령에 대한 서버의 응답 감지 (최종 완료 조건)
+                                            if (item?.command?.type === 'unsubscribe' && item?.command?.topic_id === handoffTopicId) {
+                                                console.log('[gptviewer-script][API] Verified server unsubscribe response. Closing monitor.');
+                                                await finish('ws_unsubscribe_confirmed');
+                                            }
+                                        }
+                                    }
+                                } catch(e) {}
+                            };
+                            
+                            ws.onerror = async (err) => {
+                                console.error('[gptviewer-script][API] WS Error occurred.');
+                                await finish('ws_error');
+                            };
+                            
+                            ws.onclose = async () => {
+                                console.log('[gptviewer-script][API] WS connection closed.');
+                                await finish('ws_close');
+                            };
+                        } else {
+                            console.warn('[gptviewer-script][API] No wsUrl captured. Proceeding without WS...');
+                            sendConversationRequest();
+                        }
+                    });
+                    
                     return { success: true };
                 } catch (e) { return { success: false, error: e.message }; }
             })()

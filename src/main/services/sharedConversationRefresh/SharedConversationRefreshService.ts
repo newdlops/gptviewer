@@ -123,7 +123,7 @@ export class SharedConversationRefreshService {
 
         console.info('[gptviewer] Attempting to send message via script...');
         const sendResult = await automationView.sendMessage(message, model);
-        console.info(`[gptviewer] Send message result: ${JSON.stringify(sendResult)}`);
+        console.info(`[gptviewer] Send message result (resolved after turn-complete or fallback): ${JSON.stringify(sendResult)}`);
         
         if (!sendResult.success) {
           throw new SharedConversationRefreshError('unknown', `메시지 전송 실패: ${sendResult.error || '알 수 없는 오류'}`);
@@ -133,23 +133,29 @@ export class SharedConversationRefreshService {
         onStatusChange?.('receiving');
 
         // Wait for completion (our improved logic that checks network and visibility)
-        console.info('[gptviewer] Waiting for ChatGPT response to complete...');
+        console.info('[gptviewer] Waiting for ChatGPT response to fully stabilize via network/WS...');
         const completionResult = await automationView.waitForResponseCompletion();
-        console.info(`[gptviewer] Wait for response completion finished. Result: ${completionResult}`);
+        console.info(`[gptviewer] Response stabilization check finished. Result: ${completionResult}`);
 
-        console.info('[gptviewer] Proceeding to refresh conversation data after sending message...');
-        return this.refreshConversation(
+        console.info('[gptviewer] Proceeding to refresh conversation data...');
+        const refreshResult = await this.refreshConversation(
           {
             ...request,
             mode: 'direct-chat-page',
           },
           automationView,
         );
+
+        // --- 추가: 로그 관찰을 위해 닫기 전 1.5초 대기 ---
+        console.info('[gptviewer] Conversation refresh complete. Waiting briefly for final network logs...');
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+
+        return refreshResult;
       },
     });
 
     onStatusChange?.('idle');
-    console.info('[gptviewer] sendMessageToConversation fully completed.');
+    console.info('[gptviewer] sendMessageToConversation fully completed. Closing automation view.');
     return result as SharedConversationRefreshResult;
   }
 }

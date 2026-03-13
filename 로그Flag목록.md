@@ -21,6 +21,9 @@ export const MONITOR_LOG_FLAGS = {
     
     // 5. 스트림 이벤트 및 기타 중요 이벤트 상태 로그 (시작, 수신, 종료 등)
     SHOW_STREAM_EVENTS: true,
+    
+    // 6. WebSocket 프레임 내용 출력
+    SHOW_WEBSOCKET_FRAMES: true,
 
     // 기타 시스템 디버깅용 보조 플래그
     SHOW_BACKUP_REQUESTS: false,   // session.webRequest 기본 URL 로그
@@ -43,6 +46,7 @@ export const MONITOR_LOG_FLAGS = {
 | `SHOW_REQUEST_BODY` | `false` | 대상 API들의 **요청 바디(Payload)**를 출력합니다. |
 | `SHOW_RESPONSE_BODY` | `false` | 대상 API들의 **응답 바디**를 출력합니다. |
 | `SHOW_STREAM_EVENTS` | `true` | `/conversation/resume` 스트림의 시작, 데이터 수신(바이트), 종료 및 기타 중요 상태를 로그합니다. |
+| `SHOW_WEBSOCKET_FRAMES` | `true` | `wss://` 연결을 통해 전송되고 수신되는 모든 **WebSocket 프레임 데이터**를 출력합니다. |
 | `SHOW_BACKUP_REQUESTS` | `false` | Electron 세션 레벨에서 감지되는 모든 URL 요청을 로그합니다. |
 | `SHOW_GENERAL_REQUESTS` | `false` | 모든 `/backend-api/` 요청에 대해 URL만 간단히 로그합니다. |
 
