@@ -79,6 +79,7 @@ export async function runProjectConversationImportWorkflow({
   setSourceDrawer,
   setWorkspaceTree,
   workspaceTree,
+  isForceSync,
 }: CommonProjectImportArgs & {
   importedProjectConversationUrlsRef: MutableRefObject<Set<string>>;
   projectImportParentFolderId: string | null;
@@ -86,6 +87,7 @@ export async function runProjectConversationImportWorkflow({
   normalizedProjectUrl: string;
   projectImportMode: ProjectConversationImportMode;
   projectImportTargetFolderId: string | null;
+  isForceSync?: boolean;
 }) {
   const collectedProject = await window.electronAPI?.collectProjectConversationLinks({
     projectUrl: normalizedProjectUrl,
@@ -113,6 +115,7 @@ export async function runProjectConversationImportWorkflow({
           conversations,
           folderId,
           workspaceTree,
+          isForceSync,
         })
       : null;
 

@@ -24,9 +24,11 @@ type ProjectConversationImportModalProps = {
   failures: ProjectConversationImportFailure[];
   isBusy: boolean;
   isImporting: boolean;
+  isForceSync: boolean;
   isOpen: boolean;
   mode: ProjectConversationImportMode;
   onClose: () => void;
+  onForceSyncChange: (value: boolean) => void;
   onParentFolderChange: (folderId: string | null) => void;
   onPreferredStrategyChange: (
     strategy: ProjectConversationImportStrategyPreference,
@@ -64,9 +66,11 @@ export function ProjectConversationImportModal({
   failures,
   isBusy,
   isImporting,
+  isForceSync,
   isOpen,
   mode,
   onClose,
+  onForceSyncChange,
   onParentFolderChange,
   onPreferredStrategyChange,
   onProjectUrlChange,
@@ -127,7 +131,55 @@ export function ProjectConversationImportModal({
               ))}
             </select>
           </>
-        ) : null}
+        ) : (
+          <div className="modal__section" style={{ marginTop: '8px', marginBottom: '16px' }}>
+            <div 
+              className="modal__checkbox-row" 
+              style={{ 
+                display: 'flex', 
+                alignItems: 'center', 
+                gap: '10px', 
+                padding: '12px', 
+                background: 'var(--panel-bg-soft)', 
+                borderRadius: '8px',
+                border: '1px solid var(--border-soft)',
+                cursor: 'pointer'
+              }}
+              onClick={() => !isImporting && onForceSyncChange(!isForceSync)}
+            >
+              <input
+                id="project-force-sync"
+                type="checkbox"
+                checked={isForceSync}
+                onChange={(e) => onForceSyncChange(e.target.checked)}
+                disabled={isImporting}
+                style={{ 
+                  width: '18px', 
+                  height: '18px', 
+                  cursor: isImporting ? 'default' : 'pointer',
+                  accentColor: 'var(--accent-primary)' 
+                }}
+                onClick={(e) => e.stopPropagation()}
+              />
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                <label 
+                  htmlFor="project-force-sync" 
+                  style={{ 
+                    fontSize: '0.95rem', 
+                    fontWeight: 600, 
+                    color: 'var(--text-primary)',
+                    cursor: isImporting ? 'default' : 'pointer'
+                  }}
+                >
+                  강제 동기화 (Force Sync)
+                </label>
+                <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                  이미 불러온 대화도 모두 최신 내용으로 새로고침합니다.
+                </span>
+              </div>
+            </div>
+          </div>
+        )}
         <div className="modal__section">
           <div className="modal__section-header">
             <strong>선호 옵션</strong>

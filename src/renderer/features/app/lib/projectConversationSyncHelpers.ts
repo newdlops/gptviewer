@@ -46,11 +46,13 @@ export const createProjectFolderSyncPlan = ({
   conversations,
   folderId,
   workspaceTree,
+  isForceSync = false,
 }: {
   collectedConversations: ProjectConversationLink[];
   conversations: Conversation[];
   folderId: string;
   workspaceTree: WorkspaceNode[];
+  isForceSync?: boolean;
 }): ProjectFolderSyncPlan => {
   const folder = findFolderById(workspaceTree, folderId);
   const conversationsById = new Map(
@@ -69,7 +71,9 @@ export const createProjectFolderSyncPlan = ({
   const viewerCreatedConversationIds = new Set<string>();
 
   folderConversationStates.forEach((conversationState) => {
+    // If not force sync, check if conversation already exists in folder
     if (
+      !isForceSync &&
       conversationState.chatUrl &&
       collectedByChatUrl.has(conversationState.chatUrl)
     ) {

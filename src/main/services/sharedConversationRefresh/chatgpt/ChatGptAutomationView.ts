@@ -675,7 +675,7 @@ export class ChatGptAutomationView {
         
         // --- STEP 4: Actual Conversation ---
         // Get fresh headers (this will include the newly mapped sentinel tokens)
-        let finalHeaders = this.conversationNetworkMonitor.getLatestBackendApiHeaders();
+        const finalHeaders = this.conversationNetworkMonitor.getLatestBackendApiHeaders();
         if (!finalHeaders || !finalHeaders.headers['authorization']) {
             console.warn('[gptviewer][sentinel-flow] No valid auth headers found for Step 4.');
             this.view.webContents.removeListener('console-message', logHandler);

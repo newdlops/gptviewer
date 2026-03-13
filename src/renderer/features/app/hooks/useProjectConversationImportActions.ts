@@ -47,6 +47,7 @@ export function useProjectConversationImportActions({
     useState(false);
   const [projectImportError, setProjectImportError] = useState('');
   const [projectImportMode, setProjectImportMode] = useState<ProjectConversationImportMode>('import');
+  const [isProjectForceSync, setIsProjectForceSync] = useState(false);
   const [projectImportProgress, setProjectImportProgress] = useState<ProjectConversationImportProgress | null>(null);
   const [projectImportFailures, setProjectImportFailures] = useState<ProjectConversationImportFailure[]>([]);
   const [projectSyncSummary, setProjectSyncSummary] = useState<ProjectConversationSyncSummary | null>(null);
@@ -122,6 +123,7 @@ export function useProjectConversationImportActions({
         projectImportParentFolderId,
         projectImportPreferences,
         projectImportTargetFolderId: projectImportTargetFolderIdRef.current,
+        isForceSync: isProjectForceSync,
         setActiveConversationId,
         setConversations,
         setExpandedFolderState,
@@ -247,6 +249,7 @@ export function useProjectConversationImportActions({
     openProjectFolderSync,
     isImportingProjectConversations,
     isProjectImportModalOpen,
+    isProjectForceSync,
     projectImportError,
     projectImportMode,
     projectImportFailures,
@@ -258,6 +261,7 @@ export function useProjectConversationImportActions({
     projectSyncSummary,
     retryingProjectConversationUrl: retryingFailureChatUrl,
     setIsProjectImportModalOpen,
+    setIsProjectForceSync,
     setProjectImportParentFolderId,
     setProjectImportPreferredStrategy,
     setProjectImportUrl,

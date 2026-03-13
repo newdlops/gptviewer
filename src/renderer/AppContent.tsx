@@ -180,12 +180,14 @@ function AppContent() {
           !!workspaceActions.retryingProjectConversationUrl
         }
         isImporting={workspaceActions.isImportingProjectConversations}
+        isForceSync={workspaceActions.isProjectForceSync}
         isOpen={
           workspaceActions.isProjectImportModalOpen ||
           workspaceActions.isImportingProjectConversations
         }
         mode={workspaceActions.projectImportMode}
         onClose={() => workspaceActions.setIsProjectImportModalOpen(false)}
+        onForceSyncChange={workspaceActions.setIsProjectForceSync}
         onParentFolderChange={workspaceActions.setProjectImportParentFolderId}
         onProjectUrlChange={workspaceActions.setProjectImportUrl}
         onRetryAllFailures={workspaceActions.handleRetryAllProjectConversationFailures}

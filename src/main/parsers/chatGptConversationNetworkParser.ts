@@ -1,6 +1,7 @@
 import type {
   SharedConversationImport,
   SharedConversationMessage,
+  SharedConversationSource,
 } from '../../shared/refresh/sharedConversationRefresh';
 import type { ChatGptConversationNetworkRecord } from '../services/sharedConversationRefresh/chatgpt/chatGptConversationNetworkMonitor';
 import { parseChatGptConversationDocumentHtml } from './chatGptConversationHtmlParser';
@@ -610,6 +611,22 @@ const getMessageCreateTime = (node: ConversationMappingNode): number => {
     : Number.POSITIVE_INFINITY;
 };
 
+const getReportAssistantMessage = (
+  candidate: ConversationCandidate,
+): SharedConversationMessage | null => {
+  const message = candidate.messages.find((m) => m.role === 'assistant');
+  if (!message) {
+    return null;
+  }
+
+  return {
+    authorName: message.authorName,
+    role: 'assistant',
+    sources: message.sources || [],
+    text: message.text,
+  };
+};
+
 const buildReportAssistantMessages = (
   payload: unknown,
   fallbackUrl: string,
@@ -626,11 +643,51 @@ const buildReportAssistantMessages = (
 
       seenFingerprints.add(fingerprint);
       return true;
-    })
-    .map((message) => ({
-      ...message,
-      sources: [...message.sources],
-    }));
+    });
+
+const extractMessageSourcesFromMetadata = (metadata: Record<string, any>): SharedConversationSource[] => {
+  const sources: SharedConversationSource[] = [];
+  const dedup = new Set<string>();
+
+  const addSource = (url: string, title: string, attribution?: string, description?: string) => {
+    if (!url || dedup.has(url)) return;
+    dedup.add(url);
+    sources.push({ url, title, attribution, description });
+  };
+
+  if (Array.isArray(metadata.search_result_groups)) {
+    for (const group of metadata.search_result_groups) {
+      if (Array.isArray(group.entries)) {
+        for (const entry of group.entries) {
+          if (entry.type === 'search_result' && entry.url) {
+            addSource(entry.url, entry.title || entry.url, entry.attribution, entry.snippet);
+          }
+        }
+      }
+    }
+  }
+
+  if (Array.isArray(metadata.content_references)) {
+    for (const ref of metadata.content_references) {
+      if (Array.isArray(ref.items)) {
+        for (const item of ref.items) {
+          if (item.url) {
+            addSource(item.url, item.title || item.url, item.attribution, item.snippet);
+          }
+        }
+      }
+      if (Array.isArray(ref.sources)) {
+          for (const src of ref.sources) {
+              if (src.url) {
+                  addSource(src.url, src.title || src.url, src.attribution, src.snippet);
+              }
+          }
+      }
+    }
+  }
+
+  return sources;
+};
 
 const buildRenderedMappingMessage = (
   node: ConversationMappingNode,
@@ -643,8 +700,26 @@ const buildRenderedMappingMessage = (
   const hasImagePayload =
     collectImageParts(message?.content).length > 0 || metadataImageParts.length > 0;
   const role = rawRole === 'tool' && hasImagePayload ? 'assistant' : rawRole;
-  const text = normalizeMessageText([...contentParts, ...metadataImageParts].join('\n\n'));
   const metadata = message?.metadata ?? {};
+
+  let rawText = [...contentParts, ...metadataImageParts].join('\n\n');
+  if (Array.isArray(metadata.content_references)) {
+      for (const ref of metadata.content_references) {
+          if (ref.matched_text && typeof ref.matched_text === 'string') {
+              let replacement = ref.alt;
+              if (!replacement && Array.isArray(ref.items) && ref.items.length > 0) {
+                 replacement = `[${ref.items[0].title || ref.items[0].attribution || '출처'}](${ref.items[0].url})`;
+              } else if (!replacement && Array.isArray(ref.sources) && ref.sources.length > 0) {
+                 replacement = `[${ref.sources[0].title || ref.sources[0].attribution || '출처'}](${ref.sources[0].url})`;
+              }
+              if (replacement) {
+                  rawText = rawText.replace(ref.matched_text, replacement);
+              }
+          }
+      }
+  }
+
+  const text = normalizeMessageText(rawText);
   const channel =
     typeof message?.channel === 'string' ? message.channel.toLowerCase() : null;
   const recipient =
@@ -673,11 +748,12 @@ const buildRenderedMappingMessage = (
   }
 
   const authorName = message?.author?.name || undefined;
+  const sources = extractMessageSourcesFromMetadata(metadata);
 
   return {
     authorName,
     role,
-    sources: [],
+    sources,
     text,
   };
 };
@@ -1069,7 +1145,26 @@ const buildConversationFromReportMessage = (
     content && typeof content === 'object'
       ? renderConversationPart((content as { parts?: unknown }).parts ?? content)
       : [];
-  const text = normalizeMessageText(parts.join('\n\n'));
+  
+  const metadata = (reportMessage.metadata as Record<string, any>) || {};
+  let rawText = parts.join('\n\n');
+  
+  // Resolve content references
+  if (Array.isArray(metadata.content_references)) {
+      for (const ref of metadata.content_references) {
+          if (ref.matched_text && typeof ref.matched_text === 'string') {
+              let replacement = ref.alt;
+              if (!replacement && Array.isArray(ref.items) && ref.items.length > 0) {
+                 replacement = `[${ref.items[0].title || ref.items[0].attribution || '출처'}](${ref.items[0].url})`;
+              }
+              if (replacement) {
+                  rawText = rawText.replace(ref.matched_text, replacement);
+              }
+          }
+      }
+  }
+
+  const text = normalizeMessageText(rawText);
   const normalizedTitle = sanitizeConversationTitle(
     extractHeadingTitle(text) ?? title ?? 'Deep Research 결과',
   );
@@ -1078,12 +1173,14 @@ const buildConversationFromReportMessage = (
     return null;
   }
 
+  const sources = extractMessageSourcesFromMetadata(metadata);
+
   return {
     messages: [
       {
         authorName: typeof authorName === 'string' ? authorName : undefined,
         role: 'assistant',
-        sources: [],
+        sources,
         text,
       },
     ],
@@ -1092,15 +1189,6 @@ const buildConversationFromReportMessage = (
     title: normalizedTitle,
   };
 };
-
-const getReportAssistantMessage = (
-  conversation: ConversationCandidate,
-): SharedConversationMessage | null =>
-  [...conversation.messages]
-    .reverse()
-    .find(
-      (message) => message.role === 'assistant' && message.text.trim().length > 0,
-    ) ?? null;
 
 const buildReportMessageConversations = (
   payload: unknown,
