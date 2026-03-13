@@ -2924,31 +2924,43 @@ const initializeChatGptSettings = async () => {
     console.info('[gptviewer][init] Loading chatgpt.com to establish session...');
     await automationView.load('https://chatgpt.com');
     
-    // Wait for the settings to be captured (max 10s)
-    let waitCount = 0;
-    while (!ChatGptConversationNetworkMonitor.getStaticModelConfig() && waitCount < 20) {
-        console.info(`[gptviewer][init] Waiting for settings capture... (${waitCount + 1}/20)`);
+    // Wait for Auth headers to be captured from background requests (max 15s)
+    console.info('[gptviewer][init] Waiting for Authorization headers to be captured...');
+    let authWaitCount = 0;
+    let authHeaders = automationView.getLatestBackendApiHeaders();
+    while ((!authHeaders || !authHeaders.headers['authorization']) && authWaitCount < 30) {
         await new Promise(r => setTimeout(r, 500));
-        waitCount++;
+        authHeaders = automationView.getLatestBackendApiHeaders();
+        authWaitCount++;
     }
 
-    if (!ChatGptConversationNetworkMonitor.getStaticModelConfig()) {
-        console.info('[gptviewer][init] Settings not captured after load, re-triggering fetch...');
+    if (authHeaders && authHeaders.headers['authorization']) {
+        console.info('[gptviewer][init] Auth headers secured. Forcing fresh settings fetch...');
+        // Always trigger a fresh fetch to ensure we have the absolute latest config
         await automationView.execute(`
-            fetch('https://chatgpt.com/backend-api/settings/user')
-                .then(r => r.json())
-                .then(data => console.log('[gptviewer][init-fetch] success'))
-                .catch(e => console.error('[gptviewer][init-fetch] failed', e));
+            fetch('https://chatgpt.com/backend-api/settings/user', {
+                headers: {
+                    'Authorization': ${JSON.stringify(authHeaders.headers['authorization'])},
+                    'Content-Type': 'application/json'
+                }
+            })
+            .then(r => r.json())
+            .then(data => console.log('[gptviewer][init-fetch] SUCCESS'))
+            .catch(e => console.error('[gptviewer][init-fetch] FAILED', e));
         `);
 
-        // Wait a bit more after manual trigger
-        await new Promise(r => setTimeout(r, 2000));
+        // Wait up to 5s for the fetch response to be processed by NetworkMonitor
+        let captureWaitCount = 0;
+        while (!ChatGptConversationNetworkMonitor.getStaticModelConfig() && captureWaitCount < 10) {
+            await new Promise(r => setTimeout(r, 500));
+            captureWaitCount++;
+        }
+    } else {
+        console.warn('[gptviewer][init] Could not capture Auth headers. Settings might be stale or missing.');
     }
 
     if (ChatGptConversationNetworkMonitor.getStaticModelConfig()) {
-        console.info('[gptviewer][init] ChatGPT model config successfully captured.');
-    } else {
-        console.warn('[gptviewer][init] ChatGPT model config capture timed out. Will retry during active usage.');
+        console.info('[gptviewer][init] ChatGPT model config successfully synchronized.');
     }
     
     // Keep it in the background pool for future use

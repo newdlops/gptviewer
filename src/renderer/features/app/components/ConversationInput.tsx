@@ -57,7 +57,7 @@ export function ConversationInput({
   };
 
   return (
-    <div className="conversation-input" style={{ display: 'flex', alignItems: 'flex-end', gap: '10px', padding: '15px 20px', borderTop: '1px solid var(--border-soft)' }}>
+    <div className="conversation-input" style={{ display: 'flex', alignItems: 'flex-end', gap: '12px', padding: '15px 20px', borderTop: '1px solid var(--border-soft)' }}>
       <textarea
         className="conversation-input__textarea"
         style={{ flex: 1, minHeight: '44px', maxHeight: '160px', padding: '10px 14px', borderRadius: '12px', background: 'var(--input-bg)', color: 'var(--text-primary)', border: '1px solid var(--border-soft)', resize: 'vertical' }}
@@ -67,34 +67,50 @@ export function ConversationInput({
         onKeyDown={handleKeyDown}
         disabled={disabled}
       />
-      <div className="conversation-input__actions" style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+      <div className="conversation-input__actions" style={{ display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: '8px', minWidth: '130px' }}>
         {onModelChange && (
           <select
             value={selectedModel}
             onChange={(e) => onModelChange(e.target.value)}
             disabled={disabled || modelOptions.length === 0}
             style={{ 
-              background: 'var(--panel-bg-soft)', 
-              color: 'var(--text-primary)', 
-              border: '1px solid var(--border-soft)', 
+              width: '100%',
+              appearance: 'none',
+              background: 'transparent', 
+              color: 'var(--text-muted)', 
+              border: '1px solid transparent', 
               borderRadius: '8px', 
-              padding: '6px 10px',
+              padding: '6px 24px 6px 12px',
               fontSize: '0.85rem',
               cursor: modelOptions.length > 0 ? 'pointer' : 'wait',
               outline: 'none',
-              maxWidth: '180px',
-              opacity: modelOptions.length > 0 ? 1 : 0.6
+              opacity: modelOptions.length > 0 ? 1 : 0.6,
+              backgroundImage: 'url("data:image/svg+xml;charset=US-ASCII,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2224%22%20height%3D%2224%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22currentColor%22%20stroke-width%3D%222%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpolyline%20points%3D%226%209%2012%2015%2018%209%22%3E%3C%2Fpolyline%3E%3C%2Fsvg%3E")',
+              backgroundRepeat: 'no-repeat',
+              backgroundPosition: 'right 6px center',
+              backgroundSize: '14px',
+              transition: 'color 0.2s, background-color 0.2s, border-color 0.2s'
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.color = 'var(--text-primary)';
+              e.currentTarget.style.background = 'color-mix(in srgb, var(--panel-bg-soft) 40%, transparent)';
+              e.currentTarget.style.borderColor = 'var(--border-soft)';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.color = 'var(--text-muted)';
+              e.currentTarget.style.background = 'transparent';
+              e.currentTarget.style.borderColor = 'transparent';
             }}
           >
-            <option value="auto">자동 (Auto)</option>
+            <option value="auto" style={{ color: 'var(--text-primary)', background: 'var(--panel-bg)' }}>자동 (Auto)</option>
             {modelOptions.length > 0 ? (
               modelOptions.map((opt) => (
-                <option key={opt.value} value={opt.value}>
+                <option key={opt.value} value={opt.value} style={{ color: 'var(--text-primary)', background: 'var(--panel-bg)' }}>
                   {opt.label}
                 </option>
               ))
             ) : (
-              <option disabled>모델 목록 로딩 중...</option>
+              <option disabled style={{ color: 'var(--text-primary)', background: 'var(--panel-bg)' }}>로딩 중...</option>
             )}
           </select>
         )}
@@ -103,7 +119,7 @@ export function ConversationInput({
           variant="primary"
           onClick={handleSend}
           disabled={!message.trim() || disabled || isRefreshing}
-          style={{ height: '36px', borderRadius: '8px', padding: '0 16px', fontWeight: 'bold' }}
+          style={{ width: '100%', height: '36px', borderRadius: '8px', padding: '0 16px', fontWeight: 'bold' }}
         >
           {getButtonText()}
         </Button>

@@ -64,7 +64,17 @@ export function useSharedConversationActions({
   const [refreshError, setRefreshError] = useState('');
   const [refreshingConversationId, setRefreshingConversationId] = useState<string | null>(null);
   const [sendMessageStatus, setSendMessageStatus] = useState<'idle' | 'sending' | 'receiving'>('idle');
-  const [modelConfig, setModelConfig] = useState<any>(null);
+  
+  // Use localStorage to provide an instant cached model list while the background fetch happens
+  const [modelConfig, setModelConfig] = useState<any>(() => {
+    try {
+      const cached = localStorage.getItem('gptviewer-cached-model-config');
+      return cached ? JSON.parse(cached) : null;
+    } catch {
+      return null;
+    }
+  });
+  
   const [selectedModel, setSelectedModel] = useState<string>(() => localStorage.getItem('gptviewer-selected-model') || 'auto');
   const [refreshConfigState, setRefreshConfigState] =
     useState<SharedConversationRefreshConfigState | null>(null);
@@ -388,18 +398,18 @@ export function useSharedConversationActions({
     const fetchModelConfig = async () => {
       try {
         const config = await window.electronAPI?.getChatGptModelConfig();
-        if (config) {
+        if (config && Object.keys(config).length > 0) {
           setModelConfig(config);
-          // If current selected model is not in the new config, and not 'auto', 
-          // we might want to keep it or reset, but usually 'auto' is safe.
+          localStorage.setItem('gptviewer-cached-model-config', JSON.stringify(config));
         }
       } catch (e) {
         console.error('Failed to fetch model config:', e);
       }
     };
 
+    // Fetch immediately, then poll every 10 seconds (faster sync on startup)
     fetchModelConfig();
-    const interval = setInterval(fetchModelConfig, 30000); // 30 seconds
+    const interval = setInterval(fetchModelConfig, 10000); 
     return () => clearInterval(interval);
   }, []);
 

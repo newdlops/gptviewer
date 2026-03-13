@@ -131,16 +131,26 @@ export class ChatGptConversationNetworkMonitor {
     this.triggerInitialSettingsFetch();
   }
 
-  private triggerInitialSettingsFetch() {
+  private async triggerInitialSettingsFetch() {
     if (this.webContents.isDestroyed()) return;
     
+    // Give some time for background requests to populate Auth headers
+    await new Promise(r => setTimeout(r, 2000));
+    
+    const latestHeaders = this.getLatestBackendApiHeaders();
+    const authHeader = latestHeaders?.headers?.['authorization'];
+    
     // Inject a small script to trigger the fetch from the page context
-    // Use the full URL to ensure it reaches the right domain
+    // Include Authorization header if available
     const targetUrl = `${BACKEND_API_PREFIX}settings/user`;
     const script = `
       (async () => {
         try {
-          const res = await fetch('${targetUrl}');
+          const headers = { 'Content-Type': 'application/json' };
+          if (${JSON.stringify(authHeader)}) {
+             headers['Authorization'] = ${JSON.stringify(authHeader)};
+          }
+          const res = await fetch('${targetUrl}', { headers });
           if (res.ok) {
              console.info('[gptviewer][initial-fetch] settings/user success');
           } else {
@@ -252,7 +262,7 @@ export class ChatGptConversationNetworkMonitor {
   }
 
   getLatestModelConfig(): any {
-    return ChatGptConversationNetworkMonitor.lastUserSettings?.last_used_model_config || null;
+    return ChatGptConversationNetworkMonitor.lastUserSettings?.settings?.last_used_model_config || null;
   }
 
   getLatestUserSettings(): any {
@@ -260,7 +270,7 @@ export class ChatGptConversationNetworkMonitor {
   }
 
   static getStaticModelConfig(): any {
-    return ChatGptConversationNetworkMonitor.lastUserSettings?.last_used_model_config || null;
+    return ChatGptConversationNetworkMonitor.lastUserSettings?.settings?.last_used_model_config || null;
   }
 
   hasCapturedUrl(pattern: string): boolean {
@@ -497,18 +507,23 @@ export class ChatGptConversationNetworkMonitor {
 
         const url = responseMeta.url;
         if (url.includes('/backend-api/settings/user')) {
-            // ALWAYS Log settings/user as requested
-            console.info(`[gptviewer][monitor:response] /backend-api/settings/user BODY:`, bodyText);
             try {
                 const payload = JSON.parse(bodyText);
-                ChatGptConversationNetworkMonitor.lastUserSettings = payload; // Cache statically
-                
-                const juices = payload?.last_used_model_config?.juices?.web || payload?.last_used_model_config?.juices?.default;
+                const modelConfig = payload?.settings?.last_used_model_config;
+                const juices = modelConfig?.juices?.web || modelConfig?.juices?.default;
+
                 if (juices && typeof juices === 'object') {
+                    // Update cache ONLY when we have valid model data
+                    ChatGptConversationNetworkMonitor.lastUserSettings = payload;
                     ChatGptConversationNetworkMonitor.availableModels = Object.keys(juices);
-                    console.info(`[gptviewer][monitor] Captured available models: ${ChatGptConversationNetworkMonitor.availableModels.join(', ')}`);
+                    console.info(`[gptviewer][monitor:response] settings/user SUCCESS: Captured ${ChatGptConversationNetworkMonitor.availableModels.length} models.`);
+                } else {
+                    // If the payload is partial or doesn't have what we need, don't overwrite the static cache
+                    console.warn(`[gptviewer][monitor:response] settings/user IGNORED: Valid model config not found. Keeping existing cache.`);
                 }
-            } catch (e) {}
+            } catch (e) {
+                console.error(`[gptviewer][monitor:response] settings/user ERROR parsing JSON:`, e);
+            }
         }
 
         if (!url.includes('/conversation/init')) {
