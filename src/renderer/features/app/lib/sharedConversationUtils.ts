@@ -124,6 +124,7 @@ export const buildConversationFromImport = (
   isSharedImport: true,
   messages: importedConversation.messages.map((message, index) => ({
     id: `${conversationId}-${index + 1}`,
+    name: message.authorName,
     role: message.role,
     sources: message.sources,
     text: message.text,

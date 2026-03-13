@@ -18,7 +18,12 @@ export type ImportedConversation = {
   fetchedAt: string;
   importOrigin?: 'chat-url';
   importWarning?: SharedConversationImportWarning;
-  messages: Array<{ role: ChatRole; sources: MessageSource[]; text: string }>;
+  messages: Array<{
+    authorName?: string;
+    role: ChatRole;
+    sources: MessageSource[];
+    text: string;
+  }>;
   refreshRequest?: SharedConversationRefreshRequest;
   sourceUrl: string;
   summary: string;
@@ -27,6 +32,7 @@ export type ImportedConversation = {
 
 export type Message = {
   id: string;
+  name?: string;
   role: ChatRole;
   sources: MessageSource[];
   text: string;

@@ -83,7 +83,7 @@ export const normalizeImportedConversation = (
   }
 
   const record = value as Record<string, unknown>;
-  const messages = Array.isArray(record.messages)
+  const messages: ImportedConversation['messages'] = Array.isArray(record.messages)
     ? record.messages
         .map((message) => {
           if (!message || typeof message !== 'object') {
@@ -95,6 +95,10 @@ export const normalizeImportedConversation = (
             messageRecord.role === 'assistant' || messageRecord.role === 'user'
               ? messageRecord.role
               : null;
+          const authorName =
+            typeof messageRecord.authorName === 'string'
+              ? messageRecord.authorName.trim()
+              : undefined;
           const text =
             typeof messageRecord.text === 'string' ? messageRecord.text.trim() : '';
 
@@ -103,19 +107,14 @@ export const normalizeImportedConversation = (
           }
 
           return {
+            authorName,
             role,
             sources: normalizeMessageSources(messageRecord.sources),
             text,
           };
         })
         .filter(
-          (
-            message,
-          ): message is {
-            role: ChatRole;
-            sources: MessageSource[];
-            text: string;
-          } => !!message,
+          (message): message is ImportedConversation['messages'][number] => !!message,
         )
     : [];
 

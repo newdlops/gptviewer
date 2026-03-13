@@ -577,16 +577,35 @@ export class ChatGptAutomationView {
 
         // --- STEP 1: Conversation Prepare ---
         console.info('[gptviewer][sentinel-flow] Executing Step 1: /conversation/prepare');
-        const step1Result = await this.execute<{ success: boolean; conduitToken?: string; error?: string; status?: number }>(`
+        const step1Result = await this.execute<{ success: boolean; conduitToken?: string; parentMessageId?: string; error?: string; status?: number }>(`
             (async () => {
                 try {
                     const urlParts = window.location.pathname.split('/');
                     const conversationId = urlParts[urlParts.length - 1];
-                    const lastMessageElement = document.querySelector('div[data-message-id]:last-of-type');
-                    const parentMessageId = lastMessageElement ? lastMessageElement.getAttribute('data-message-id') : null;
                     
-                    if (!conversationId || conversationId === 'c' || !parentMessageId) {
+                    if (!conversationId || conversationId === 'c') {
                         return { success: false, error: 'context_missing' };
+                    }
+
+                    const headers = {
+                        'Content-Type': 'application/json',
+                        ...${JSON.stringify(initialHeaders.headers)}
+                    };
+
+                    console.log('[gptviewer-script][API] Fetching conversation data for current_node...');
+                    const convoRes = await fetch(\`/backend-api/conversation/\${conversationId}\`, {
+                        method: 'GET',
+                        headers: headers
+                    });
+
+                    if (!convoRes.ok) {
+                        return { success: false, error: 'failed_to_fetch_conversation' };
+                    }
+                    const convoData = await convoRes.json();
+                    const parentMessageId = convoData.current_node;
+
+                    if (!parentMessageId) {
+                        return { success: false, error: 'current_node_missing' };
                     }
 
                     const payload = {
@@ -600,11 +619,6 @@ export class ChatGptAutomationView {
                             content: { content_type: "text", parts: [${JSON.stringify(message)}] }
                         },
                         client_contextual_info: { app_name: "chatgpt.com" }
-                    };
-
-                    const headers = {
-                        'Content-Type': 'application/json',
-                        ...${JSON.stringify(initialHeaders.headers)}
                     };
 
                     console.log('[gptviewer-script][API] Step 1 Requesting with Auth Header Presence:', !!headers['authorization']);
@@ -621,7 +635,7 @@ export class ChatGptAutomationView {
                         return { success: false, error: 'api_fail', status: response.status };
                     }
                     const data = await response.json();
-                    return { success: data.status === 'ok', conduitToken: data.conduit_token };
+                    return { success: data.status === 'ok', conduitToken: data.conduit_token, parentMessageId: parentMessageId };
                 } catch (e) { return { success: false, error: e.message }; }
             })()
         `);
@@ -667,8 +681,7 @@ export class ChatGptAutomationView {
                 try {
                     const urlParts = window.location.pathname.split('/');
                     const conversationId = urlParts[urlParts.length - 1];
-                    const lastMessageElement = document.querySelector('div[data-message-id]:last-of-type');
-                    const parentMessageId = lastMessageElement ? lastMessageElement.getAttribute('data-message-id') : null;
+                    const parentMessageId = ${JSON.stringify(step1Result.parentMessageId)};
 
                     const headers = {
                         ...${JSON.stringify(finalHeaders.headers)},
@@ -682,17 +695,42 @@ export class ChatGptAutomationView {
 
                     const payload = {
                         action: "next",
+                        messages: [
+                            {
+                                id: crypto.randomUUID(),
+                                author: { role: "user" },
+                                content: { content_type: "text", parts: [${JSON.stringify(message)}] },
+                                metadata: {
+                                    developer_mode_connector_ids: [],
+                                    selected_sources: [],
+                                    selected_github_repos: [],
+                                    selected_all_github_repos: false,
+                                    serialization_metadata: { custom_symbol_offsets: [] }
+                                }
+                            }
+                        ],
                         conversation_id: conversationId,
                         parent_message_id: parentMessageId,
-                        model: "auto",
-                        partial_query: {
-                            id: crypto.randomUUID(),
-                            author: { role: "user" },
-                            content: { content_type: "text", parts: [${JSON.stringify(message)}] }
-                        },
+                        model: "gpt-5-3",
+                        timezone_offset_min: -540,
+                        timezone: "Asia/Seoul",
+                        conversation_mode: { kind: "primary_assistant" },
+                        enable_message_followups: true,
+                        system_hints: [],
                         supports_buffering: true,
                         supported_encodings: ["v1"],
-                        client_contextual_info: { app_name: "chatgpt.com" }
+                        client_contextual_info: {
+                            is_dark_mode: false,
+                            time_since_loaded: 88,
+                            page_height: window.innerHeight,
+                            page_width: window.innerWidth,
+                            pixel_ratio: window.devicePixelRatio || 1,
+                            screen_height: window.screen.height,
+                            screen_width: window.screen.width,
+                            app_name: "chatgpt.com"
+                        },
+                        paragen_cot_summary_display_override: "allow",
+                        force_parallel_switch: "auto"
                     };
 
                     const response = await fetch('https://chatgpt.com/backend-api/f/conversation', {

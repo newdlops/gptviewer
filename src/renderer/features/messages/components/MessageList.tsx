@@ -407,7 +407,11 @@ function VirtualizedMessageBubbleComponent({
           <div className="message-bubble__meta">
             <span>나</span>
           </div>
-        ) : null}
+        ) : (
+          <div className="message-bubble__meta">
+            <span>{message.name || 'ChatGPT'}</span>
+          </div>
+        )}
         <div className="message-bubble__content">
           <ReactMarkdown
             components={markdownComponents}

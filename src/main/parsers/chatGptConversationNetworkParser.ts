@@ -11,7 +11,7 @@ const INLINE_CITATION_TOKEN_PATTERN =
 
 type ConversationMappingNode = {
   message?: {
-    author?: { role?: string };
+    author?: { role?: string; name?: string | null };
     channel?: string | null;
     create_time?: number | null;
     content?: {
@@ -672,7 +672,10 @@ const buildRenderedMappingMessage = (
     return null;
   }
 
+  const authorName = message?.author?.name || undefined;
+
   return {
+    authorName,
     role,
     sources: [],
     text,
@@ -1053,6 +1056,10 @@ const buildConversationFromReportMessage = (
     author && typeof author === 'object'
       ? (author as { role?: unknown }).role
       : undefined;
+  const authorName =
+    author && typeof author === 'object'
+      ? (author as { name?: unknown }).name
+      : undefined;
   const content = reportMessage.content;
   const contentType =
     content && typeof content === 'object'
@@ -1074,6 +1081,7 @@ const buildConversationFromReportMessage = (
   return {
     messages: [
       {
+        authorName: typeof authorName === 'string' ? authorName : undefined,
         role: 'assistant',
         sources: [],
         text,
@@ -1291,29 +1299,141 @@ export const parseChatGptConversationJsonPayload = (
   );
 };
 
+const parseSseConversationBody = (
+  text: string,
+  fallbackUrl: string,
+): ConversationCandidate | null => {
+  if (!text.includes('event: delta') && !text.includes('data: {"')) {
+    return null;
+  }
+
+  const lines = text.split('\n');
+  const mapping: Record<string, ConversationMappingNode> = {};
+  const messageParts = new Map<string, string[]>();
+  let currentNodeId: string | undefined;
+  let title: string | undefined;
+
+  for (const line of lines) {
+    if (!line.startsWith('data: ')) {
+      continue;
+    }
+
+    const jsonText = line.slice(6).trim();
+    if (jsonText === '[DONE]') {
+      break;
+    }
+
+    try {
+      const payload = JSON.parse(jsonText);
+      if (payload.v) {
+        const v = payload.v;
+        if (payload.o === 'add' && v.message) {
+          const messageId = v.message.id;
+          mapping[messageId] = {
+            message: v.message,
+            parent: v.message.metadata?.parent_id,
+          };
+          if (!currentNodeId || v.message.author?.role === 'assistant') {
+            currentNodeId = messageId;
+          }
+          if (v.message.content?.parts) {
+            messageParts.set(messageId, v.message.content.parts.map((p: any) => String(p)));
+          }
+        } else if (payload.o === 'patch' && Array.isArray(v)) {
+          v.forEach((patch: any) => {
+            if (patch.p?.startsWith('/message/content/parts/')) {
+              // Path like /message/content/parts/0
+              const partsMatch = patch.p.match(/\/message\/content\/parts\/(\d+)/);
+              if (partsMatch && currentNodeId) {
+                const partIndex = parseInt(partsMatch[1], 10);
+                const currentParts = messageParts.get(currentNodeId) || [];
+                if (patch.o === 'append') {
+                  currentParts[partIndex] = (currentParts[partIndex] || '') + String(patch.v);
+                } else if (patch.o === 'replace') {
+                  currentParts[partIndex] = String(patch.v);
+                }
+                messageParts.set(currentNodeId, currentParts);
+
+                // Update mapping node
+                if (mapping[currentNodeId]) {
+                  if (!mapping[currentNodeId].message!.content) {
+                    mapping[currentNodeId].message!.content = { content_type: 'text', parts: [] };
+                  }
+                  mapping[currentNodeId].message!.content!.parts = currentParts;
+                }
+              }
+            } else if (patch.p === '/message/status' && currentNodeId && mapping[currentNodeId]) {
+               mapping[currentNodeId].message!.status = patch.v;
+            } else if (patch.p === '/title' && typeof patch.v === 'string') {
+               title = patch.v;
+            }
+          });
+        }
+      }
+
+      if (payload.mapping && payload.current_node) {
+          const nested = parseChatGptConversationJsonPayload(payload, fallbackUrl);
+          if (nested) return nested;
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  // Final pass to ensure status is set if we have at least one assistant message
+  if (currentNodeId && mapping[currentNodeId]) {
+      mapping[currentNodeId].message!.status = 'finished_successfully';
+  }
+
+  if (Object.keys(mapping).length > 0 && currentNodeId) {
+    const reportMessageConversations = buildReportMessageConversations(
+      { mapping, current_node: currentNodeId },
+      fallbackUrl,
+    );
+    return buildConversationFromMapping(
+      {
+        mapping,
+        current_node: currentNodeId,
+        title,
+      },
+      fallbackUrl,
+      reportMessageConversations,
+    );
+  }
+
+  return null;
+};
+
 const parseJsonConversationBody = (
   text: string,
   fallbackUrl: string,
 ): ConversationCandidate | null => {
-  const candidates = [text.trim(), text.trim().replace(/^for\s*\(;;\);\s*/, '')];
+  const jsonConversation = (() => {
+    const candidates = [text.trim(), text.trim().replace(/^for\s*\(;;\);\s*/, '')];
 
-  for (const candidate of candidates) {
-    if (!candidate) {
-      continue;
-    }
-
-    try {
-      const parsed = JSON.parse(candidate) as unknown;
-      const conversation = parseChatGptConversationJsonPayload(parsed, fallbackUrl);
-      if (conversation) {
-        return conversation;
+    for (const candidate of candidates) {
+      if (!candidate) {
+        continue;
       }
-    } catch {
-      // Ignore JSON parse failures and continue with other parsers.
+
+      try {
+        const parsed = JSON.parse(candidate) as unknown;
+        const conversation = parseChatGptConversationJsonPayload(parsed, fallbackUrl);
+        if (conversation) {
+          return conversation;
+        }
+      } catch {
+        // Ignore JSON parse failures and continue with other candidates.
+      }
     }
+    return null;
+  })();
+
+  if (jsonConversation) {
+    return jsonConversation;
   }
 
-  return null;
+  return parseSseConversationBody(text, fallbackUrl);
 };
 
 const parseWidgetStateConversationBody = (

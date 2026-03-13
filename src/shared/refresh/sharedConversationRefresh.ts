@@ -22,6 +22,7 @@ export type SharedConversationSource = {
 };
 
 export type SharedConversationMessage = {
+  authorName?: string;
   role: 'assistant' | 'user';
   text: string;
   sources: SharedConversationSource[];
