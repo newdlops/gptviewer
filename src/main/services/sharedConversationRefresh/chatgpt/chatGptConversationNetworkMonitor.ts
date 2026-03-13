@@ -42,19 +42,34 @@ const RELEVANT_HOST_PATTERNS = [
  * Set to true to enable specific log categories.
  */
 export const MONITOR_LOG_FLAGS = {
-    SHOW_BACKUP_REQUESTS: false,   // session.webRequest logs
-    SHOW_SENTINEL_FLOW: true,      // Sentinel (prepare/finalize) logs
-    SHOW_CONVERSATION_FLOW: true,  // f/conversation and body logs
-    SHOW_AUTH_CAPTURE: true,       // Authorization header capture logs
-    SHOW_GENERAL_REQUESTS: false,  // General /backend-api/ request monitoring
-    SHOW_MAPPING: true,            // Sentinel token mapping logs
-
-    // Detailed content flags (Applied to flows enabled above)
+    // 1. 요청 헤더 출력
     SHOW_REQUEST_HEADERS: true,
-    SHOW_REQUEST_BODY: true,
-    SHOW_RESPONSE_HEADERS: true,
-    SHOW_RESPONSE_BODY: true,
+
+    // 2. 응답 헤더 출력
+    SHOW_RESPONSE_HEADERS: false,
+
+    // 3. 요청 바디(Payload) 출력
+    SHOW_REQUEST_BODY: false,
+
+    // 4. 응답 바디 출력
+    SHOW_RESPONSE_BODY: false,
+
+    // 5. 스트림 이벤트 및 기타 중요 이벤트 상태 로그 (시작, 수신, 종료 등)
+    SHOW_STREAM_EVENTS: true,
+
+    // 기타 시스템 디버깅용 보조 플래그
+    SHOW_BACKUP_REQUESTS: false,   // session.webRequest 기본 URL 로그
+    SHOW_GENERAL_REQUESTS: false,  // 모든 /backend-api/ 단순 호출 로그
 };
+
+// 로그를 관찰할 주요 대상 API 경로들
+const TARGET_URLS = [
+    '/sentinel/chat-requirements',
+    '/backend-api/f/conversation',
+    '/backend-api/celsius/ws/user'
+];
+
+const isTargetUrl = (url: string) => TARGET_URLS.some(target => url.includes(target));
 
 const normalizeHeaders = (headers: Record<string, string | string[]>) => {
   const normalized: Record<string, string> = {};
@@ -94,9 +109,17 @@ const isRelevantContentType = (mimeType?: string): boolean => {
 
 const isRelevantResponse = (responseMeta: PendingResponseMeta): boolean => {
   const url = responseMeta.url;
-  if (url.includes('/backend-api/lat/') || url.includes('/backend-api/sentinel/ping')) {
+  // Always allow specific important API endpoints regardless of mimeType
+  if (
+    url.includes('/backend-api/lat/') ||
+    url.includes('/backend-api/sentinel/ping') ||
+    url.includes('/backend-api/settings/user') ||
+    url.includes('/backend-api/celsius/ws/user') ||
+    url.includes('/backend-api/f/conversation')
+  ) {
     return true;
   }
+
   if (!RELEVANT_HOST_PATTERNS.some((pattern) => url.includes(pattern))) {
     return false;
   }
@@ -111,7 +134,8 @@ const isRelevantResponse = (responseMeta: PendingResponseMeta): boolean => {
 export class ChatGptConversationNetworkMonitor {
   private static lastUserSettings: any = null;
   private static availableModels: string[] = [];
-  
+
+  private activeResumeRequestId: string | null = null;
   private lastSuccessfulBackendApiHeaders: CapturedBackendApiRequestHeaders | null = null;
   private sentinelHeaders: Record<string, string> = {};
   private readonly capturedUrls = new Set<string>();
@@ -119,6 +143,8 @@ export class ChatGptConversationNetworkMonitor {
   private readonly pendingResponses = new Map<string, PendingResponseMeta>();
   private readonly records: ChatGptConversationNetworkRecord[] = [];
   private readonly readyPromise: Promise<void>;
+
+  public onResumeStreamFinished: (() => void) | null = null;
 
   constructor(private readonly webContents: WebContents) {
     this.readyPromise = this.attach();
@@ -133,13 +159,13 @@ export class ChatGptConversationNetworkMonitor {
 
   private async triggerInitialSettingsFetch() {
     if (this.webContents.isDestroyed()) return;
-    
+
     // Give some time for background requests to populate Auth headers
     await new Promise(r => setTimeout(r, 2000));
-    
+
     const latestHeaders = this.getLatestBackendApiHeaders();
     const authHeader = latestHeaders?.headers?.['authorization'];
-    
+
     // Inject a small script to trigger the fetch from the page context
     // Include Authorization header if available
     const targetUrl = `${BACKEND_API_PREFIX}settings/user`;
@@ -166,7 +192,7 @@ export class ChatGptConversationNetworkMonitor {
 
   private setupBackupMonitor() {
     if (this.webContents.isDestroyed()) return;
-    
+
     const session = this.webContents.session;
     const webContentsId = this.webContents.id;
 
@@ -176,7 +202,7 @@ export class ChatGptConversationNetworkMonitor {
     const recordUrl = (url: string, source: string) => {
         if (!url) return;
         const lowerUrl = url.toLowerCase();
-        
+
         // Log all backend-api or specific patterns we are looking for
         if (lowerUrl.includes('/backend-api/') || lowerUrl.includes('lat/') || lowerUrl.includes('ping')) {
             if (!this.capturedUrls.has(url)) {
@@ -269,6 +295,10 @@ export class ChatGptConversationNetworkMonitor {
     return ChatGptConversationNetworkMonitor.lastUserSettings;
   }
 
+  isResumeStreamActive(): boolean {
+    return this.activeResumeRequestId !== null;
+  }
+
   static getStaticModelConfig(): any {
     return ChatGptConversationNetworkMonitor.lastUserSettings?.settings?.last_used_model_config || null;
   }
@@ -285,7 +315,7 @@ export class ChatGptConversationNetworkMonitor {
 
   getLatestBackendApiHeaders() {
     if (!this.lastSuccessfulBackendApiHeaders) return null;
-    
+
     return {
       ...this.lastSuccessfulBackendApiHeaders,
       headers: {
@@ -328,7 +358,7 @@ export class ChatGptConversationNetworkMonitor {
               console.info(`[MAPPING] requirements-token captured from ${url}`);
           }
       }
-      
+
       // 2. proof-token (from proofofwork or p or proof)
       const pToken = payload.proofofwork || payload.p || payload.proof;
       if (pToken) {
@@ -337,7 +367,7 @@ export class ChatGptConversationNetworkMonitor {
               console.info(`[MAPPING] proof-token captured from ${url}`);
           }
       }
-      
+
       // 3. turnstile-token (from turnstile.token)
       if (payload.turnstile && typeof payload.turnstile === 'object' && payload.turnstile.token) {
           this.sentinelHeaders['openai-sentinel-turnstile-token'] = payload.turnstile.token;
@@ -362,11 +392,16 @@ export class ChatGptConversationNetworkMonitor {
 
       const url = response.url;
       this.capturedUrls.add(url);
+
+      if (url.includes('/backend-api/f/conversation/resume')) {
+        this.activeResumeRequestId = requestId;
+        if (MONITOR_LOG_FLAGS.SHOW_RESUME_STREAM) {
+          console.info(`[gptviewer][monitor:resume] STREAM STARTED: ${url} (ID: ${requestId})`);
+        }
+      }
+
       if (!url.includes('/conversation/init')) {
-        const isSentinel = url.includes('/sentinel/chat-requirements');
-        const isConversation = url.includes('/backend-api/f/conversation');
-        const flowEnabled = (isSentinel && MONITOR_LOG_FLAGS.SHOW_SENTINEL_FLOW) || (isConversation && MONITOR_LOG_FLAGS.SHOW_CONVERSATION_FLOW);
-        if (flowEnabled && MONITOR_LOG_FLAGS.SHOW_RESPONSE_HEADERS) {
+        if (isTargetUrl(url) && MONITOR_LOG_FLAGS.SHOW_RESPONSE_HEADERS) {
           console.info(`Response Header (${url}): Status ${response.status}`, JSON.stringify(response.headers, null, 2));
         }
       }
@@ -379,6 +414,13 @@ export class ChatGptConversationNetworkMonitor {
       });
     }
 
+    if (method === 'Network.dataReceived') {
+      const { requestId, dataLength } = params as { requestId: string; dataLength: number };
+      if (requestId === this.activeResumeRequestId && MONITOR_LOG_FLAGS.SHOW_RESUME_STREAM) {
+        console.info(`[gptviewer][monitor:resume] RECEIVING DATA: ${dataLength} bytes`);
+      }
+    }
+
     if (method === 'Network.requestWillBeSent') {
       const requestId = String(params.requestId || '');
       const request = params.request as { method?: string; url?: string; postData?: string; hasPostData?: boolean } | undefined;
@@ -386,7 +428,7 @@ export class ChatGptConversationNetworkMonitor {
 
       const url = request.url;
       this.capturedUrls.add(url);
-      
+
       // Log all backend-api requests for debugging lat/r detection
       if (url.includes('/backend-api/') && MONITOR_LOG_FLAGS.SHOW_GENERAL_REQUESTS) {
           console.info(`[gptviewer][monitor:request] ${url}`);
@@ -400,12 +442,7 @@ export class ChatGptConversationNetworkMonitor {
       });
 
       if (!url.includes('/conversation/init')) {
-        const isSentinel = url.includes('/sentinel/chat-requirements');
-        const isConversation = url.includes('/backend-api/f/conversation');
-        const showSentinel = isSentinel && MONITOR_LOG_FLAGS.SHOW_SENTINEL_FLOW;
-        const showConversation = isConversation && MONITOR_LOG_FLAGS.SHOW_CONVERSATION_FLOW;
-        
-        if (showSentinel || showConversation) {
+        if (isTargetUrl(url)) {
           if (request.hasPostData && !request.postData) {
             const debuggerApi = this.webContents.debugger;
             if (debuggerApi.isAttached()) {
@@ -447,12 +484,7 @@ export class ChatGptConversationNetworkMonitor {
       });
 
       if (!url.includes('/conversation/init')) {
-        const isSentinel = url.includes('/sentinel/chat-requirements');
-        const isConversation = url.includes('/backend-api/f/conversation');
-        const showSentinel = isSentinel && MONITOR_LOG_FLAGS.SHOW_SENTINEL_FLOW;
-        const showConversation = isConversation && MONITOR_LOG_FLAGS.SHOW_CONVERSATION_FLOW;
-        
-        if (showSentinel || showConversation) {
+        if (isTargetUrl(url)) {
           if (MONITOR_LOG_FLAGS.SHOW_REQUEST_HEADERS) {
             console.info(`Request Header (${url}):`, JSON.stringify(headers, null, 2));
           }
@@ -488,6 +520,16 @@ export class ChatGptConversationNetworkMonitor {
       const requestMeta = this.pendingRequests.get(requestId);
       this.pendingRequests.delete(requestId);
       this.pendingResponses.delete(requestId);
+
+      if (requestId === this.activeResumeRequestId) {
+        this.activeResumeRequestId = null;
+        if (MONITOR_LOG_FLAGS.SHOW_RESUME_STREAM) {
+          console.info(`[gptviewer][monitor:resume] STREAM FINISHED. Triggering refresh...`);
+        }
+        if (this.onResumeStreamFinished) {
+          this.onResumeStreamFinished();
+        }
+      }
 
       if (!requestId || !responseMeta || !isRelevantResponse(responseMeta)) return;
 
@@ -526,17 +568,18 @@ export class ChatGptConversationNetworkMonitor {
             }
         }
 
-        if (!url.includes('/conversation/init')) {
-          const isSentinel = url.includes('/sentinel/chat-requirements');
-          const isConversation = url.includes('/backend-api/f/conversation');
-          const showSentinel = isSentinel && MONITOR_LOG_FLAGS.SHOW_SENTINEL_FLOW;
-          const showConversation = isConversation && MONITOR_LOG_FLAGS.SHOW_CONVERSATION_FLOW;
+        if (url.includes('/backend-api/celsius/ws/user')) {
+            if (MONITOR_LOG_FLAGS.SHOW_WS_URL_CAPTURE) {
+                console.info(`[gptviewer][monitor:response] /celsius/ws/user BODY:`, bodyText);
+            }
+        }
 
-          if (showSentinel || showConversation) {
+        if (!url.includes('/conversation/init')) {
+          if (isTargetUrl(url)) {
             if (MONITOR_LOG_FLAGS.SHOW_RESPONSE_BODY) {
               console.info(`Response Body (${url}):`, bodyText);
             }
-            
+
             // Extract tokens from Responses as reinforcement
             try {
                 const payload = JSON.parse(bodyText);

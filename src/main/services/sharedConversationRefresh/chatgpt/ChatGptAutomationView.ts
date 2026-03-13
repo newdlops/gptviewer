@@ -556,8 +556,11 @@ export class ChatGptAutomationView {
 
     console.info(`[gptviewer][automation-view] Sending message via 4-step Sentinel flow (model: ${model || 'auto'})...`);
     
-    const logHandler = (event: any, level: number, message: string, line: number, sourceId: string) => {
-        if (message.includes('[gptviewer-script][API]')) {
+    const logHandler = (event: any, ...args: any[]) => {
+        // Handle both older Electron (event, level, message, line, sourceId) 
+        // and newer Electron (event.message) signatures
+        const message = event.message || (args.length > 1 ? args[1] : '');
+        if (typeof message === 'string' && message.includes('[gptviewer-script][API]')) {
             console.log(`[Browser Console] ${message}`);
         }
     };
@@ -778,14 +781,15 @@ export class ChatGptAutomationView {
     while (Date.now() < deadline && !this.isClosed() && !hasStarted) {
       startCheckCount++;
       const responding = await this.isResponding();
+      const isStreamActive = this.conversationNetworkMonitor?.isResumeStreamActive() ?? false;
       
       if (startCheckCount % 2 === 0) {
-          console.info(`[gptviewer] Start check ${startCheckCount}: isResponding=${responding}`);
+          console.info(`[gptviewer] Start check ${startCheckCount}: isResponding=${responding} isStreamActive=${isStreamActive}`);
       }
 
-      if (responding) {
+      if (responding || isStreamActive) {
         hasStarted = true;
-        console.info('[gptviewer] Response started generating.');
+        console.info(`[gptviewer] Response started generating (StreamActive: ${isStreamActive}).`);
         break;
       }
       await sleep(intervalMs / 2);
@@ -798,32 +802,40 @@ export class ChatGptAutomationView {
 
     console.info('[gptviewer] Waiting for response to finish...');
     let finishCheckCount = 0;
+    let streamConfirmedFinished = false;
+
     while (Date.now() < deadline && !this.isClosed()) {
       finishCheckCount++;
       const responding = await this.isResponding();
+      const isStreamActive = this.conversationNetworkMonitor?.isResumeStreamActive() ?? false;
       const hasPing = this.conversationNetworkMonitor?.hasCapturedUrl('/backend-api/sentinel/ping') ?? false;
       const hasLatR = this.conversationNetworkMonitor?.hasCapturedUrl('/backend-api/lat/') ?? false;
       
       if (finishCheckCount % 2 === 0) {
-          console.info(`[gptviewer] Finish check ${finishCheckCount}: isResponding=${responding} hasPing=${hasPing} hasLatR=${hasLatR}`);
+          console.info(`[gptviewer] Finish check ${finishCheckCount}: isResponding=${responding} isStreamActive=${isStreamActive} hasLatR=${hasLatR}`);
       }
 
-      if (hasLatR) {
-          console.info('[gptviewer] /backend-api/lat/ captured. Response completion confirmed via network.');
-          await sleep(1000); 
+      // If we saw a stream and now it's gone, that's a very strong indicator
+      if (hasStarted && !isStreamActive && finishCheckCount > 5) {
+          console.info('[gptviewer] Stream was active and now finished. Proceeding...');
+          streamConfirmedFinished = true;
+      }
+
+      if (hasLatR || streamConfirmedFinished) {
+          console.info('[gptviewer] Response completion confirmed via network or stream finish.');
+          await sleep(1500); 
           return true;
       }
 
-      if (!responding) {
-        console.info('[gptviewer] No longer responding (DOM), double checking in 2s...');
+      if (!responding && !isStreamActive) {
+        console.info('[gptviewer] No longer responding (DOM & Stream), double checking in 2s...');
         await sleep(2000);
         const stillResponding = await this.isResponding();
-        const hasLatRNow = this.conversationNetworkMonitor?.hasCapturedUrl('/backend-api/lat/') ?? false;
-        console.info(`[gptviewer] Double check: isResponding=${stillResponding} hasLatR=${hasLatRNow}`);
+        const stillStreamActive = this.conversationNetworkMonitor?.isResumeStreamActive() ?? false;
         
-        if (hasLatRNow || !stillResponding) {
+        if (!stillResponding && !stillStreamActive) {
           console.info('[gptviewer] waitForResponseCompletion confirmed finished.');
-          await sleep(2000); // Buffer for UI to settle
+          await sleep(1000); 
           return true;
         }
       }
