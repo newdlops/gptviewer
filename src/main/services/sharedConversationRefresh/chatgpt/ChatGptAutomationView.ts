@@ -562,7 +562,7 @@ export class ChatGptAutomationView {
         // and newer Electron (event.message) signatures
         const message = event.message || (args.length > 1 ? args[1] : '');
         if (typeof message === 'string' && message.includes('[gptviewer-script][API]')) {
-            if (message.includes('WS Message received:')) {
+            if (message.includes('WS Message received')) {
                 if (MONITOR_LOG_FLAGS.SHOW_WEBSOCKET_MESSAGES) {
                     console.log(`[Browser Console] ${message}`);
                 }
@@ -592,20 +592,19 @@ export class ChatGptAutomationView {
 
         console.info('[gptviewer][sentinel-flow] Authorization header secured. Proceeding to Step 0: Global WebSocket.');
 
-        let initialWsUrl = this.conversationNetworkMonitor.getLatestWebSocketUrl();
+        let initialWsUrls = this.conversationNetworkMonitor.getWebSocketUrls();
         await this.execute(`
             (async () => {
                 window.onerror = function(msg) { console.log('[gptviewer-script][API] GLOBAL ERROR (Step 0): ' + msg); };
-                console.log('[gptviewer-script][WS] Step 0 Init. WS exists?', !!window.__gptviewer_ws, 'readyState:', window.__gptviewer_ws ? window.__gptviewer_ws.readyState : 'none');
-                if (window.__gptviewer_ws && window.__gptviewer_ws.readyState === 1 /* WebSocket.OPEN */) {
-                    console.log('[gptviewer-script][WS] WS already open. Skipping init.');
-                    return;
-                }
+                console.log('[gptviewer-script][WS] Step 0 Init. WS exists?', !!window.__gptviewer_wss, 'urls count:', window.__gptviewer_wss ? window.__gptviewer_wss.length : 0);
                 
                 window.__gptviewer_wsFinished = false;
-                let wsUrl = ${JSON.stringify(initialWsUrl)};
+                window.__gptviewer_wsTopicId = null;
+                window.__gptviewer_wss = window.__gptviewer_wss || [];
                 
-                if (!wsUrl) {
+                let wsUrls = ${JSON.stringify(initialWsUrls)};
+                
+                if (wsUrls.length === 0) {
                     console.log('[gptviewer-script][WS] Fetching /celsius/ws/user for wss_url...');
                     try {
                         const res = await fetch('https://chatgpt.com/backend-api/celsius/ws/user', {
@@ -616,26 +615,33 @@ export class ChatGptAutomationView {
                             },
                         });
                         const data = await res.json();
-                        wsUrl = data.wss_url;
+                        if (data.wss_url) {
+                            wsUrls.push(data.wss_url);
+                        }
                     } catch (e) {
                         console.error('[gptviewer-script][WS] Failed to fetch wsUrl:', e);
                     }
                 }
 
-                if (!wsUrl) {
-                    console.error('[gptviewer-script][WS] No wsUrl available.');
+                if (wsUrls.length === 0) {
+                    console.error('[gptviewer-script][WS] No wsUrls available.');
                     return;
                 }
                 
-                if (!window.__gptviewer_ws || window.__gptviewer_ws.readyState === 3 /* WebSocket.CLOSED */) {
+                for (const wsUrl of wsUrls) {
+                    const exists = window.__gptviewer_wss.some(ws => ws.url === wsUrl && (ws.readyState === 0 || ws.readyState === 1));
+                    if (exists) {
+                        console.log('[gptviewer-script][WS] WebSocket already exists and is connecting/open for: ' + wsUrl);
+                        continue;
+                    }
+
                     console.log('[gptviewer-script][WS] Establishing WebSocket connection to: ' + wsUrl);
-                    window.__gptviewer_wsUrl = wsUrl;
-                    window.__gptviewer_wsTopicId = null;
-                    window.__gptviewer_ws = new WebSocket(wsUrl);
+                    const ws = new WebSocket(wsUrl);
+                    window.__gptviewer_wss.push(ws);
                     
-                    window.__gptviewer_ws.onopen = () => console.log('[gptviewer-script][WS] Connected.');
-                    window.__gptviewer_ws.addEventListener('message', (event) => {
-                        console.log('[gptviewer-script][API] WS Message received: ' + event.data);
+                    ws.onopen = () => console.log('[gptviewer-script][WS] Connected to ' + wsUrl);
+                    ws.addEventListener('message', (event) => {
+                        console.log('[gptviewer-script][API] WS Message received [' + wsUrl + ']: ' + event.data);
                         try {
                             const msgData = JSON.parse(event.data);
                             if (Array.isArray(msgData)) {
@@ -646,7 +652,7 @@ export class ChatGptAutomationView {
                                             id: Math.floor(Math.random() * 10000),
                                             command: { type: 'unsubscribe', topic_id: window.__gptviewer_wsTopicId }
                                         }]);
-                                        window.__gptviewer_ws.send(unsubscribeFrame);
+                                        ws.send(unsubscribeFrame);
                                     }
                                     if (item?.command?.type === 'unsubscribe' && item?.command?.topic_id === window.__gptviewer_wsTopicId) {
                                         console.log('[gptviewer-script][WS] Verified server unsubscribe response. WS Monitor Finished.');
@@ -656,10 +662,8 @@ export class ChatGptAutomationView {
                             }
                         } catch(e) {}
                     });
-                    window.__gptviewer_ws.onerror = (err) => console.error('[gptviewer-script][WS] Error occurred.');
-                    window.__gptviewer_ws.onclose = () => console.log('[gptviewer-script][WS] Closed.');
-                } else {
-                    console.log('[gptviewer-script][WS] WebSocket already exists and is connecting/open.');
+                    ws.onerror = (err) => console.error('[gptviewer-script][WS] Error occurred on: ' + wsUrl);
+                    ws.onclose = () => console.log('[gptviewer-script][WS] Closed: ' + wsUrl);
                 }
             })();
         `);
@@ -760,7 +764,6 @@ export class ChatGptAutomationView {
         // --- STEP 4: Actual Conversation ---
         // Get fresh headers (this will include the newly mapped sentinel tokens)
         const finalHeaders = this.conversationNetworkMonitor?.getLatestBackendApiHeaders() || { headers: {} };
-        const wsUrl = this.conversationNetworkMonitor?.getLatestWebSocketUrl() || null;
         if (!('authorization' in finalHeaders.headers)) {
             console.warn('[gptviewer][sentinel-flow] No valid auth headers found for Step 4.');
             this.view.webContents.removeListener('console-message', logHandler);
@@ -859,6 +862,9 @@ export class ChatGptAutomationView {
                                 buffer = lines.pop() || ''; 
                                 
                                 for (const line of lines) {
+                                    if (line.trim()) {
+                                        console.log('[gptviewer-script][API] SSE chunk: ' + line);
+                                    }
                                     if (line.startsWith('data: ') && line.length > 6) {
                                         const dataStr = line.slice(6);
                                         if (dataStr === '[DONE]') continue;
@@ -868,19 +874,23 @@ export class ChatGptAutomationView {
                                                 const handoffTopicId = 'conversation-turn-' + dataObj.turn_exchange_id;
                                                 console.log('[gptviewer-script][API] Received stream_handoff! Subscribing to topic:', handoffTopicId);
                                                 
-                                                const ws = window.__gptviewer_ws;
-                                                if (ws && ws.readyState === 1 /* WebSocket.OPEN */) {
-                                                    window.__gptviewer_wsTopicId = handoffTopicId;
-                                                    console.log('[gptviewer-script][WS] Topic ID set to:', window.__gptviewer_wsTopicId);
-                                                    window.__gptviewer_wsFinished = false;
-                                                    const subscribeFrame = JSON.stringify([{
-                                                        id: Math.floor(Math.random() * 10000),
-                                                        command: { type: 'subscribe', topic_id: handoffTopicId, offset: '0' }
-                                                    }]);
-                                                    ws.send(subscribeFrame);
-                                                    console.log('[gptviewer-script][API] Sent WS subscribe frame:', subscribeFrame);
-                                                } else {
-                                                    console.warn('[gptviewer-script][API] Global WS not open when handoff received.');
+                                                const wss = window.__gptviewer_wss || [];
+                                                let sentToAny = false;
+                                                for (const ws of wss) {
+                                                    if (ws.readyState === 1 /* WebSocket.OPEN */) {
+                                                        window.__gptviewer_wsTopicId = handoffTopicId;
+                                                        window.__gptviewer_wsFinished = false;
+                                                        const subscribeFrame = JSON.stringify([{
+                                                            id: Math.floor(Math.random() * 10000),
+                                                            command: { type: 'subscribe', topic_id: handoffTopicId, offset: '0' }
+                                                        }]);
+                                                        ws.send(subscribeFrame);
+                                                        console.log('[gptviewer-script][API] Sent WS subscribe frame to:', ws.url, subscribeFrame);
+                                                        sentToAny = true;
+                                                    }
+                                                }
+                                                if (!sentToAny) {
+                                                    console.warn('[gptviewer-script][API] No Global WS open when handoff received.');
                                                 }
                                             }
                                         } catch (e) { console.warn('[gptviewer-script][API] SSE Parse error on:', dataStr.substring(0, 50)); }

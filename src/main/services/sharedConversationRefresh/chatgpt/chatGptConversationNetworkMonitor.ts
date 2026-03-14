@@ -131,7 +131,7 @@ export class ChatGptConversationNetworkMonitor {
 
   private activeResumeRequestId: string | null = null;
   private lastSuccessfulBackendApiHeaders: CapturedBackendApiRequestHeaders | null = null;
-  private latestWebSocketUrl: string | null = null;
+  private webSocketUrls: Set<string> = new Set();
   private sentinelHeaders: Record<string, string> = {};
   private readonly capturedUrls = new Set<string>();
   private readonly pendingRequests = new Map<string, PendingRequestMeta>();
@@ -290,8 +290,8 @@ export class ChatGptConversationNetworkMonitor {
     return ChatGptConversationNetworkMonitor.lastUserSettings;
   }
 
-  getLatestWebSocketUrl(): string | null {
-    return this.latestWebSocketUrl;
+  getWebSocketUrls(): string[] {
+    return Array.from(this.webSocketUrls);
   }
 
   isResumeStreamActive(): boolean {
@@ -571,7 +571,7 @@ export class ChatGptConversationNetworkMonitor {
             try {
                 const payload = JSON.parse(bodyText);
                 if (payload.wss_url) {
-                    this.latestWebSocketUrl = payload.wss_url;
+                    this.webSocketUrls.add(payload.wss_url);
                 }
             } catch (e) {}
             if (MONITOR_LOG_FLAGS.SHOW_WS_URL_CAPTURE) {
@@ -581,7 +581,7 @@ export class ChatGptConversationNetworkMonitor {
 
         if (!url.includes('/conversation/init')) {
           if (isTargetUrl(url)) {
-            if (MONITOR_LOG_FLAGS.SHOW_RESPONSE_BODY) {
+            if (MONITOR_LOG_FLAGS.SHOW_RESPONSE_BODY && !url.includes('/backend-api/f/conversation')) {
               console.info(`Response Body (${url}):`, bodyText);
             }
 
