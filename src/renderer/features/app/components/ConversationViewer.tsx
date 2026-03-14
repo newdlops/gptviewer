@@ -139,6 +139,7 @@ export function ConversationViewer({
                   sourcePreviewLoading={sourcePreviewLoading}
                   renderNonce={renderNonce}
                   themeMode={themeMode}
+                  sendMessageStatus={sendMessageStatus}
                 />
               ) : (
                 <div className="viewer-empty viewer-empty--conversation">

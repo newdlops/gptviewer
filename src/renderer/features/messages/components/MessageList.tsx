@@ -35,7 +35,7 @@ import { MarkdownImageViewport } from './MarkdownImageViewport';
 import { buildMessageSections } from '../lib/messageSections';
 
 const MESSAGE_LIST_GAP = 14;
-const MESSAGE_LIST_BOTTOM_PADDING = 8;
+const MESSAGE_LIST_BOTTOM_PADDING = 320; // 하단 여백을 대폭 늘려 스트리밍 공간 확보
 const MESSAGE_LIST_OVERSCAN = 800;
 const MESSAGE_LIST_FALLBACK_VIEWPORT_HEIGHT = 720;
 const CODE_BLOCK_KEEPALIVE_MULTIPLIER_ABOVE = 1.25;
@@ -89,6 +89,7 @@ type MessageListProps = {
   sourcePreviewLoading: Record<string, boolean>;
   renderNonce: number;
   themeMode: ThemeMode;
+  sendMessageStatus?: 'idle' | 'sending' | 'receiving';
 };
 
 type MessageLayout = {
@@ -558,6 +559,7 @@ export function MessageList({
   sourcePreviewLoading,
   renderNonce,
   themeMode,
+  sendMessageStatus,
 }: MessageListProps) {
   const conversationRenderKey = `${activeConversation.id}:${activeConversation.fetchedAt ?? 'base'}`;
   const messageListShellRef = useRef<HTMLDivElement | null>(null);
@@ -571,11 +573,22 @@ export function MessageList({
   const restoredConversationKeyRef = useRef<string | null>(null);
   const autoBottomConversationKeyRef = useRef<string | null>(null);
   const isProgrammaticScrollRef = useRef(false);
+  const isAutoBottomRef = useRef(true); // 자동 하단 추적 여부
+  const lastFetchedAtRef = useRef(activeConversation.fetchedAt);
   const [scrollTop, setScrollTop] = useState(initialScrollTop ?? 0);
   const [viewportHeight, setViewportHeight] = useState(0);
   const [measuredHeights, setMeasuredHeights] = useState<Record<string, number>>(
     () => initialMessageHeights ?? {},
   );
+
+  // fetchedAt이 변경되면(새로고침) 스크롤을 하단으로 유도
+  useEffect(() => {
+    if (activeConversation.fetchedAt !== lastFetchedAtRef.current) {
+      lastFetchedAtRef.current = activeConversation.fetchedAt;
+      isAutoBottomRef.current = true;
+      autoBottomConversationKeyRef.current = conversationRenderKey;
+    }
+  }, [activeConversation.fetchedAt, conversationRenderKey]);
 
   useEffect(() => {
     onScrollPositionChangeRef.current = onScrollPositionChange;
@@ -657,26 +670,6 @@ export function MessageList({
     };
   }, [activeConversation.messages, measuredHeights, scrollTop, viewportHeight]);
 
-  useEffect(() => {
-    // Auto-scroll to bottom on fresh data or new messages, but only if we're already near the bottom
-    if (activeConversation.messages.length > 0) {
-        window.requestAnimationFrame(() => {
-            const messageListElement = messageListRef.current;
-            if (messageListElement) {
-                const currentScroll = messageListElement.scrollTop;
-                const maxScroll = Math.max(totalHeight - messageListElement.clientHeight, 0);
-                
-                // If we're within 150px of the bottom, keep scrolling to bottom
-                // Or if it's a completely new conversation start
-                const isNearBottom = maxScroll - currentScroll < 150;
-                
-                if (isNearBottom) {
-                    commitScrollPosition(maxScroll);
-                }
-            }
-        });
-    }
-  }, [activeConversation.id, activeConversation.messages.length, totalHeight]);
   const renderedLayouts = useMemo(() => {
     if (allLayouts.length === 0) {
       return visibleLayouts;
@@ -727,15 +720,6 @@ export function MessageList({
     );
   }, [allLayouts, scrollTop, viewportHeight, visibleLayouts]);
   const sections = useMemo(() => buildMessageSections(allLayouts), [allLayouts]);
-  const maxScrollTop = useMemo(
-    () =>
-      Math.max(
-        totalHeight - (viewportHeight || MESSAGE_LIST_FALLBACK_VIEWPORT_HEIGHT),
-        0,
-      ),
-    [totalHeight, viewportHeight],
-  );
-
   const commitScrollPosition = useCallback(
     (nextScrollTop: number) => {
       const messageListElement = messageListRef.current;
@@ -759,6 +743,35 @@ export function MessageList({
     },
     [activeConversation.id],
   );
+
+  const maxScrollTop = useMemo(
+    () =>
+      Math.max(
+        totalHeight - (viewportHeight || MESSAGE_LIST_FALLBACK_VIEWPORT_HEIGHT),
+        0,
+      ),
+    [totalHeight, viewportHeight],
+  );
+
+  // 스트리밍 중이거나 자동 추적 모드일 때 스크롤 유지
+  useLayoutEffect(() => {
+    if (!isAutoBottomRef.current && sendMessageStatus !== 'receiving') {
+      return;
+    }
+
+    const messageListElement = messageListRef.current;
+    if (!messageListElement) {
+      return;
+    }
+
+    const maxScroll = Math.max(totalHeight - messageListElement.clientHeight, 0);
+
+    // 자동 추적 중이거나 사용자가 바닥 근처에 있을 때만 스크롤 내림
+    if (isAutoBottomRef.current || (maxScroll - messageListElement.scrollTop < 150)) {
+      commitScrollPosition(maxScroll);
+    }
+  }, [totalHeight, sendMessageStatus, conversationRenderKey, commitScrollPosition]);
+
 
   useLayoutEffect(() => {
     const messageListElement = messageListRef.current;
@@ -889,9 +902,17 @@ export function MessageList({
       }
 
       const nextScrollTop = messageListElement.scrollTop;
+      const maxScroll = Math.max(messageListElement.scrollHeight - messageListElement.clientHeight, 0);
 
       if (!isProgrammaticScrollRef.current) {
         autoBottomConversationKeyRef.current = null;
+        // 사용자가 스크롤을 끝까지 내렸을 때 자동 추적 모드 재활성화
+        if (maxScroll - nextScrollTop < 20) {
+            isAutoBottomRef.current = true;
+        } else if (maxScroll - nextScrollTop > 100) {
+            // 사용자가 의도적으로 위로 스크롤했을 때 자동 추적 모드 비활성화
+            isAutoBottomRef.current = false;
+        }
       }
 
       setScrollTop(nextScrollTop);
