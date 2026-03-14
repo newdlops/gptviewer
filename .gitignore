@@ -94,3 +94,11 @@ out/
 .gemini
 .ai
 .git
+
+# Local temporary files
+ws.js
+a.json
+b.json
+*.local.md
+# If you want to ignore all root MD files that are not documentation:
+/*.md
