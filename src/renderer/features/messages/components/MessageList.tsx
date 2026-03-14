@@ -413,10 +413,19 @@ function VirtualizedMessageBubbleComponent({
             parts.push(prefix);
           }
 
-          // Group 1 is for 【1】, Group 2 is for searchN in streaming token
+          // Group 1: 【1】, Group 2: searchN
           const sourceNumStr = match[1] || match[2];
-          const sourceIndex = sourceNumStr ? parseInt(sourceNumStr, 10) - 1 : -1;
-          const matchedSource = sourceIndex >= 0 ? message.sources[sourceIndex] : null;
+          let sourceIndex = -1;
+          
+          if (match[1]) {
+            sourceIndex = parseInt(match[1], 10) - 1;
+          } else if (match[2]) {
+            // search0, search1 등 스트리밍 토큰은 sources 배열의 인덱스와 직접 매칭되거나
+            // sources가 아직 부족할 경우 placeholder로 남음
+            sourceIndex = parseInt(match[2], 10);
+          }
+
+          const matchedSource = (sourceIndex >= 0 && message.sources) ? message.sources[sourceIndex] : null;
 
           if (matchedSource) {
             parts.push(

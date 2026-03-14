@@ -236,13 +236,39 @@ export class ChatGptAutomationView {
     this.view.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     ChatGptAutomationView.allViews.add(this);
 
-    this.view.webContents.on('console-message', (_event, level, message) => {
-        if (typeof message === 'string' && message.includes('[gptviewer-script][API]')) {
-            const delta = this.extractTextDelta(message);
-            if (delta && this.onStreamChunk) {
-                this.onStreamChunk(delta);
-            }
+    this.view.webContents.on('console-message', (event, level, message) => {
+      if (typeof message !== 'string' || !message.includes('[gptviewer-script][API]')) return;
+
+      if (message.includes('SSE chunk: data: ')) {
+        const jsonPart = message.split('SSE chunk: data: ')[1].trim();
+
+        if (jsonPart === '[DONE]') {
+          this.onStreamChunk?.('__GPT_STREAM_DONE__');
+          return;
         }
+
+        try {
+          // JSON 파싱 시도
+          const data = JSON.parse(jsonPart);
+
+          if (data.type === 'message_stream_complete') {
+            this.onStreamChunk?.('__GPT_STREAM_DONE__');
+          } else if (data.o === 'patch' || data.v || data.type === 'delta' || data.type === 'input_message') {
+            // JSON 패치 데이터로 판단됨 - 렌더러로 원본 전송
+            this.onStreamChunk?.('__GPT_RAW_PATCH__:' + jsonPart);
+          }
+          // JSON 파싱에 성공했다면 여기서 종료 (일반 텍스트 추출 로직으로 넘어가지 않음)
+          return;
+        } catch (e) {
+          // JSON 파싱 실패 시에만 아래의 일반 텍스트 추출 로직 진행
+        }
+      }
+
+      // 일반 텍스트 델타 추출 (JSON이 아니거나 파싱 실패한 경우)
+      const delta = this.extractTextDelta(message);
+      if (delta && this.onStreamChunk) {
+        this.onStreamChunk(delta);
+      }
     });
   }
 

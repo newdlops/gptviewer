@@ -169,6 +169,22 @@ export function useSharedConversationActions({
       if (chunk === '__GPT_STREAM_DONE__') {
         setStreamingStatuses((prev) => ({ ...prev, [conversationId]: 'idle' }));
         delete lastChunkReceivedAtRef.current[conversationId];
+        
+        // 메시지 상태도 최종적으로 '완료' 상태로 정리 (커서 제거를 위해 placeholder ID 변경)
+        setConversations((currentConversations) =>
+          currentConversations.map((convo) => {
+            if (convo.id !== conversationId) return convo;
+            const updatedMessages = [...convo.messages];
+            if (updatedMessages.length === 0) return convo;
+            
+            const lastMessage = updatedMessages[updatedMessages.length - 1];
+            if (lastMessage.id === 'streaming-placeholder') {
+              // ID를 변경하여 CSS의 [data-streaming="true"] 선택자가 더 이상 매칭되지 않게 함
+              lastMessage.id = `finished-${Date.now()}`;
+            }
+            return { ...convo, messages: updatedMessages };
+          }),
+        );
         return;
       }
 
@@ -179,18 +195,54 @@ export function useSharedConversationActions({
         currentConversations.map((convo) => {
           if (convo.id !== conversationId) return convo;
 
-          const messages = convo.messages;
-          const lastMessage = messages[messages.length - 1];
-          if (lastMessage && lastMessage.role === 'assistant' && lastMessage.id === 'streaming-placeholder') {
-            return {
-              ...convo,
-              messages: [
-                ...messages.slice(0, -1),
-                { ...lastMessage, text: lastMessage.text + chunk },
-              ],
-            };
+          const updatedMessages = [...convo.messages];
+          if (updatedMessages.length === 0) return convo;
+          
+          const lastMessage = { ...updatedMessages[updatedMessages.length - 1] };
+          updatedMessages[updatedMessages.length - 1] = lastMessage;
+
+          if (chunk.startsWith('__GPT_RAW_PATCH__:')) {
+            const jsonPart = chunk.substring('__GPT_RAW_PATCH__:'.length);
+            try {
+              const data = JSON.parse(jsonPart);
+              const patches = Array.isArray(data.v) ? data.v : [data];
+              
+              for (const patch of patches) {
+                // 1. Text Append 처리
+                if (patch.p === '/message/content/parts/0' || patch.p === '/message/content/parts/0/v') {
+                  if (patch.o === 'append' && typeof patch.v === 'string') {
+                    lastMessage.text += patch.v;
+                  } else if (patch.o === 'replace' && typeof patch.v === 'string') {
+                    lastMessage.text = patch.v;
+                  }
+                }
+                
+                // 2. Metadata (Citations/Sources) 처리
+                if (patch.p?.includes('metadata/content_references') || patch.p?.includes('metadata/safe_urls')) {
+                  const items = patch.v?.items || patch.v;
+                  if (Array.isArray(items)) {
+                    for (const item of items) {
+                      if (item.url && !lastMessage.sources.some((s: any) => s.url === item.url)) {
+                        lastMessage.sources.push({
+                          url: item.url,
+                          title: item.title || item.attribution || '출처',
+                          attribution: item.attribution,
+                          description: item.snippet
+                        });
+                      }
+                    }
+                  }
+                }
+              }
+            } catch (e) {
+              console.warn('[gptviewer] Error parsing stream patch:', e);
+            }
+          } else {
+            // 일반 텍스트 델타 처리
+            lastMessage.text += chunk;
           }
-          return convo;
+
+          return { ...convo, messages: updatedMessages };
         }),
       );
     });
