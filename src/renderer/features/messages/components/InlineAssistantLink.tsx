@@ -26,8 +26,10 @@ export function InlineAssistantLink({
   };
 
   const description = getSourcePreviewDescription(source, preview);
-  const label = getSourcePreviewTitle(source, preview);
-  const accessibleLabel = getNodeText(children).trim() || label;
+  const siteTitle = getSourcePreviewTitle(source, preview);
+  const accessibleLabel = getNodeText(children).trim();
+  // 카드 위에 표시될 텍스트로 【번호】를 우선 사용
+  const label = accessibleLabel || siteTitle;
 
   return (
     <span
@@ -36,9 +38,9 @@ export function InlineAssistantLink({
       onMouseEnter={handlePreview}
     >
       <a
-        href={href}
+        href={source.url}
         className="inline-source-link__anchor"
-        aria-label={`${accessibleLabel} 열기`}
+        aria-label={`${accessibleLabel || siteTitle} 열기`}
         target="_blank"
         rel="noreferrer"
       >

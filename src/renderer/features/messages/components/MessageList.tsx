@@ -398,14 +398,19 @@ function VirtualizedMessageBubbleComponent({
         const parts: ReactNode[] = [];
         // Combined regex for both standard 【1】 and streaming cite... patterns
         // Pattern 1: 【(\d+)】
-        // Pattern 2: cite.*?search(\d+).*?
-        const citationRegex = /【(\d+)】|cite(?:[^]*)*?(?:[^]*?search(\d+)[^]*?)(?:[^]*)*?/g;
+        // Pattern 2: cite(?:turn\d+)?search(\d+).*?
+        const citationRegex = /【(\d+)】|cite(?:[^]*)*?(?:[^]*?(?:turn\d+)?search(\d+)[^]*?)(?:[^]*)*?/g;
         let lastIndex = 0;
         let match;
 
         while ((match = citationRegex.exec(text)) !== null) {
           if (match.index > lastIndex) {
-            parts.push(text.substring(lastIndex, match.index));
+            let prefix = text.substring(lastIndex, match.index);
+            // 만약 prefix가 '('로 끝나면 마지막 문자를 제거
+            if (prefix.endsWith('(')) {
+              prefix = prefix.slice(0, -1);
+            }
+            parts.push(prefix);
           }
 
           // Group 1 is for 【1】, Group 2 is for searchN in streaming token
@@ -429,7 +434,12 @@ function VirtualizedMessageBubbleComponent({
             // Fallback: if no metadata yet, show a clean placeholder instead of raw token
             parts.push(`【${sourceNumStr || '?'}】`);
           }
+          
           lastIndex = match.index + match[0].length;
+          // 만약 text의 다음 문자가 ')'라면 lastIndex를 하나 더 밀어서 ')'를 스킵
+          if (text[lastIndex] === ')') {
+            lastIndex++;
+          }
         }
 
         if (lastIndex < text.length) {
@@ -439,14 +449,39 @@ function VirtualizedMessageBubbleComponent({
         return parts;
       };
 
-      const processedChildren = React.Children.map(children, (child) => {
+      const processedChildren = React.Children.toArray(children).flatMap((child) => {
         if (typeof child === 'string') {
           return processTextParts(child);
         }
-        return child;
+        return [child];
       });
 
-      return <p>{processedChildren}</p>;
+      // 후처리: InlineAssistantLink 주변의 불필요한 괄호 제거
+      const finalChildren: ReactNode[] = [];
+      for (let i = 0; i < processedChildren.length; i++) {
+        const current = processedChildren[i];
+        const prev = finalChildren[finalChildren.length - 1];
+        const next = processedChildren[i + 1];
+
+        // 현재 요소가 InlineAssistantLink인 경우 앞뒤 괄호 체크
+        const isCitation = React.isValidElement(current) && (current.type as any) === InlineAssistantLink;
+        
+        if (isCitation) {
+          // 앞의 텍스트가 '('로 끝나면 마지막 문자 제거
+          if (typeof prev === 'string' && prev.endsWith('(')) {
+            finalChildren[finalChildren.length - 1] = prev.slice(0, -1);
+          }
+          finalChildren.push(current);
+          // 뒤의 텍스트가 ')'로 시작하면 첫 문자 제거 (다음 루프에서 처리)
+          if (typeof next === 'string' && next.startsWith(')')) {
+            processedChildren[i + 1] = next.slice(1);
+          }
+        } else {
+          finalChildren.push(current);
+        }
+      }
+
+      return <p>{finalChildren}</p>;
     },
     h1: createHeadingComponent('h1'),
     h2: createHeadingComponent('h2'),

@@ -51,10 +51,10 @@ interface ElectronAPI {
     listener: (progress: ProjectConversationImportProgress) => void,
   ): () => void;
   onSharedConversationStatusUpdate(
-    listener: (status: 'sending' | 'receiving' | 'idle') => void,
+    listener: (status: 'sending' | 'receiving' | 'idle', conversationId?: string) => void,
   ): () => void;
   onChatGptStreamChunk(
-    listener: (chunk: string) => void,
+    listener: (chunk: string, conversationId: string) => void,
   ): () => void;
   refreshSharedConversation(
     request: SharedConversationRefreshRequest,
@@ -63,6 +63,8 @@ interface ElectronAPI {
     request: SharedConversationRefreshRequest,
     message: string,
     model?: string,
+    conversationId?: string,
+    webSearch?: boolean,
   ): Promise<SharedConversationRefreshResult>;
   getChatGptModelConfig(): Promise<any>;
   importChatGptConversation(

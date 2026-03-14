@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type Dispatch, type FormEvent, type MutableRefObject, type SetStateAction } from 'react';
 import { decodeSharedConversationRefreshError } from '../../../../shared/refresh/sharedConversationRefreshErrorCodec';
 import { normalizeImportedConversation } from '../../conversations/lib/normalizers';
+import type { Message } from '../../../types/chat';
 import {
   canDropNodeInFolder,
   findConversationNodeId,
@@ -153,7 +154,7 @@ export function useSharedConversationActions({
   }, [activeConversation?.id]);
 
   useEffect(() => {
-    const removeStatusListener = window.electronAPI?.onSharedConversationStatusUpdate((status, conversationId) => {
+    const removeStatusListener = window.electronAPI?.onSharedConversationStatusUpdate((status: 'sending' | 'receiving' | 'idle', conversationId?: string) => {
       if (conversationId) {
         setStreamingStatuses((prev) => ({ ...prev, [conversationId]: status }));
         if (status === 'receiving') {
@@ -162,7 +163,7 @@ export function useSharedConversationActions({
       }
     });
 
-    const removeStreamListener = window.electronAPI?.onChatGptStreamChunk((chunk, conversationId) => {
+    const removeStreamListener = window.electronAPI?.onChatGptStreamChunk((chunk: string, conversationId: string) => {
       if (!conversationId) return;
 
       if (chunk === '__GPT_STREAM_DONE__') {

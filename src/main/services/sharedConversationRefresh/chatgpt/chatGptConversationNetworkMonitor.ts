@@ -42,10 +42,10 @@ const RELEVANT_HOST_PATTERNS = [
  * Set to true to enable specific log categories.
  */
 export const MONITOR_LOG_FLAGS = {
-    SHOW_REQUEST_HEADERS: true,
+    SHOW_REQUEST_HEADERS: false,
     SHOW_RESPONSE_HEADERS: false,
-    SHOW_REQUEST_BODY: true,
-    SHOW_RESPONSE_BODY: true,
+    SHOW_REQUEST_BODY: false,
+    SHOW_RESPONSE_BODY: false,
     SHOW_STREAM_EVENTS: true,
     SHOW_WEBSOCKET_MESSAGES: true,
     SHOW_BACKUP_REQUESTS: false,

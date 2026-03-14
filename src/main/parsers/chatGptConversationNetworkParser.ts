@@ -707,13 +707,25 @@ const buildRenderedMappingMessage = (
       for (const ref of metadata.content_references) {
           if (ref.matched_text && typeof ref.matched_text === 'string') {
               let replacement = ref.alt;
+              if (typeof replacement === 'string') {
+                  // alt 값이 (【1】) 형태이거나 공백이 포함된 경우 괄호를 제거
+                  replacement = replacement.trim().replace(/^\((.+)\)$/, '$1').trim();
+              }
+              
               if (!replacement && Array.isArray(ref.items) && ref.items.length > 0) {
                  replacement = `[${ref.items[0].title || ref.items[0].attribution || '출처'}](${ref.items[0].url})`;
               } else if (!replacement && Array.isArray(ref.sources) && ref.sources.length > 0) {
                  replacement = `[${ref.sources[0].title || ref.sources[0].attribution || '출처'}](${ref.sources[0].url})`;
               }
+              
               if (replacement) {
-                  rawText = rawText.replace(ref.matched_text, replacement);
+                  // 텍스트 본문에서 (토큰) 형태인 경우 괄호까지 함께 치환하여 제거
+                  const parenthesizedToken = `(${ref.matched_text})`;
+                  if (rawText.includes(parenthesizedToken)) {
+                      rawText = rawText.split(parenthesizedToken).join(replacement);
+                  } else {
+                      rawText = rawText.replace(ref.matched_text, replacement);
+                  }
               }
           }
       }
@@ -1154,6 +1166,11 @@ const buildConversationFromReportMessage = (
       for (const ref of metadata.content_references) {
           if (ref.matched_text && typeof ref.matched_text === 'string') {
               let replacement = ref.alt;
+              if (typeof replacement === 'string') {
+                  // alt 값이 (【1】) 형태인 경우 괄호를 제거
+                  replacement = replacement.replace(/^\((.+)\)$/, '$1');
+              }
+              
               if (!replacement && Array.isArray(ref.items) && ref.items.length > 0) {
                  replacement = `[${ref.items[0].title || ref.items[0].attribution || '출처'}](${ref.items[0].url})`;
               }
