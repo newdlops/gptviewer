@@ -152,13 +152,36 @@ export function useSharedConversationActions({
   }, [activeConversation?.id]);
 
   useEffect(() => {
-    const removeListener = window.electronAPI?.onSharedConversationStatusUpdate((status) => {
+    const removeStatusListener = window.electronAPI?.onSharedConversationStatusUpdate((status) => {
       setSendMessageStatus(status);
     });
+    const removeStreamListener = window.electronAPI?.onChatGptStreamChunk((chunk) => {
+      if (!activeConversation || sendMessageStatus === 'idle') return;
+
+      setConversations((currentConversations) =>
+        currentConversations.map((convo) => {
+          if (convo.id !== activeConversation.id) return convo;
+
+          const messages = convo.messages;
+          const lastMessage = messages[messages.length - 1];
+          if (lastMessage && lastMessage.role === 'assistant' && lastMessage.id === 'streaming-placeholder') {
+            return {
+              ...convo,
+              messages: [
+                ...messages.slice(0, -1),
+                { ...lastMessage, text: lastMessage.text + chunk },
+              ],
+            };
+          }
+          return convo;
+        }),
+      );
+    });
     return () => {
-      removeListener?.();
+      removeStatusListener?.();
+      removeStreamListener?.();
     };
-  }, []);
+  }, [activeConversation?.id, sendMessageStatus]);
 
   const handleImportSharedConversation = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -432,6 +455,30 @@ export function useSharedConversationActions({
     setSendMessageStatus('sending');
     setRefreshError('');
 
+    // Optimistically add user message and streaming placeholder
+    const userMessage: Message = {
+      id: `local-user-${Date.now()}`,
+      role: 'user',
+      sources: [],
+      text: message,
+      timestamp: new Date().toISOString(),
+    };
+    const assistantPlaceholder: Message = {
+      id: 'streaming-placeholder',
+      role: 'assistant',
+      sources: [],
+      text: '',
+      timestamp: new Date().toISOString(),
+    };
+
+    setConversations((current) =>
+      current.map((convo) =>
+        convo.id === activeConversation.id
+          ? { ...convo, messages: [...convo.messages, userMessage, assistantPlaceholder] }
+          : convo,
+      ),
+    );
+
     try {
       const refreshRequest = activeConversation.refreshRequest ?? {
         chatUrl,
@@ -463,6 +510,8 @@ export function useSharedConversationActions({
       setSourceDrawer(null);
     } catch (error) {
       setRefreshError(formatRefreshErrorMessage(error));
+      // Revert placeholders on error by triggering a full refresh
+      void handleRefreshActiveConversation();
     } finally {
       setSendMessageStatus('idle');
     }

@@ -88,6 +88,7 @@ export class ChatGptAutomationView {
   private readonly view: WebContentsView;
   private readonly visibilityMode: ChatGptAutomationVisibilityMode;
   private readonly window: BrowserWindow;
+  private onStreamChunk: ((text: string) => void) | null = null;
 
   private static removeBackgroundIdleView(view: ChatGptAutomationView) {
     const pooledIndex = ChatGptAutomationView.backgroundIdleViews.indexOf(view);
@@ -234,6 +235,66 @@ export class ChatGptAutomationView {
     });
     this.view.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     ChatGptAutomationView.allViews.add(this);
+
+    this.view.webContents.on('console-message', (_event, level, message) => {
+        if (typeof message === 'string' && message.includes('[gptviewer-script][API]')) {
+            const delta = this.extractTextDelta(message);
+            if (delta && this.onStreamChunk) {
+                this.onStreamChunk(delta);
+            }
+        }
+    });
+  }
+
+  setOnStreamChunk(callback: (text: string) => void) {
+      this.onStreamChunk = callback;
+  }
+
+  private extractTextDelta(message: string): string | null {
+    try {
+      let data: any = null;
+      if (message.includes('SSE chunk: data: ')) {
+        const jsonStr = message.split('SSE chunk: data: ')[1].trim();
+        if (jsonStr === '[DONE]') return null;
+        data = JSON.parse(jsonStr);
+      } else if (message.includes('WS Message received')) {
+        const marker = ']: ';
+        const idx = message.indexOf(marker);
+        if (idx === -1) return null;
+        const jsonStr = message.substring(idx + marker.length).trim();
+        const outer = JSON.parse(jsonStr);
+        if (Array.isArray(outer)) {
+          for (const item of outer) {
+            if (item?.payload?.type === 'conversation-turn-stream') {
+              data = item.payload.payload;
+              break;
+            }
+          }
+        }
+      }
+
+      if (!data) return null;
+
+      // Handle patch format: {"v": [{"p": "/message/content/parts/0", "o": "append", "v": "..."}]}
+      if (Array.isArray(data.v)) {
+        let delta = '';
+        for (const patch of data.v) {
+          if (patch.p === '/message/content/parts/0' && (patch.o === 'append' || patch.o === 'add')) {
+            delta += patch.v;
+          }
+        }
+        return delta || null;
+      }
+      
+      // Handle initial add format: {"v": {"message": {"content": {"parts": ["..."]}}}}
+      if (data.v?.message?.content?.parts?.[0]) {
+          return data.v.message.content.parts[0];
+      }
+
+      return null;
+    } catch (e) {
+      return null;
+    }
   }
 
   static async destroyAll() {

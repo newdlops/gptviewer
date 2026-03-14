@@ -2448,6 +2448,9 @@ ipcMain.handle(
         model,
         (status) => {
           event.sender.send('shared-conversation:status-update', status);
+        },
+        (chunk) => {
+          event.sender.send('chatgpt-stream-chunk', chunk);
         }
       );
     } catch (error) {

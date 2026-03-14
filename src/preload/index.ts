@@ -56,6 +56,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
       );
     };
   },
+  onChatGptStreamChunk: (listener: (chunk: string) => void) => {
+    const wrappedListener = (_event: any, chunk: string) => listener(chunk);
+    ipcRenderer.on('chatgpt-stream-chunk', wrappedListener);
+    return () => ipcRenderer.removeListener('chatgpt-stream-chunk', wrappedListener);
+  },
   sendMessageToSharedConversation: (request: SharedConversationRefreshRequest, message: string, model?: string) =>
     ipcRenderer.invoke('shared-conversation:send-message', request, message, model),
   getChatGptModelConfig: () =>

@@ -53,6 +53,9 @@ interface ElectronAPI {
   onSharedConversationStatusUpdate(
     listener: (status: 'sending' | 'receiving' | 'idle') => void,
   ): () => void;
+  onChatGptStreamChunk(
+    listener: (chunk: string) => void,
+  ): () => void;
   refreshSharedConversation(
     request: SharedConversationRefreshRequest,
   ): Promise<SharedConversationRefreshResult>;
