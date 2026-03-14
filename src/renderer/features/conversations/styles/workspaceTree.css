@@ -399,6 +399,33 @@
   letter-spacing: 0.01em;
 }
 
+.workspace-tree__conversation-streaming-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: #10a37f; /* ChatGPT green */
+  margin-left: 6px;
+  display: inline-block;
+  box-shadow: 0 0 0 0 rgba(16, 163, 127, 0.7);
+  animation: streaming-pulse 2s infinite;
+  vertical-align: middle;
+}
+
+@keyframes streaming-pulse {
+  0% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(16, 163, 127, 0.7);
+  }
+  70% {
+    transform: scale(1);
+    box-shadow: 0 0 0 6px rgba(16, 163, 127, 0);
+  }
+  100% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(16, 163, 127, 0);
+  }
+}
+
 .workspace-tree__drag-preview {
   position: fixed;
   z-index: 30;

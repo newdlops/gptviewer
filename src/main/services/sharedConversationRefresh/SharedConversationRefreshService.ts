@@ -99,7 +99,8 @@ export class SharedConversationRefreshService {
     message: string,
     model?: string,
     onStatusChange?: (status: 'sending' | 'receiving' | 'idle') => void,
-    onStreamChunk?: (text: string) => void,
+    onStreamChunk?: (text: string, conversationId: string) => void,
+    conversationId?: string,
   ): Promise<SharedConversationRefreshResult> {
     if (!request.chatUrl) {
       throw new SharedConversationRefreshError('chat_url_missing', '대화를 보낼 원본 링크가 없습니다.');
@@ -111,8 +112,8 @@ export class SharedConversationRefreshService {
       initialMode: 'background', // Like import, run in background by default
       runAttempt: async (automationView) => {
         onStatusChange?.('sending');
-        if (onStreamChunk) {
-            automationView.setOnStreamChunk(onStreamChunk);
+        if (onStreamChunk && conversationId) {
+            automationView.setOnStreamChunk((text) => onStreamChunk(text, conversationId));
         }
         console.info('[gptviewer] Enabling network monitoring...');
         // We enable it first so we can observe initial requests and capture auth headers

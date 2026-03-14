@@ -252,11 +252,17 @@ export class ChatGptAutomationView {
 
   private extractTextDelta(message: string): string | null {
     try {
+      if (message.includes('SSE chunk: data: [DONE]')) {
+        return '__GPT_STREAM_DONE__';
+      }
+
       let data: any = null;
       if (message.includes('SSE chunk: data: ')) {
         const jsonStr = message.split('SSE chunk: data: ')[1].trim();
-        if (jsonStr === '[DONE]') return null;
         data = JSON.parse(jsonStr);
+        if (data.type === 'message_stream_complete') {
+          return '__GPT_STREAM_DONE__';
+        }
       } else if (message.includes('WS Message received')) {
         const marker = ']: ';
         const idx = message.indexOf(marker);

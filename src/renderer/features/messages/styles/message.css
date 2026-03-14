@@ -332,6 +332,39 @@
   text-underline-offset: 3px;
 }
 
+/* Streaming Cursor Animation */
+.message-bubble--assistant[data-streaming="true"] .message-bubble__content p:last-child::after {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 1.2em;
+  background-color: var(--accent);
+  margin-left: 4px;
+  vertical-align: middle;
+  animation: cursor-blink 1s step-end infinite;
+}
+
+@keyframes cursor-blink {
+  0%, 100% { opacity: 0; }
+  50% { opacity: 1; }
+}
+
+/* Button Dots Animation */
+.button-streaming-dots::after {
+  content: "...";
+  display: inline-block;
+  width: 1.2em;
+  text-align: left;
+  animation: dots 1.5s steps(4, end) infinite;
+}
+
+@keyframes dots {
+  0% { content: ""; }
+  25% { content: "."; }
+  50% { content: ".."; }
+  75% { content: "..."; }
+}
+
 .inline-source-link {
   position: relative;
   display: inline-flex;

@@ -417,6 +417,7 @@ function VirtualizedMessageBubbleComponent({
       <article
         className={`message-bubble message-bubble--${message.role}`}
         data-section-id={message.role === 'user' ? `${message.id}:user` : undefined}
+        data-streaming={message.id === 'streaming-placeholder' ? 'true' : undefined}
       >
         {message.role === 'user' ? (
           <div className="message-bubble__meta">

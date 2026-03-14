@@ -103,6 +103,7 @@ function AppContent() {
         globalFolderSortMode={workspaceActions.globalFolderSortMode}
         themeMode={workspaceState.themeMode}
         tree={workspaceState.workspaceTree}
+        streamingStatuses={workspaceActions.streamingStatuses}
       />
 
       <div

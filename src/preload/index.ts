@@ -40,13 +40,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   refreshSharedConversation: (request: SharedConversationRefreshRequest) =>
     ipcRenderer.invoke('shared-conversation:refresh', request),
   onSharedConversationStatusUpdate: (
-    listener: (status: 'sending' | 'receiving' | 'idle') => void,
+    listener: (status: 'sending' | 'receiving' | 'idle', conversationId?: string) => void,
   ) => {
     const wrappedListener = (
       _event: Electron.IpcRendererEvent,
       status: 'sending' | 'receiving' | 'idle',
+      conversationId?: string,
     ) => {
-      listener(status);
+      listener(status, conversationId);
     };
     ipcRenderer.on('shared-conversation:status-update', wrappedListener);
     return () => {
@@ -56,13 +57,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
       );
     };
   },
-  onChatGptStreamChunk: (listener: (chunk: string) => void) => {
-    const wrappedListener = (_event: any, chunk: string) => listener(chunk);
+  onChatGptStreamChunk: (listener: (chunk: string, conversationId: string) => void) => {
+    const wrappedListener = (_event: any, chunk: string, conversationId: string) => listener(chunk, conversationId);
     ipcRenderer.on('chatgpt-stream-chunk', wrappedListener);
     return () => ipcRenderer.removeListener('chatgpt-stream-chunk', wrappedListener);
   },
-  sendMessageToSharedConversation: (request: SharedConversationRefreshRequest, message: string, model?: string) =>
-    ipcRenderer.invoke('shared-conversation:send-message', request, message, model),
+  sendMessageToSharedConversation: (request: SharedConversationRefreshRequest, message: string, model?: string, conversationId?: string) =>
+    ipcRenderer.invoke('shared-conversation:send-message', request, message, model, conversationId),
   getChatGptModelConfig: () =>
     ipcRenderer.invoke('chatgpt-automation:get-model-config'),
   importChatGptConversation: (request: SharedConversationRefreshRequest) =>

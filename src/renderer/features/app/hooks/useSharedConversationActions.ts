@@ -1,4 +1,4 @@
-import { useEffect, useState, type Dispatch, type FormEvent, type MutableRefObject, type SetStateAction } from 'react';
+import { useEffect, useRef, useState, type Dispatch, type FormEvent, type MutableRefObject, type SetStateAction } from 'react';
 import { decodeSharedConversationRefreshError } from '../../../../shared/refresh/sharedConversationRefreshErrorCodec';
 import { normalizeImportedConversation } from '../../conversations/lib/normalizers';
 import {
@@ -63,9 +63,11 @@ export function useSharedConversationActions({
   const [importError, setImportError] = useState('');
   const [refreshError, setRefreshError] = useState('');
   const [refreshingConversationId, setRefreshingConversationId] = useState<string | null>(null);
-  const [sendMessageStatus, setSendMessageStatus] = useState<'idle' | 'sending' | 'receiving'>('idle');
-  
+  const [streamingStatuses, setStreamingStatuses] = useState<Record<string, 'idle' | 'sending' | 'receiving'>>({});
+  const lastChunkReceivedAtRef = useRef<Record<string, number>>({});
+
   // Use localStorage to provide an instant cached model list while the background fetch happens
+
   const [modelConfig, setModelConfig] = useState<any>(() => {
     try {
       const cached = localStorage.getItem('gptviewer-cached-model-config');
@@ -148,19 +150,33 @@ export function useSharedConversationActions({
     setRefreshError('');
     // Clear loading states when switching conversations to prevent UI lock
     setRefreshingConversationId(null);
-    setSendMessageStatus('idle');
   }, [activeConversation?.id]);
 
   useEffect(() => {
-    const removeStatusListener = window.electronAPI?.onSharedConversationStatusUpdate((status) => {
-      setSendMessageStatus(status);
+    const removeStatusListener = window.electronAPI?.onSharedConversationStatusUpdate((status, conversationId) => {
+      if (conversationId) {
+        setStreamingStatuses((prev) => ({ ...prev, [conversationId]: status }));
+        if (status === 'receiving') {
+          lastChunkReceivedAtRef.current[conversationId] = Date.now();
+        }
+      }
     });
-    const removeStreamListener = window.electronAPI?.onChatGptStreamChunk((chunk) => {
-      if (!activeConversation || sendMessageStatus === 'idle') return;
+
+    const removeStreamListener = window.electronAPI?.onChatGptStreamChunk((chunk, conversationId) => {
+      if (!conversationId) return;
+
+      if (chunk === '__GPT_STREAM_DONE__') {
+        setStreamingStatuses((prev) => ({ ...prev, [conversationId]: 'idle' }));
+        delete lastChunkReceivedAtRef.current[conversationId];
+        return;
+      }
+
+      lastChunkReceivedAtRef.current[conversationId] = Date.now();
+      setStreamingStatuses((prev) => ({ ...prev, [conversationId]: 'receiving' }));
 
       setConversations((currentConversations) =>
         currentConversations.map((convo) => {
-          if (convo.id !== activeConversation.id) return convo;
+          if (convo.id !== conversationId) return convo;
 
           const messages = convo.messages;
           const lastMessage = messages[messages.length - 1];
@@ -177,11 +193,36 @@ export function useSharedConversationActions({
         }),
       );
     });
+
+    // Fallback timer: check every 2 seconds for conversations that stopped streaming without DONE signal
+    const intervalId = setInterval(() => {
+      const now = Date.now();
+      const timedOutIds: string[] = [];
+
+      for (const [id, lastTime] of Object.entries(lastChunkReceivedAtRef.current)) {
+        if (streamingStatuses[id] === 'receiving' && now - lastTime > 30000) {
+          timedOutIds.push(id);
+        }
+      }
+
+      for (const id of timedOutIds) {
+        console.warn(`[gptviewer] Stream timed out for ${id}. Triggering fallback refresh.`);
+        delete lastChunkReceivedAtRef.current[id];
+        setStreamingStatuses((prev) => ({ ...prev, [id]: 'idle' }));
+        // Only refresh if it's still in the conversation list
+        const convo = conversations.find(c => c.id === id);
+        if (convo) {
+          handleRefreshConversationById(id);
+        }
+      }
+    }, 2000);
+
     return () => {
       removeStatusListener?.();
       removeStreamListener?.();
+      clearInterval(intervalId);
     };
-  }, [activeConversation?.id, sendMessageStatus]);
+  }, [conversations, streamingStatuses]);
 
   const handleImportSharedConversation = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -367,20 +408,20 @@ export function useSharedConversationActions({
     }
   };
 
-  const handleRefreshActiveConversation = async () => {
-    const targetConversationId = activeConversation?.id;
-    if (!isRefreshableSharedConversation(activeConversation) || !targetConversationId || refreshingConversationId === targetConversationId) return;
+  const handleRefreshConversationById = async (targetConversationId: string) => {
+    const conversationToRefresh = conversations.find(c => c.id === targetConversationId);
+    if (!isRefreshableSharedConversation(conversationToRefresh) || !targetConversationId || refreshingConversationId === targetConversationId) return;
 
     setRefreshError('');
     setRefreshingConversationId(targetConversationId);
     try {
-      const refreshRequest = activeConversation.refreshRequest ?? {
-        conversationTitle: activeConversation.title,
+      const refreshRequest = conversationToRefresh.refreshRequest ?? {
+        conversationTitle: conversationToRefresh.title,
         helperWindowMode: 'background',
-        mode: isChatUrlImportedConversation(activeConversation)
+        mode: isChatUrlImportedConversation(conversationToRefresh)
           ? 'direct-chat-page'
           : 'direct-share-page',
-        shareUrl: activeConversation.sourceUrl,
+        shareUrl: conversationToRefresh.sourceUrl,
       };
       const nextRefreshRequest = {
         ...refreshRequest,
@@ -417,6 +458,11 @@ export function useSharedConversationActions({
     }
   };
 
+  const handleRefreshActiveConversation = async () => {
+    if (!activeConversation) return;
+    await handleRefreshConversationById(activeConversation.id);
+  };
+
   useEffect(() => {
     const fetchModelConfig = async () => {
       try {
@@ -442,7 +488,8 @@ export function useSharedConversationActions({
   };
 
   const handleSendMessageToActiveConversation = async (message: string) => {
-    if (!activeConversation || sendMessageStatus !== 'idle') return;
+    const currentStatus = activeConversation ? (streamingStatuses[activeConversation.id] || 'idle') : 'idle';
+    if (!activeConversation || currentStatus !== 'idle') return;
 
     const chatUrl = activeConversation.refreshRequest?.chatUrl ||
                    (isChatUrlImportedConversation(activeConversation) ? activeConversation.sourceUrl : null);
@@ -452,7 +499,7 @@ export function useSharedConversationActions({
       return;
     }
 
-    setSendMessageStatus('sending');
+    setStreamingStatuses((prev) => ({ ...prev, [activeConversation.id]: 'sending' }));
     setRefreshError('');
 
     // Optimistically add user message and streaming placeholder
@@ -488,11 +535,12 @@ export function useSharedConversationActions({
         shareUrl: activeConversation.sourceUrl,
       };
 
-      // API call initiates with selected model
+      // API call initiates with selected model and conversation ID
       const result = await window.electronAPI?.sendMessageToSharedConversation(
         refreshRequest,
         message,
-        selectedModel === 'auto' ? undefined : selectedModel
+        selectedModel === 'auto' ? undefined : selectedModel,
+        activeConversation.id
       );
 
       const importedConversation = normalizeImportedConversation(result);
@@ -513,7 +561,7 @@ export function useSharedConversationActions({
       // Revert placeholders on error by triggering a full refresh
       void handleRefreshActiveConversation();
     } finally {
-      setSendMessageStatus('idle');
+      setStreamingStatuses((prev) => ({ ...prev, [activeConversation.id]: 'idle' }));
     }
   };
 
@@ -584,7 +632,8 @@ export function useSharedConversationActions({
     importProjectUrl,
     isImportModalOpen,
     isImportingSharedConversation,
-    sendMessageStatus,
+    sendMessageStatus: activeConversation ? (streamingStatuses[activeConversation.id] || 'idle') : 'idle',
+    streamingStatuses,
     modelConfig,
     selectedModel,
     onModelChange: handleModelChange,

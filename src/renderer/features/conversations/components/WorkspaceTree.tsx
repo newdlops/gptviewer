@@ -59,6 +59,7 @@ type WorkspaceTreeProps = {
   onSyncProjectFolder: (folderId: string, projectUrl: string) => void;
   rootSortMode: WorkspaceFolderSortMode;
   tree: WorkspaceNode[];
+  streamingStatuses?: Record<string, 'idle' | 'sending' | 'receiving'>;
 };
 
 type PointerDragPayload = {
@@ -104,6 +105,7 @@ type WorkspaceTreeNodeProps = {
   suppressedClickNodeId: string | null;
   inheritedSortMode: WorkspaceFolderSortMode;
   depth: number;
+  streamingStatuses?: Record<string, 'idle' | 'sending' | 'receiving'>;
 };
 
 const POINTER_DRAG_THRESHOLD = 6;
@@ -413,6 +415,7 @@ function WorkspaceConversationLeaf({
   onNodePointerDown,
   onRenameConversation,
   suppressedClickNodeId,
+  streamingStatus,
 }: {
   activeConversationId: string;
   conversationLookup: Map<string, Conversation>;
@@ -429,6 +432,7 @@ function WorkspaceConversationLeaf({
   ) => void;
   onRenameConversation: (conversationId: string) => void;
   suppressedClickNodeId: string | null;
+  streamingStatus?: 'idle' | 'sending' | 'receiving';
 }) {
   const conversation = conversationLookup.get(node.conversationId);
 
@@ -490,6 +494,9 @@ function WorkspaceConversationLeaf({
                 뷰어에서 생성
               </span>
             ) : null}
+            {streamingStatus === 'receiving' ? (
+              <span className="workspace-tree__conversation-streaming-dot" title="메시지 수신 중" />
+            ) : null}
           </span>
         ) : null}
       </button>
@@ -546,6 +553,7 @@ function WorkspaceFolderBranch({
   onSyncProjectFolder,
   onNodePointerDown,
   suppressedClickNodeId,
+  streamingStatuses,
 }: {
   activeConversationId: string;
   conversationLookup: Map<string, Conversation>;
@@ -572,6 +580,7 @@ function WorkspaceFolderBranch({
     payload: PointerDragPayload,
   ) => void;
   suppressedClickNodeId: string | null;
+  streamingStatuses?: Record<string, 'idle' | 'sending' | 'receiving'>;
 }) {
   const isExpanded = expandedFolderState[node.id] ?? false;
   const isDragging = draggedNodeId === node.id;
@@ -766,8 +775,10 @@ function WorkspaceFolderBranch({
               onSyncProjectFolder={onSyncProjectFolder}
               onNodePointerDown={onNodePointerDown}
               suppressedClickNodeId={suppressedClickNodeId}
-              inheritedSortMode={effectiveSortMode}
-            />
+              inheritedSortMode={inheritedSortMode}
+              streamingStatuses={streamingStatuses}
+              />
+
           ))}
         </div>
       ) : null}
@@ -798,6 +809,7 @@ function WorkspaceTreeNode({
   onSyncProjectFolder,
   onNodePointerDown,
   suppressedClickNodeId,
+  streamingStatuses,
 }: WorkspaceTreeNodeProps) {
   if (node.type === 'conversation') {
     return (
@@ -814,6 +826,7 @@ function WorkspaceTreeNode({
         onNodePointerDown={onNodePointerDown}
         onRenameConversation={onRenameConversation}
         suppressedClickNodeId={suppressedClickNodeId}
+        streamingStatus={streamingStatuses?.[node.id]}
       />
     );
   }
@@ -868,6 +881,7 @@ export function WorkspaceTree({
   rootSortMode,
   onSyncProjectFolder,
   tree,
+  streamingStatuses,
 }: WorkspaceTreeProps) {
   const conversationLookup = new Map(
     conversations.map((conversation) => [conversation.id, conversation]),
@@ -1059,6 +1073,7 @@ export function WorkspaceTree({
           onSyncProjectFolder={onSyncProjectFolder}
           onNodePointerDown={handleNodePointerDown}
           suppressedClickNodeId={suppressedClickNodeId}
+          streamingStatuses={streamingStatuses}
         />
       ))}
       {dragPreview ? (

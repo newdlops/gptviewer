@@ -104,7 +104,9 @@ export function ConversationViewer({
                         onClick={onRefreshConversation}
                         disabled={refreshingConversationId === activeConversation.id}
                       >
-                        {refreshingConversationId === activeConversation.id ? '새로고침 중...' : '새로고침'}
+                        {refreshingConversationId === activeConversation.id ? (
+                          <span className="button-streaming-dots">새로고침 중</span>
+                        ) : '새로고침'}
                       </Button>
                       </>
                     ) : null}

@@ -36,9 +36,9 @@ export function ConversationInput({
   })();
 
   const getButtonText = () => {
-    if (sendMessageStatus === 'sending') return '...';
-    if (sendMessageStatus === 'receiving') return '...';
-    if (isRefreshing) return '...';
+    if (sendMessageStatus === 'sending' || sendMessageStatus === 'receiving' || isRefreshing) {
+      return <span className="button-streaming-dots">처리 중</span>;
+    }
     return '전송';
   };
 

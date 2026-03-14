@@ -38,6 +38,7 @@ type WorkspaceSidebarProps = {
   tree: WorkspaceNode[];
   canDropNode: (nodeId: string, destinationFolderId: string | null) => boolean;
   canReorderNode: (nodeId: string, targetNodeId: string, position: 'after' | 'before') => boolean;
+  streamingStatuses?: Record<string, 'idle' | 'sending' | 'receiving'>;
 };
 
 export function WorkspaceSidebar({
@@ -69,6 +70,7 @@ export function WorkspaceSidebar({
   globalFolderSortMode,
   themeMode,
   tree,
+  streamingStatuses,
 }: WorkspaceSidebarProps) {
   const normalizedGlobalFolderSortMode: WorkspaceFolderSortMode =
     globalFolderSortMode ?? 'none';
@@ -181,6 +183,7 @@ export function WorkspaceSidebar({
         onProjectFolder={onProjectFolder}
         onSyncProjectFolder={onSyncProjectFolder}
         tree={tree}
+        streamingStatuses={streamingStatuses}
       />
 
       <div className="drawer__footer">

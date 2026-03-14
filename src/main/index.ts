@@ -2436,7 +2436,7 @@ ipcMain.handle(
 
 ipcMain.handle(
   'shared-conversation:send-message',
-  async (event, request: SharedConversationRefreshRequest, message: string, model?: string) => {
+  async (event, request: SharedConversationRefreshRequest, message: string, model?: string, conversationId?: string) => {
     if (!request || typeof request !== 'object') {
       throw new Error('메시지 전송 요청이 올바르지 않습니다.');
     }
@@ -2447,11 +2447,12 @@ ipcMain.handle(
         message,
         model,
         (status) => {
-          event.sender.send('shared-conversation:status-update', status);
+          event.sender.send('shared-conversation:status-update', status, conversationId);
         },
-        (chunk) => {
-          event.sender.send('chatgpt-stream-chunk', chunk);
-        }
+        (chunk, cid) => {
+          event.sender.send('chatgpt-stream-chunk', chunk, cid);
+        },
+        conversationId
       );
     } catch (error) {
       if (error instanceof SharedConversationRefreshError) {
