@@ -42,24 +42,18 @@ const RELEVANT_HOST_PATTERNS = [
  * Set to true to enable specific log categories.
  */
 export const MONITOR_LOG_FLAGS = {
-    // 1. 요청 헤더 출력
     SHOW_REQUEST_HEADERS: true,
-
-    // 2. 응답 헤더 출력
     SHOW_RESPONSE_HEADERS: false,
-
-    // 3. 요청 바디(Payload) 출력
-    SHOW_REQUEST_BODY: false,
-
-    // 4. 응답 바디 출력
-    SHOW_RESPONSE_BODY: false,
-
-    // 5. 스트림 이벤트 및 기타 중요 이벤트 상태 로그 (시작, 수신, 종료 등)
+    SHOW_REQUEST_BODY: true,
+    SHOW_RESPONSE_BODY: true,
     SHOW_STREAM_EVENTS: true,
-
-    // 기타 시스템 디버깅용 보조 플래그
-    SHOW_BACKUP_REQUESTS: false,   // session.webRequest 기본 URL 로그
-    SHOW_GENERAL_REQUESTS: false,  // 모든 /backend-api/ 단순 호출 로그
+    SHOW_WEBSOCKET_MESSAGES: true,
+    SHOW_BACKUP_REQUESTS: false,
+    SHOW_GENERAL_REQUESTS: false,
+    SHOW_AUTH_CAPTURE: false,
+    SHOW_MAPPING: false,
+    SHOW_RESUME_STREAM: true,
+    SHOW_WS_URL_CAPTURE: true,
 };
 
 // 로그를 관찰할 주요 대상 API 경로들

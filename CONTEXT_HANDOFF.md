@@ -1,39 +1,35 @@
-# GPTViewer Context Handoff (2026-03-13)
+# GPTViewer 세션 핸드오프 (2026-03-13)
 
-## 1. 프로젝트 목적
-ChatGPT 대화 데이터를 효율적으로 파싱하고, 자동화된 메시지 전송 및 실시간 새로고침 기능을 제공하는 데스크톱 어플리케이션(Electron 기반) 고도화.
+이 문서는 이전 세션에서 진행된 핵심 작업 내용과 현재 코드 상태를 요약하여, 다음 세션에서 작업을 즉시 재개할 수 있도록 돕습니다.
 
-## 2. 주요 구현 및 수정 사항
+## 1. 최근 주요 변경 사항
 
-### A. 대화 자동화 (Sentinel Flow)
-- **4단계 인증 흐름**: ChatGPT의 보안 강화에 대응하여 `prepare` -> `sentinel wakeup` -> `finalize` -> `actual conversation`의 4단계 API 호출 흐름을 `ChatGptAutomationView.ts`에 구현함.
-- **모델 강제**: 모든 자동화 단계에서 `gpt-5-3` 또는 사용자가 선택한 최신 모델을 사용하도록 강제하여 하위 모델(2.5 등)로의 폴백 방지.
-- **모델 선택 UI**: `ConversationInput.tsx`에 `/backend-api/settings/user`에서 파싱한 가용 모델 목록을 드롭다운으로 표시하고, 전송 시 해당 모델을 페이로드에 포함함.
+### A. 네트워크 로그 시스템 개편
+- **플래그 구조화**: `MONITOR_LOG_FLAGS`를 5가지 직관적 범주(`REQUEST_HEADERS`, `RESPONSE_HEADERS`, `REQUEST_BODY`, `RESPONSE_BODY`, `STREAM_EVENTS`)로 전면 개편.
+- **문서화**: `로그Flag목록.md`에 최신 플래그 명세와 대상 API 목록 업데이트 완료.
 
-### B. 데이터 파싱 및 정규화
-- **SSE 스트림 파싱**: `/backend-api/f/conversation`의 SSE 스트림(delta, patch, add 형식)을 실시간으로 파싱하여 대화 내용을 복원하는 로직을 `chatGptConversationNetworkParser.ts`에 추가함.
-- **작성자 정보 유지**: `SharedConversationMessage`와 `Message` 타입에 `authorName`/`name` 필드를 추가하여, `name: null`인 경우에도 "ChatGPT" 등으로 기본값을 할당해 렌더링 누락 방지.
-- **타입 안정성**: `normalizers.ts`에서 메시지 변환 시 발생하던 타입 불일치(TS2677)를 명시적 타입 단언 및 인터페이스 갱신으로 해결.
+### B. WebSocket 모니터링 및 자동 구독 (핵심)
+- **URL 캡처**: `/backend-api/celsius/ws/user` 응답에서 `wss_url`을 추출하여 `latestWebSocketUrl`에 정적 캐싱.
+- **실시간 구독 로직**: `sendMessageViaApi` 과정 중 `f/conversation` SSE 스트림에서 `stream_handoff` 이벤트 발생 시, 캡처된 URL로 새로운 WebSocket을 열어 `subscribe` 프레임을 즉시 전송.
+- **완료 감지**: WebSocket으로 `conversation-turn-complete` 수신 시 `unsubscribe` 후 프로세스 종료. 이 모든 과정을 터미널 로그로 출력.
 
-### C. 네트워크 모니터링 및 종료 감지
-- **초광대역 캡처**: Electron `session.webRequest`의 모든 단계에서 URL을 캡처하도록 `ChatGptConversationNetworkMonitor.ts`를 강화하여 `/lat/r` (종료 신호) 감지 신뢰도를 높임.
-- **하이브리드 종료 감지**: 네트워크 신호(`/lat/`)와 DOM 상태(응답 중 아님 + 입력창 활성화)를 병행 체크하여 대화 완료 후 즉시 새로고침 트리거.
-- **타임아웃 최적화**: 대기 시간을 30초로 단축하여 사용자 경험 개선.
+### C. Sentinel 보안 토큰 처리
+- **안정화**: `openai-sentinel-chat-requirements-token`, `proof-token` 등을 Request/Response 양방향에서 정밀하게 파싱하도록 수정 (`[object Object]` 오류 해결).
+- **호환성**: `class WebSocketProxy extends OriginalWebSocket` 방식을 통해 ChatGPT React 앱의 네이티브 소켓 동작을 방해하지 않으면서 인스턴스 가로채기 성공.
 
 ### D. UI/UX 개선
-- **스크롤 하단 고정**: `MessageList.tsx`에서 대화 데이터 갱신 시 자동으로 최하단으로 스크롤되도록 `useEffect` 로직 보강.
-- **전송 버튼 상태 세분화**: `전송` -> `전송 중...` -> `응답 수신 중...` -> `전송` 순으로 상태를 UI에 표시하여 실시간 진행 상황 인지 가능하게 함.
-- **비침습적 자동화**: 보조 창이 포커스를 탈취하지 않도록 `showInactive()`를 사용하고, 대부분의 작업을 백그라운드 모드에서 수행하도록 설정.
+- **강제 동기화 (Force Sync)**: 프로젝트 동기화 시 기존 대화를 무시하고 모두 새로고침하는 기능 추가.
+- **모델 선택기**: `settings/user` 캐시를 활용해 전송 버튼 상단에 모델 선택 드롭다운 배치.
 
-## 3. 현재 상태 및 남은 과제
-- [x] 메시지 전송 및 응답 수신 로직 완성
-- [x] SSE 델타 파싱 및 작성자 이름 처리
-- [x] 모델 선택 드롭다운 UI 적용
-- [x] 자동 스크롤 하단 고정
-- [ ] `/lat/r` 감지 신뢰도 최종 검증 (로그 모니터링 필요)
-- [ ] 모델 선택 드롭다운의 디자인 미세 조정 (CSS)
+## 2. 핵심 파일 및 역할
+- `src/main/services/sharedConversationRefresh/chatgpt/chatGptConversationNetworkMonitor.ts`: 네트워크 디버깅, 토큰 추출, 소켓 상태 추적.
+- `src/main/services/sharedConversationRefresh/chatgpt/ChatGptAutomationView.ts`: 4단계 Sentinel Flow 및 WebSocket 구독 실행 스크립트 포함.
+- `src/main/services/sharedConversationRefresh/SharedConversationRefreshService.ts`: 상위 수준의 대화 전송 및 새로고침 서비스.
 
-## 4. 기술적 참고 사항
-- **네트워크 모니터**: `Debugger` 이벤트 유실에 대비해 `session.webRequest`를 백업으로 사용 중.
-- **SSE 파서**: `patch` 이벤트의 `append`, `replace` 연산을 직접 구현하여 텍스트를 조립함.
-- **백그라운드 뷰**: `BACKGROUND_WINDOW_OPACITY` (0.01)를 사용하여 화면에는 거의 보이지 않으면서도 동작을 유지함.
+## 3. 다음 단계 가이드
+- 현재 대화 전송 및 소켓 로깅은 매우 안정적인 상태입니다.
+- **주의**: 대화 가져오기(`f/conversation`)의 헤더 조합과 URL 패턴은 현재 최적화되어 있으므로 건드리지 않는 것이 좋습니다.
+- 필요 시 WebSocket 프레임 내의 구체적인 페이로드 분석을 추가로 진행할 수 있습니다.
+
+---
+*이 문서를 에이전트에게 제공하여 "이전 세션의 컨텍스트를 파악해줘"라고 요청하세요.*

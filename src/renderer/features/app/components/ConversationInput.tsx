@@ -23,7 +23,7 @@ export function ConversationInput({
   const [message, setMessage] = useState('');
 
   const modelOptions = (() => {
-    const options = [];
+    const options: Array<{label: string, value: string}> = [];
     if (modelConfig?.juices?.web) {
       Object.entries(modelConfig.juices.web as Record<string, string>).forEach(([model, juice]) => {
         options.push({
