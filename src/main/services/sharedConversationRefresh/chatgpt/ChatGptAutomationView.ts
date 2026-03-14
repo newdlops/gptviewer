@@ -588,10 +588,10 @@ export class ChatGptAutomationView {
     return this.execute<ChatGptPageSnapshot>(buildGetPageSnapshotScript());
   }
 
-  async sendMessage(message: string, model?: string) {
-    console.info(`[gptviewer][automation-view] Attempting to send message via API (Primary) with model: ${model || 'auto'}...`);
+  async sendMessage(message: string, model?: string, webSearch?: boolean) {
+    console.info(`[gptviewer][automation-view] Attempting to send message via API (Primary) with model: ${model || 'auto'}, search: ${!!webSearch}...`);
     try {
-      const apiResult = await this.sendMessageViaApi(message, model);
+      const apiResult = await this.sendMessageViaApi(message, model, webSearch);
       if (apiResult.success) {
         console.info('[gptviewer][automation-view] Message sent successfully via API.');
         return apiResult;
@@ -617,12 +617,12 @@ export class ChatGptAutomationView {
     }
   }
 
-  async sendMessageViaApi(message: string, model?: string) {
+  async sendMessageViaApi(message: string, model?: string, webSearch?: boolean) {
     if (!this.conversationNetworkMonitor) {
         return { success: false, error: 'Network monitor not initialized' };
     }
 
-    console.info(`[gptviewer][automation-view] Sending message via 4-step Sentinel flow (model: ${model || 'auto'})...`);
+    console.info(`[gptviewer][automation-view] Sending message via 4-step Sentinel flow (model: ${model || 'auto'}, search: ${!!webSearch})...`);
     
     const logHandler = (event: any, ...args: any[]) => {
         // Handle both older Electron (event, level, message, line, sourceId) 
@@ -775,6 +775,10 @@ export class ChatGptAutomationView {
                         conversation_id: conversationId,
                         parent_message_id: parentMessageId,
                         model: ${JSON.stringify(model || 'auto')},
+                        timezone_offset_min: -540,
+                        timezone: "Asia/Seoul",
+                        conversation_mode: { kind: "primary_assistant" },
+                        system_hints: ${webSearch ? '["search"]' : '[]'},
                         partial_query: {
                             id: crypto.randomUUID(),
                             author: { role: "user" },
@@ -878,7 +882,7 @@ export class ChatGptAutomationView {
                         timezone: "Asia/Seoul",
                         conversation_mode: { kind: "primary_assistant" },
                         enable_message_followups: true,
-                        system_hints: [],
+                        system_hints: ${webSearch ? '["search"]' : '[]'},
                         supports_buffering: true,
                         supported_encodings: ["v1"],
                         client_contextual_info: {

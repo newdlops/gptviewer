@@ -1,4 +1,4 @@
-import {
+import React, {
   AnchorHTMLAttributes,
   HTMLAttributes,
   ImgHTMLAttributes,
@@ -393,6 +393,61 @@ function VirtualizedMessageBubbleComponent({
     }: HTMLAttributes<HTMLPreElement> & {
       children?: ReactNode;
     }) => <>{children}</>,
+    p: ({ children }: { children?: ReactNode }) => {
+      const processTextParts = (text: string): ReactNode[] => {
+        const parts: ReactNode[] = [];
+        // Combined regex for both standard 【1】 and streaming cite... patterns
+        // Pattern 1: 【(\d+)】
+        // Pattern 2: cite.*?search(\d+).*?
+        const citationRegex = /【(\d+)】|cite(?:[^]*)*?(?:[^]*?search(\d+)[^]*?)(?:[^]*)*?/g;
+        let lastIndex = 0;
+        let match;
+
+        while ((match = citationRegex.exec(text)) !== null) {
+          if (match.index > lastIndex) {
+            parts.push(text.substring(lastIndex, match.index));
+          }
+
+          // Group 1 is for 【1】, Group 2 is for searchN in streaming token
+          const sourceNumStr = match[1] || match[2];
+          const sourceIndex = sourceNumStr ? parseInt(sourceNumStr, 10) - 1 : -1;
+          const matchedSource = sourceIndex >= 0 ? message.sources[sourceIndex] : null;
+
+          if (matchedSource) {
+            parts.push(
+              <InlineAssistantLink
+                key={`citation-${match.index}`}
+                onPreviewNeeded={onSourcePreviewNeeded}
+                preview={sourcePreviewCache[matchedSource.url]}
+                source={matchedSource}
+                sourcePreviewLoading={!!sourcePreviewLoading[matchedSource.url]}
+              >
+                {`【${sourceIndex + 1}】`}
+              </InlineAssistantLink>
+            );
+          } else {
+            // Fallback: if no metadata yet, show a clean placeholder instead of raw token
+            parts.push(`【${sourceNumStr || '?'}】`);
+          }
+          lastIndex = match.index + match[0].length;
+        }
+
+        if (lastIndex < text.length) {
+          parts.push(text.substring(lastIndex));
+        }
+
+        return parts;
+      };
+
+      const processedChildren = React.Children.map(children, (child) => {
+        if (typeof child === 'string') {
+          return processTextParts(child);
+        }
+        return child;
+      });
+
+      return <p>{processedChildren}</p>;
+    },
     h1: createHeadingComponent('h1'),
     h2: createHeadingComponent('h2'),
     }),
@@ -429,13 +484,17 @@ function VirtualizedMessageBubbleComponent({
           </div>
         )}
         <div className="message-bubble__content">
-          <ReactMarkdown
-            components={markdownComponents}
-            remarkPlugins={[remarkGfm]}
-            urlTransform={markdownUrlTransform}
-          >
-            {message.text}
-          </ReactMarkdown>
+          {message.text ? (
+            <ReactMarkdown
+              components={markdownComponents}
+              remarkPlugins={[remarkGfm]}
+              urlTransform={markdownUrlTransform}
+            >
+              {message.text}
+            </ReactMarkdown>
+          ) : message.id === 'streaming-placeholder' ? (
+            <div className="message-bubble__streaming-initial" />
+          ) : null}
         </div>
         {message.sources.length > 0 ? (
           <button
@@ -574,8 +633,9 @@ export function MessageList({
   const restoredConversationKeyRef = useRef<string | null>(null);
   const autoBottomConversationKeyRef = useRef<string | null>(null);
   const isProgrammaticScrollRef = useRef(false);
-  const isAutoBottomRef = useRef(true); // 자동 하단 추적 여부
+  const isAutoBottomRef = useRef(false); // 기본적으로 자동 추적은 끄고 시작
   const lastFetchedAtRef = useRef(activeConversation.fetchedAt);
+  const lastConversationIdRef = useRef(activeConversation.id);
   const [scrollTop, setScrollTop] = useState(initialScrollTop ?? 0);
   const [viewportHeight, setViewportHeight] = useState(0);
   const [measuredHeights, setMeasuredHeights] = useState<Record<string, number>>(
@@ -584,12 +644,21 @@ export function MessageList({
 
   // fetchedAt이 변경되면(새로고침) 스크롤을 하단으로 유도
   useEffect(() => {
-    if (activeConversation.fetchedAt !== lastFetchedAtRef.current) {
-      lastFetchedAtRef.current = activeConversation.fetchedAt;
+    // 대화방이 바뀌면 자동 추적 상태 리셋 (저장된 위치 복원을 우선하기 위함)
+    if (activeConversation.id !== lastConversationIdRef.current) {
+      isAutoBottomRef.current = false;
+    }
+
+    // 같은 대화방 내에서 데이터가 갱신(fetchedAt 변경)된 경우에만 하단 이동
+    if (activeConversation.id === lastConversationIdRef.current && 
+        activeConversation.fetchedAt !== lastFetchedAtRef.current) {
       isAutoBottomRef.current = true;
       autoBottomConversationKeyRef.current = conversationRenderKey;
     }
-  }, [activeConversation.fetchedAt, conversationRenderKey]);
+    
+    lastFetchedAtRef.current = activeConversation.fetchedAt;
+    lastConversationIdRef.current = activeConversation.id;
+  }, [activeConversation.id, activeConversation.fetchedAt, conversationRenderKey]);
 
   useEffect(() => {
     onScrollPositionChangeRef.current = onScrollPositionChange;
@@ -756,6 +825,11 @@ export function MessageList({
 
   // 스트리밍 중이거나 자동 추적 모드일 때 스크롤 유지
   useLayoutEffect(() => {
+    // 초기 스크롤 복원이 완료된 후에만 자동 추적 로직 작동
+    if (restoredConversationKeyRef.current !== conversationRenderKey) {
+      return;
+    }
+
     if (!isAutoBottomRef.current && sendMessageStatus !== 'receiving') {
       return;
     }

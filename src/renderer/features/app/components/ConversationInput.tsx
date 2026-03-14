@@ -2,7 +2,7 @@ import React, { useState, KeyboardEvent } from 'react';
 import { Button } from '../../../components/ui/Button';
 
 type ConversationInputProps = {
-  onSendMessage: (message: string) => void;
+  onSendMessage: (message: string, webSearch?: boolean) => void;
   sendMessageStatus?: 'idle' | 'sending' | 'receiving';
   isRefreshing?: boolean;
   disabled?: boolean;
@@ -21,6 +21,7 @@ export function ConversationInput({
   onModelChange 
 }: ConversationInputProps) {
   const [message, setMessage] = useState('');
+  const [webSearch, setWebSearch] = useState(false);
 
   const modelOptions = (() => {
     const options: Array<{label: string, value: string}> = [];
@@ -44,7 +45,7 @@ export function ConversationInput({
 
   const handleSend = () => {
     if (message.trim() && !disabled) {
-      onSendMessage(message.trim());
+      onSendMessage(message.trim(), webSearch);
       setMessage('');
     }
   };
@@ -67,53 +68,68 @@ export function ConversationInput({
         onKeyDown={handleKeyDown}
         disabled={disabled}
       />
-      <div className="conversation-input__actions" style={{ display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: '8px', minWidth: '130px' }}>
-        {onModelChange && (
-          <select
-            value={selectedModel}
-            onChange={(e) => onModelChange(e.target.value)}
-            disabled={disabled || modelOptions.length === 0}
-            style={{ 
-              width: '100%',
-              appearance: 'none',
-              background: 'transparent', 
-              color: 'var(--text-muted)', 
-              border: '1px solid transparent', 
-              borderRadius: '8px', 
-              padding: '6px 24px 6px 12px',
-              fontSize: '0.85rem',
-              cursor: modelOptions.length > 0 ? 'pointer' : 'wait',
-              outline: 'none',
-              opacity: modelOptions.length > 0 ? 1 : 0.6,
-              backgroundImage: 'url("data:image/svg+xml;charset=US-ASCII,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2224%22%20height%3D%2224%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22currentColor%22%20stroke-width%3D%222%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpolyline%20points%3D%226%209%2012%2015%2018%209%22%3E%3C%2Fpolyline%3E%3C%2Fsvg%3E")',
-              backgroundRepeat: 'no-repeat',
-              backgroundPosition: 'right 6px center',
-              backgroundSize: '14px',
-              transition: 'color 0.2s, background-color 0.2s, border-color 0.2s'
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.color = 'var(--text-primary)';
-              e.currentTarget.style.background = 'color-mix(in srgb, var(--panel-bg-soft) 40%, transparent)';
-              e.currentTarget.style.borderColor = 'var(--border-soft)';
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.color = 'var(--text-muted)';
-              e.currentTarget.style.background = 'transparent';
-              e.currentTarget.style.borderColor = 'transparent';
-            }}
-          >
-            <option value="auto" style={{ color: 'var(--text-primary)', background: 'var(--panel-bg)' }}>자동 (Auto)</option>
-            {modelOptions.length > 0 ? (
-              modelOptions.map((opt) => (
-                <option key={opt.value} value={opt.value} style={{ color: 'var(--text-primary)', background: 'var(--panel-bg)' }}>
-                  {opt.label}
-                </option>
-              ))
-            ) : (
-              <option disabled style={{ color: 'var(--text-primary)', background: 'var(--panel-bg)' }}>로딩 중...</option>
-            )}
-          </select>
-        )}
+      <div className="conversation-input__actions" style={{ display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: '8px', minWidth: '240px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <label style={{ flex: '0 0 auto', display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 4px', cursor: 'pointer', fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+            <input
+              type="checkbox"
+              checked={webSearch}
+              onChange={(e) => setWebSearch(e.target.checked)}
+              disabled={disabled}
+              style={{ cursor: 'pointer', width: '14px', height: '14px' }}
+            />
+            <span style={{ whiteSpace: 'nowrap' }}>웹 검색</span>
+          </label>
+          
+          {onModelChange && (
+            <div style={{ flex: 1, position: 'relative' }}>
+              <select
+                value={selectedModel}
+                onChange={(e) => onModelChange(e.target.value)}
+                disabled={disabled || modelOptions.length === 0}
+                style={{ 
+                  width: '100%',
+                  appearance: 'none',
+                  background: 'transparent', 
+                  color: 'var(--text-muted)', 
+                  border: '1px solid var(--border-soft)', 
+                  borderRadius: '8px', 
+                  padding: '6px 24px 6px 12px',
+                  fontSize: '0.82rem',
+                  cursor: modelOptions.length > 0 ? 'pointer' : 'wait',
+                  outline: 'none',
+                  opacity: modelOptions.length > 0 ? 1 : 0.6,
+                  backgroundImage: 'url("data:image/svg+xml;charset=US-ASCII,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2224%22%20height%3D%2224%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22currentColor%22%20stroke-width%3D%222%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpolyline%20points%3D%226%209%2012%2015%2018%209%22%3E%3C%2Fpolyline%3E%3C%2Fsvg%3E")',
+                  backgroundRepeat: 'no-repeat',
+                  backgroundPosition: 'right 6px center',
+                  backgroundSize: '14px',
+                  transition: 'color 0.2s, background-color 0.2s, border-color 0.2s'
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.color = 'var(--text-primary)';
+                  e.currentTarget.style.background = 'color-mix(in srgb, var(--panel-bg-soft) 40%, transparent)';
+                  e.currentTarget.style.borderColor = 'var(--border-soft)';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.color = 'var(--text-muted)';
+                  e.currentTarget.style.background = 'transparent';
+                  e.currentTarget.style.borderColor = 'var(--border-soft)';
+                }}
+              >
+                <option value="auto" style={{ color: 'var(--text-primary)', background: 'var(--panel-bg)' }}>자동 (Auto)</option>
+                {modelOptions.length > 0 ? (
+                  modelOptions.map((opt) => (
+                    <option key={opt.value} value={opt.value} style={{ color: 'var(--text-primary)', background: 'var(--panel-bg)' }}>
+                      {opt.label}
+                    </option>
+                  ))
+                ) : (
+                  <option disabled style={{ color: 'var(--text-primary)', background: 'var(--panel-bg)' }}>로딩 중...</option>
+                )}
+              </select>
+            </div>
+          )}
+        </div>
         <Button
           className="conversation-input__send"
           variant="primary"

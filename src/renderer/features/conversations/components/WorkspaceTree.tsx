@@ -494,8 +494,8 @@ function WorkspaceConversationLeaf({
                 뷰어에서 생성
               </span>
             ) : null}
-            {streamingStatus === 'receiving' ? (
-              <span className="workspace-tree__conversation-streaming-dot" title="메시지 수신 중" />
+            {streamingStatus && streamingStatus !== 'idle' ? (
+              <span className="workspace-tree__conversation-streaming-dot" title="메시지 전송 또는 수신 중" />
             ) : null}
           </span>
         ) : null}
@@ -826,7 +826,7 @@ function WorkspaceTreeNode({
         onNodePointerDown={onNodePointerDown}
         onRenameConversation={onRenameConversation}
         suppressedClickNodeId={suppressedClickNodeId}
-        streamingStatus={streamingStatuses?.[node.id]}
+        streamingStatus={node.conversationId ? streamingStatuses?.[node.conversationId] : undefined}
       />
     );
   }

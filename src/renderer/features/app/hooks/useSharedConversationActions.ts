@@ -487,7 +487,7 @@ export function useSharedConversationActions({
     localStorage.setItem('gptviewer-selected-model', model);
   };
 
-  const handleSendMessageToActiveConversation = async (message: string) => {
+  const handleSendMessageToActiveConversation = async (message: string, webSearch?: boolean) => {
     const currentStatus = activeConversation ? (streamingStatuses[activeConversation.id] || 'idle') : 'idle';
     if (!activeConversation || currentStatus !== 'idle') return;
 
@@ -540,7 +540,8 @@ export function useSharedConversationActions({
         refreshRequest,
         message,
         selectedModel === 'auto' ? undefined : selectedModel,
-        activeConversation.id
+        activeConversation.id,
+        webSearch
       );
 
       const importedConversation = normalizeImportedConversation(result);

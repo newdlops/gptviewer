@@ -101,6 +101,7 @@ export class SharedConversationRefreshService {
     onStatusChange?: (status: 'sending' | 'receiving' | 'idle') => void,
     onStreamChunk?: (text: string, conversationId: string) => void,
     conversationId?: string,
+    webSearch?: boolean,
   ): Promise<SharedConversationRefreshResult> {
     if (!request.chatUrl) {
       throw new SharedConversationRefreshError('chat_url_missing', '대화를 보낼 원본 링크가 없습니다.');
@@ -127,7 +128,7 @@ export class SharedConversationRefreshService {
 
 
         console.info('[gptviewer] Attempting to send message via script...');
-        const sendResult = await automationView.sendMessage(message, model);
+        const sendResult = await automationView.sendMessage(message, model, webSearch);
         console.info(`[gptviewer] Send message result (resolved after turn-complete or fallback): ${JSON.stringify(sendResult)}`);
         
         if (!sendResult.success) {

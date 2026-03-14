@@ -333,7 +333,8 @@
 }
 
 /* Streaming Cursor Animation */
-.message-bubble--assistant[data-streaming="true"] .message-bubble__content p:last-child::after {
+.message-bubble--assistant[data-streaming="true"] .message-bubble__content p:last-child::after,
+.message-bubble--assistant[data-streaming="true"] .message-bubble__streaming-initial::after {
   content: "";
   display: inline-block;
   width: 8px;
@@ -342,6 +343,12 @@
   margin-left: 4px;
   vertical-align: middle;
   animation: cursor-blink 1s step-end infinite;
+}
+
+.message-bubble__streaming-initial {
+  margin: 0;
+  min-height: 1.2em;
+  display: block;
 }
 
 @keyframes cursor-blink {

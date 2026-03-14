@@ -94,7 +94,7 @@ out/
 .gemini
 .ai
 .git
-
+.vscode
 # Local temporary files
 ws.js
 a.json

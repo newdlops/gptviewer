@@ -62,8 +62,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('chatgpt-stream-chunk', wrappedListener);
     return () => ipcRenderer.removeListener('chatgpt-stream-chunk', wrappedListener);
   },
-  sendMessageToSharedConversation: (request: SharedConversationRefreshRequest, message: string, model?: string, conversationId?: string) =>
-    ipcRenderer.invoke('shared-conversation:send-message', request, message, model, conversationId),
+  sendMessageToSharedConversation: (request: SharedConversationRefreshRequest, message: string, model?: string, conversationId?: string, webSearch?: boolean) =>
+    ipcRenderer.invoke('shared-conversation:send-message', request, message, model, conversationId, webSearch),
   getChatGptModelConfig: () =>
     ipcRenderer.invoke('chatgpt-automation:get-model-config'),
   importChatGptConversation: (request: SharedConversationRefreshRequest) =>
