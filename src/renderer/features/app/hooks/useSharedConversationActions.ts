@@ -220,19 +220,35 @@ export function useSharedConversationActions({
                 // 2. Metadata (Citations/Sources) 처리
                 if (patch.p?.includes('metadata/content_references') || patch.p?.includes('metadata/safe_urls')) {
                   const items = patch.v?.items || patch.v;
+                  // alt 텍스트 추출 (예: [who.int](...))
+                  let altText = '';
+                  if (patch.v?.alt && typeof patch.v.alt === 'string') {
+                    const altMatch = patch.v.alt.match(/^\[([^\]]+)\]/);
+                    if (altMatch) altText = altMatch[1];
+                  }
+
                   if (Array.isArray(items)) {
                     for (const item of items) {
-                      if (item.url && !lastMessage.sources.some((s: any) => s.url === item.url)) {
-                        lastMessage.sources.push({
+                      if (item.url) {
+                        const existingIndex = lastMessage.sources.findIndex((s: any) => s.url === item.url);
+                        const sourceData = {
                           url: item.url,
-                          title: item.title || item.attribution || '출처',
-                          attribution: item.attribution,
+                          title: item.title || altText || item.attribution || '출처',
+                          attribution: item.attribution || altText,
                           description: item.snippet
-                        });
+                        };
+
+                        if (existingIndex >= 0) {
+                          // 기존 정보 업데이트 (제목 등이 나중에 올 수 있음)
+                          lastMessage.sources[existingIndex] = { ...lastMessage.sources[existingIndex], ...sourceData };
+                        } else {
+                          lastMessage.sources.push(sourceData);
+                        }
                       }
                     }
                   }
                 }
+
               }
             } catch (e) {
               console.warn('[gptviewer] Error parsing stream patch:', e);

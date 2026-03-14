@@ -428,6 +428,8 @@ function VirtualizedMessageBubbleComponent({
           const matchedSource = (sourceIndex >= 0 && message.sources) ? message.sources[sourceIndex] : null;
 
           if (matchedSource) {
+            // 제목이나 출처명이 있으면 사용, 없으면 번호 표시
+            const displayLabel = matchedSource.attribution || matchedSource.title || `【${sourceIndex + 1}】`;
             parts.push(
               <InlineAssistantLink
                 key={`citation-${match.index}`}
@@ -436,7 +438,7 @@ function VirtualizedMessageBubbleComponent({
                 source={matchedSource}
                 sourcePreviewLoading={!!sourcePreviewLoading[matchedSource.url]}
               >
-                {`【${sourceIndex + 1}】`}
+                {displayLabel}
               </InlineAssistantLink>
             );
           } else {
@@ -686,14 +688,21 @@ export function MessageList({
     () => initialMessageHeights ?? {},
   );
 
-  // fetchedAt이 변경되면(새로고침) 스크롤을 하단으로 유도
+  const lastSendMessageStatusRef = useRef(sendMessageStatus);
+
+  // fetchedAt이 변경되거나 스트리밍이 시작되면 스크롤을 하단으로 유도
   useEffect(() => {
-    // 대화방이 바뀌면 자동 추적 상태 리셋 (저장된 위치 복원을 우선하기 위함)
+    // 대화방이 바뀌면 자동 추적 상태 리셋
     if (activeConversation.id !== lastConversationIdRef.current) {
       isAutoBottomRef.current = false;
     }
 
-    // 같은 대화방 내에서 데이터가 갱신(fetchedAt 변경)된 경우에만 하단 이동
+    // 새로운 스트리밍이 시작되는 시점에 자동 추적 활성화
+    if (sendMessageStatus === 'receiving' && lastSendMessageStatusRef.current !== 'receiving') {
+      isAutoBottomRef.current = true;
+    }
+
+    // 같은 대화방 내에서 데이터가 갱신(fetchedAt 변경)된 경우 하단 이동
     if (activeConversation.id === lastConversationIdRef.current && 
         activeConversation.fetchedAt !== lastFetchedAtRef.current) {
       isAutoBottomRef.current = true;
@@ -702,7 +711,8 @@ export function MessageList({
     
     lastFetchedAtRef.current = activeConversation.fetchedAt;
     lastConversationIdRef.current = activeConversation.id;
-  }, [activeConversation.id, activeConversation.fetchedAt, conversationRenderKey]);
+    lastSendMessageStatusRef.current = sendMessageStatus;
+  }, [activeConversation.id, activeConversation.fetchedAt, conversationRenderKey, sendMessageStatus]);
 
   useEffect(() => {
     onScrollPositionChangeRef.current = onScrollPositionChange;
@@ -874,7 +884,7 @@ export function MessageList({
       return;
     }
 
-    if (!isAutoBottomRef.current && sendMessageStatus !== 'receiving') {
+    if (!isAutoBottomRef.current) {
       return;
     }
 
@@ -1025,11 +1035,14 @@ export function MessageList({
 
       if (!isProgrammaticScrollRef.current) {
         autoBottomConversationKeyRef.current = null;
-        // 사용자가 스크롤을 끝까지 내렸을 때 자동 추적 모드 재활성화
-        if (maxScroll - nextScrollTop < 20) {
+        const distanceFromBottom = maxScroll - nextScrollTop;
+        
+        // 사용자가 스크롤을 바닥(20px 이내)까지 내렸을 때 자동 추적 모드 활성화
+        if (distanceFromBottom < 20) {
             isAutoBottomRef.current = true;
-        } else if (maxScroll - nextScrollTop > 100) {
-            // 사용자가 의도적으로 위로 스크롤했을 때 자동 추적 모드 비활성화
+        } else if (distanceFromBottom > 30) {
+            // 사용자가 위로 스크롤하면 즉시 자동 추적 모드 비활성화
+            // 스트리밍 중에는 더 민감하게(30px) 반응하여 떨림 현상 방지
             isAutoBottomRef.current = false;
         }
       }
